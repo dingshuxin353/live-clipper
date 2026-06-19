@@ -1,0 +1,18 @@
+[
+  {
+    "canonical": "Codex",
+    "common_mistakes": ["code x", "扣得克斯", "codec"],
+    "notes": "OpenAI coding agent product name"
+  },
+  {
+    "canonical": "ASR",
+    "common_mistakes": ["a s r", "自动识别", "语音识别"],
+    "notes": "Automatic speech recognition"
+  },
+  {
+    "canonical": "ffmpeg",
+    "common_mistakes": ["FM派个", "FFMPEG", "f f mpeg"],
+    "notes": "Video processing command-line tool"
+  }
+]
+

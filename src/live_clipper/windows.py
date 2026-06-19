@@ -1,0 +1,2 @@
+"""Transcript windowing utilities."""
+
