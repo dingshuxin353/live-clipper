@@ -9,9 +9,16 @@ description = "CLI pipeline for extracting highlight clips from livestream recor
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+  "mlx-whisper>=0.4.2",
   "python-dotenv>=1.0.1",
   "pydantic>=2.8.0",
   "requests>=2.32.0",
+  "socksio>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0.0",
 ]
 
 [project.scripts]
@@ -20,3 +27,5 @@ live-clipper = "live_clipper.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+live_clipper = ["prompts/*.md"]

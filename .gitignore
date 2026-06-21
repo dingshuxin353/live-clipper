@@ -2,6 +2,9 @@
 .venv/
 __pycache__/
 *.py[cod]
+*.egg-info/
+build/
+dist/
 .DS_Store
 
 input/*
@@ -16,3 +19,7 @@ work/cache/*
 work/logs/*
 !work/logs/.gitkeep
 
+work/asr_validation/
+work/automation_logs/
+work/automation_state/
+work/smoke/

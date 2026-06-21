@@ -74,13 +74,6 @@ live-clipper/
   glossary/
     common_terms.example.json
 
-  prompts/
-    cheap_correct_transcript.md
-    cheap_scan_window.md
-    cheap_refine_candidate.md
-    cheap_reverse_review.md
-    codex_select_clips.md
-
   src/live_clipper/
     cli.py
     config.py
@@ -96,22 +89,33 @@ live-clipper/
     codex_selection.py
     render_clips.py
     subtitles.py
+    smoke.py
+    prompt_loader.py
     utils.py
+    prompts/
+      cheap_correct_transcript.md
+      cheap_scan_window.md
+      cheap_refine_candidate.md
+      cheap_reverse_review.md
+      codex_select_clips.md
 
   work/
     cache/
     logs/
 ```
 
-## Planned CLI
+## CLI Commands
 
 ```bash
-python -m live_clipper scan input/week_023_live.mp4
-python -m live_clipper brief output/week_023/
-python -m live_clipper render output/week_023/selected_clips.json
+.venv/bin/live-clipper doctor
+.venv/bin/live-clipper smoke
+.venv/bin/live-clipper scan input/week_023_live.mp4 --output-dir output/week_023
+.venv/bin/live-clipper scan input/week_023_live.mp4 --output-dir output/week_023 --resume
+.venv/bin/live-clipper brief output/week_023
+.venv/bin/live-clipper render output/week_023/selected_clips.json
 ```
 
-The CLI exists as a placeholder. The commands are not implemented yet.
+`doctor` checks local deployment readiness. `smoke` runs a synthetic no-API pipeline check. `scan` runs extraction, ASR, transcript correction, windowing, cheap-model candidate scanning, and merge. `scan --resume` skips existing stage outputs; during cheap-model transcript correction it can continue from `transcript.partial.json`, and during cheap-model window scanning it can continue from `cheap_candidates.partial.json`. When `transcript.json` and `cheap_candidates.json` already exist, it can finish local-only stages without calling the cheap model again. `brief` builds the compact Codex review package. `render` validates `selected_clips.json`, writes subtitles and an edit decision list, then renders final clips with ffmpeg.
 
 ## Glossary Design
 
@@ -131,7 +135,7 @@ Example:
 }
 ```
 
-The correction stage should preserve timestamps and sentence boundaries. It should only fix likely ASR errors, not rewrite the speaker's style.
+The correction stage sends sentences to the cheap model in bounded batches. It should preserve timestamps and sentence boundaries. It should only fix likely ASR errors, not rewrite the speaker's style.
 
 ## ASR Direction
 
@@ -150,17 +154,20 @@ Recommended local backends to test:
 1. `mlx-whisper` or another MLX-based Whisper runner for Apple Silicon.
 2. `whisper.cpp` if a stable CLI path is preferred.
 
-Suggested config shape:
+Default config shape:
 
 ```text
 ASR_BACKEND=mlx_whisper
-ASR_MODEL=large-v3-turbo
+ASR_MODEL=mlx-community/whisper-large-v3-turbo
 ```
 
 Keep a cloud fallback:
 
 ```text
 ASR_BACKEND=openai
+ASR_API_BASE=https://api.openai.com/v1
+ASR_API_KEY=...
+ASR_MODEL=whisper-1
 ```
 
 Useful references from the research:
@@ -174,56 +181,56 @@ Useful references from the research:
 
 Implemented:
 
-- Project skeleton.
-- Python package layout under `src/live_clipper`.
-- Placeholder CLI with `scan`, `brief`, and `render` commands.
-- Prompt files for cheap-model correction, scanning, refinement, reverse review, and Codex selection.
-- Glossary example file.
-- Basic Pydantic models:
-  - `TranscriptSentence`
-  - `TranscriptWindow`
-  - `GlossaryTerm`
-  - `TranscriptCorrection`
-  - `CorrectedTranscript`
-  - `ClipCandidate`
-  - `SelectedClip`
+- Python package layout and console script.
+- CLI commands: `doctor`, `smoke`, `scan`, `brief`, and `render`.
+- ffmpeg audio extraction.
+- Local ASR through `mlx_whisper`, defaulting to `mlx-community/whisper-large-v3-turbo`.
+- OpenAI-compatible cloud ASR fallback.
+- Cheap model client for the Agnes OpenAI-compatible endpoint.
+- Batched transcript correction with glossary support, validation failure logs, and checkpoint/resume support.
+- Window splitting for corrected transcripts.
+- Cheap-model window scanning with per-window checkpoint/resume support, plus candidate merge logic.
+- Codex brief generation, including `codex_brief.json`, `codex_review.md`, and `selected_clips.template.json`.
+- Candidate ID uniqueness validation at scan, merge, brief, and final selection validation boundaries.
+- Selection validation, subtitle generation, edit decision list generation, and ffmpeg clip rendering.
+- `remove_ranges` rendering by re-encoding kept segments with reset timestamps before concatenation, with subtitles mapped onto the final post-removal timeline.
+- Prompt files packaged under `src/live_clipper/prompts`.
+- Local synthetic smoke run that exercises the file and render pipeline without ASR or remote model calls.
 
 Verified:
 
 ```bash
-python3 -m compileall -q src
+.venv/bin/python -m pytest -q
+.venv/bin/python -m compileall src tests
+.venv/bin/live-clipper smoke
+ffprobe -v error -show_entries format=duration:stream=codec_type,codec_name -of json work/smoke/clips/smoke-clip.mp4
+uv build --wheel --out-dir /tmp/live-clipper-wheel-check
+.venv/bin/live-clipper doctor
 ```
 
-Not implemented yet:
+Current verification notes:
 
-- ffmpeg audio extraction.
-- Local ASR integration.
-- Transcript correction implementation.
-- Window splitting.
-- Cheap model client.
-- Candidate merge logic.
-- Codex brief generation.
-- ffmpeg clip rendering.
+- The test suite currently passes locally.
+- `smoke` renders a valid MP4 with h264 video and aac audio.
+- `doctor` is expected to return non-zero until a real input video is placed under `input/` and `CHEAP_MODEL_API_KEY` is set.
+- Missing `HF_TOKEN` is a warning for slower first-time Hugging Face downloads, not a hard blocker.
 
 ## Suggested Next Step
 
-Start by implementing the transcript path:
+To run the real pipeline, provide the two remaining external inputs:
 
-```text
-video.py
-  extract audio
-
-transcribe.py
-  run local ASR and produce transcript_raw.json
-
-correct_transcript.py
-  load glossary
-  call cheap model
-  produce transcript.json
-
-windows.py
-  split corrected transcript into windows.json
+```bash
+cp glossary/common_terms.example.json glossary/common_terms.json
+export CHEAP_MODEL_API_KEY="your_agnes_key"
+mkdir -p input
+# Put a supported recording such as input/week_023_live.mp4 in input/.
+.venv/bin/live-clipper doctor
+.venv/bin/live-clipper scan input/week_023_live.mp4 --output-dir output/week_023
+.venv/bin/live-clipper brief output/week_023
 ```
 
-This gives the rest of the project a stable input foundation.
+After Codex or a human writes `output/week_023/selected_clips.json`, run:
 
+```bash
+.venv/bin/live-clipper render output/week_023/selected_clips.json
+```
