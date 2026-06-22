@@ -34,6 +34,23 @@ def run_ffmpeg(cmd: list[str]) -> None:
         raise RuntimeError("ffmpeg is required on PATH to render clips") from exc
 
 
+def add_quicktime_mp4_options(cmd: list[str]) -> None:
+    cmd.extend([
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-profile:v",
+        "high",
+        "-level",
+        "4.1",
+        "-c:a",
+        "aac",
+        "-movflags",
+        "+faststart",
+    ])
+
+
 def render_segment(
     source_video_path: Path,
     start: float,
@@ -63,8 +80,7 @@ def render_segment(
             "-avoid_negative_ts",
             "make_zero",
         ])
-    else:
-        cmd.extend(["-c", "copy"])
+    add_quicktime_mp4_options(cmd)
     cmd.append(str(output_path))
     run_ffmpeg(cmd)
 
