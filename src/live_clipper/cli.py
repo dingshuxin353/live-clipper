@@ -26,6 +26,7 @@ from .status import build_run_status
 from .transcribe import transcribe_audio, transcript_sentences_from_raw
 from .utils import ensure_dir, read_json, write_json
 from .video import extract_audio
+from .web import WebPaths, run_web_server
 from .windows import write_windows_file
 
 
@@ -90,6 +91,14 @@ def build_parser() -> argparse.ArgumentParser:
     cleanup.add_argument("--input-dir", type=Path, default=Path("input"))
     cleanup.add_argument("--confirm", action="store_true", help="Actually delete local large files.")
     cleanup.add_argument("--force", action="store_true", help="Allow cleanup before rendered clips are detected.")
+
+    web = subparsers.add_parser("web", help="Start the local web console.")
+    web.add_argument("--host", default="127.0.0.1")
+    web.add_argument("--port", type=int, default=8765)
+    web.add_argument("--output-root", type=Path, default=Path("output"))
+    web.add_argument("--state-dir", type=Path, default=Path("work") / "automation_state")
+    web.add_argument("--log-dir", type=Path, default=Path("work") / "automation_logs")
+    web.add_argument("--input-dir", type=Path, default=Path("input"))
 
     automation = subparsers.add_parser("automation", help="Helpers for Codex scheduled workflows.")
     automation_subparsers = automation.add_subparsers(dest="automation_command", required=True)
@@ -441,6 +450,17 @@ def main() -> None:
     elif args.command == "cleanup":
         report = run_cleanup(args.run_dir, input_dir=args.input_dir, confirm=args.confirm, force=args.force)
         print(json.dumps(report, ensure_ascii=False, indent=2))
+    elif args.command == "web":
+        run_web_server(
+            host=args.host,
+            port=args.port,
+            paths=WebPaths(
+                output_root=args.output_root,
+                state_dir=args.state_dir,
+                log_dir=args.log_dir,
+                input_dir=args.input_dir,
+            ),
+        )
     elif args.command == "automation":
         if args.automation_command == "start-latest":
             report = start_latest_recording_job(

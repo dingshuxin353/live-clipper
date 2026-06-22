@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Live Clipper Web 控制台</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">LC</div>
+        <div>
+          <h1>Live Clipper Web 控制台</h1>
+          <span class="version">v1.3.2</span>
+        </div>
+      </div>
+      <div class="run-chip" id="currentRun">当前运行：加载中</div>
+      <div class="local-chip">LOCAL ONLY</div>
+      <div class="agnes-chip">
+        <span class="pulse"></span>
+        <strong>Agnes 在线</strong>
+        <small>本地工作流</small>
+      </div>
+    </header>
+
+    <main class="shell">
+      <aside class="queue-panel">
+        <div class="panel-heading">
+          <h2>运行队列</h2>
+          <button id="refreshBtn" class="icon-button" title="刷新">↻</button>
+        </div>
+        <div class="search-row">
+          <input id="runSearch" type="search" placeholder="搜索运行名称 / 备注" />
+        </div>
+        <div id="runList" class="run-list"></div>
+      </aside>
+
+      <section class="pipeline-panel">
+        <div class="panel-heading">
+          <h2>流水线总览</h2>
+          <button id="checkBtn" class="secondary-button">检查自动化</button>
+        </div>
+        <div id="pipelineMeta" class="meta-row"></div>
+        <div id="steps" class="steps"></div>
+        <div id="metrics" class="metrics-grid"></div>
+      </section>
+
+      <aside class="codex-panel">
+        <div class="panel-heading">
+          <h2>Codex 介入点</h2>
+          <span id="decisionBadge" class="decision-badge">待判断</span>
+        </div>
+        <section class="task-box">
+          <div class="task-icon">&lt;/&gt;</div>
+          <div>
+            <h3 id="taskTitle">正在读取任务</h3>
+            <p id="taskSubtitle">请稍候</p>
+          </div>
+        </section>
+        <section class="command-box">
+          <div class="command-heading">
+            <span>建议下一步命令</span>
+            <button id="copyCommandBtn" class="icon-button" title="复制命令">⧉</button>
+          </div>
+          <pre id="commandText">加载中</pre>
+        </section>
+        <section class="file-box">
+          <h3>参考文件</h3>
+          <div id="fileList" class="file-list"></div>
+        </section>
+        <section class="clip-box">
+          <div class="section-heading">
+            <h3>已生成切片</h3>
+            <span id="clipCount">0 个</span>
+          </div>
+          <video id="clipPreview" class="clip-preview" controls preload="metadata" hidden></video>
+          <div id="clipList" class="clip-list"></div>
+        </section>
+        <section class="cleanup-box">
+          <div class="section-heading">
+            <h3>本地文件清理</h3>
+            <span id="cleanupBytes">0 B</span>
+          </div>
+          <div id="cleanupList" class="cleanup-list"></div>
+          <button id="deleteLocalSourceBtn" class="danger-button">删除本机原录像副本</button>
+        </section>
+        <section class="action-box">
+          <button id="renderBtn" class="primary-button">▶ 渲染成片</button>
+          <button id="cleanupPreviewBtn" class="secondary-button">预演清理</button>
+          <button id="cleanupConfirmBtn" class="danger-button">确认清理本地缓存</button>
+        </section>
+      </aside>
+
+      <section class="log-panel">
+        <div class="panel-heading">
+          <h2>日志输出</h2>
+          <div class="log-controls">
+            <span id="logPath">未选择任务</span>
+            <button id="clearLogBtn" class="secondary-button">清空显示</button>
+          </div>
+        </div>
+        <pre id="logOutput" class="log-output">等待选择任务...</pre>
+      </section>
+    </main>
+
+    <div id="toast" class="toast" hidden></div>
+    <script src="/static/app.js"></script>
+  </body>
+</html>

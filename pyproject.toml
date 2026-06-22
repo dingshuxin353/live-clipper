@@ -28,4 +28,4 @@ live-clipper = "live_clipper.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-live_clipper = ["prompts/*.md"]
+live_clipper = ["prompts/*.md", "web_static/*.html", "web_static/*.css", "web_static/*.js"]
