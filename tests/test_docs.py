@@ -50,3 +50,13 @@ def test_ai_assistant_guide_explains_llm_examples_asr_download_and_agent_schedul
     assert "先说明下载目的" in text
     assert "不要把定时任务限定为 Codex" in text
     assert "根据当前运行的 Agent 软件判断" in text
+
+
+def test_readme_guides_local_asr_install_and_first_download():
+    text = Path("README.md").read_text(encoding="utf-8")
+
+    assert "## 本地 ASR 安装" in text
+    assert "mlx-community/whisper-large-v3-turbo" in text
+    assert ".venv/bin/python -m pip install -e '.[dev,mlx]'" in text
+    assert "首次运行会下载本地 ASR 模型" in text
+    assert "本地 ASR 模型可用" in text

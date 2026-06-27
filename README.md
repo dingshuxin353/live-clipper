@@ -53,6 +53,44 @@ python -m venv .venv
 
 `smoke` 会生成合成视频并跑完整本地链路，不调用远程 ASR 或 LLM。
 
+## 本地 ASR 安装
+
+当前版本默认使用本地 ASR，把直播音频转成带时间戳的文字稿。本地 ASR 不使用你的 LLM API key；LLM 只负责后续文字校对、候选片段判断和复评。
+
+Apple Silicon 推荐安装 MLX extra：
+
+```bash
+.venv/bin/python -m pip install -e '.[dev,mlx]'
+```
+
+默认本地 ASR 模型是：
+
+```toml
+[asr]
+backend = "mlx_whisper"
+model = "mlx-community/whisper-large-v3-turbo"
+language = "zh"
+```
+
+首次运行会下载本地 ASR 模型，可能比较慢，也会占用本机磁盘空间。想先确认模型能下载和运行，可以做一次预热：
+
+```bash
+mkdir -p work/asr_model_check
+ffmpeg -y -f lavfi -i sine=frequency=440:duration=1 -ar 16000 -ac 1 work/asr_model_check/tone.wav
+.venv/bin/python - <<'PY'
+import mlx_whisper
+
+mlx_whisper.transcribe(
+    "work/asr_model_check/tone.wav",
+    path_or_hf_repo="mlx-community/whisper-large-v3-turbo",
+    language="zh",
+)
+print("本地 ASR 模型可用")
+PY
+```
+
+如果提示没有 `mlx_whisper`，请确认安装命令里包含 `mlx` extra。如果模型下载失败，优先检查网络或 Hugging Face 访问；这通常不是 `CHEAP_MODEL_API_KEY` 的问题。
+
 ## 常用命令
 
 ```bash
