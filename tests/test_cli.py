@@ -228,6 +228,81 @@ def test_prompts_export_writes_prompt_files(tmp_path):
     assert (output_dir / "codex_select_clips.md").exists()
 
 
+def test_guide_ai_parser_accepts_output_path(tmp_path):
+    output_path = tmp_path / "my-ai-guide.md"
+
+    args = cli.build_parser().parse_args(["guide", "ai", "--output", str(output_path)])
+
+    assert args.command == "guide"
+    assert args.guide_command == "ai"
+    assert args.output == output_path
+
+
+def test_run_ai_guide_outputs_chinese_safety_and_codex_tasks(tmp_path, capsys):
+    output_path = tmp_path / "my-ai-guide.md"
+
+    text = cli.run_ai_guide(output_path)
+
+    assert output_path.read_text(encoding="utf-8") == text
+    assert "不要把 API key" in text
+    assert "录制检测任务" in text
+    assert "选片与收尾任务" in text
+    assert "一次只问" in text
+    assert str(output_path) in capsys.readouterr().out
+
+
+def test_setup_parser_accepts_safe_overwrite_flags():
+    args = cli.build_parser().parse_args(["setup", "--force-config", "--force-prompts"])
+
+    assert args.command == "setup"
+    assert args.force_config is True
+    assert args.force_prompts is True
+
+
+def test_run_setup_creates_beginner_files_without_collecting_secrets(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+
+    report = cli.run_setup()
+
+    assert report["config_path"] == "live-clipper.toml"
+    assert report["env_path"] == ".env"
+    assert (tmp_path / "live-clipper.toml").exists()
+    assert (tmp_path / ".env").read_text(encoding="utf-8").startswith("# live-clipper environment")
+    assert "CHEAP_MODEL_API_KEY=" in (tmp_path / ".env").read_text(encoding="utf-8")
+    assert (tmp_path / "input").is_dir()
+    assert (tmp_path / "output").is_dir()
+    assert (tmp_path / "work" / "logs").is_dir()
+    assert (tmp_path / "prompts.local" / "codex_select_clips.md").exists()
+    assert "不要把 API key 粘贴到聊天窗口" in capsys.readouterr().out
+
+
+def test_next_parser_accepts_output_root(tmp_path):
+    args = cli.build_parser().parse_args(["next", "--output-root", str(tmp_path / "output")])
+
+    assert args.command == "next"
+    assert args.output_root == tmp_path / "output"
+
+
+def test_run_next_reports_codex_selection_step(tmp_path, capsys):
+    run_dir = tmp_path / "output" / "week_023"
+    write_json(run_dir / "run_metadata.json", {"source_name": "week_023.mp4"})
+    write_json(run_dir / "transcript_raw.json", {"segments": []})
+    write_json(run_dir / "transcript.json", {"sentences": [], "corrections": []})
+    write_json(run_dir / "windows.json", [])
+    write_json(run_dir / "cheap_candidates.json", [])
+    write_json(run_dir / "merged_candidates.json", [])
+    write_json(run_dir / "refined_candidates.json", [])
+    write_json(run_dir / "codex_brief.json", {"candidates": []})
+
+    report = cli.run_next(tmp_path / "output")
+
+    assert report["actionable_count"] == 1
+    assert report["runs"][0]["run_dir"] == str(run_dir)
+    output = capsys.readouterr().out
+    assert "等待 Codex 或人工选片" in output
+    assert "selected_clips.json" in output
+
+
 def test_run_scan_resume_passes_resume_to_window_scan(tmp_path, monkeypatch):
     video_path = tmp_path / "source.mp4"
     output_dir = tmp_path / "run"

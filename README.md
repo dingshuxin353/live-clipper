@@ -17,16 +17,31 @@ English readers can start from [docs/README.en.md](docs/README.en.md). 当前主
 
 默认产物都写在本地目录。只有当你配置云端 ASR 或 LLM 服务时，音频或转录文本才会发送到对应服务。详见 [docs/privacy.md](docs/privacy.md)。
 
-## 快速开始
+## 小白推荐：让 AI 陪你配置
+
+如果你不熟悉 Python、终端或配置文件，建议先走这条路径：
+
+1. 打开 [docs/ai-assistant-guide.md](docs/ai-assistant-guide.md)。
+2. 把全文复制给你常用的 AI 助手。
+3. 按 AI 的问题一步步回答，把终端输出贴回去。
+4. 让 AI 帮你完成 `.env`、`live-clipper.toml`、首次运行和 Agent 定时任务配置。
+
+也可以在终端里输出这份说明：
+
+```bash
+.venv/bin/live-clipper guide ai
+```
+
+安全提醒：不要把 API key、Token、Cookie 或任何密钥粘贴到聊天窗口。只把它们写进你本机的 `.env` 文件。
+
+## 命令行快速开始
 
 准备 Python 3.11+ 和 `ffmpeg`。
 
 ```bash
 python -m venv .venv
 .venv/bin/python -m pip install -e '.[dev]'
-cp .env.example .env
-.venv/bin/live-clipper config init
-.venv/bin/live-clipper prompts export --output prompts.local
+.venv/bin/live-clipper setup
 .venv/bin/live-clipper smoke
 ```
 
@@ -43,6 +58,9 @@ cp .env.example .env
 ```bash
 .venv/bin/live-clipper doctor
 .venv/bin/live-clipper smoke
+.venv/bin/live-clipper guide ai
+.venv/bin/live-clipper setup
+.venv/bin/live-clipper next
 .venv/bin/live-clipper scan input/week_023_live.mp4 --output-dir output/week_023
 .venv/bin/live-clipper scan input/week_023_live.mp4 --output-dir output/week_023 --resume
 .venv/bin/live-clipper refine output/week_023
@@ -55,6 +73,9 @@ cp .env.example .env
 
 - `doctor`: 检查 ffmpeg、输入视频、ASR 和 LLM 配置。
 - `smoke`: 本地烟测。
+- `guide ai`: 输出可复制给 AI 助手的中文陪跑说明。
+- `setup`: 创建 `.env`、`live-clipper.toml`、常用目录和提示词模板。
+- `next`: 告诉你当前 output 里的任务下一步该做什么。
 - `scan`: 生成音频、转录、窗口和候选。
 - `scan --resume`: 复用已有中间文件，从断点继续。
 - `refine`: 用 LLM 对候选做二次复评。
@@ -185,35 +206,35 @@ output/week_023/
 
 `remove_ranges` 会在渲染时移除片段内部的小段内容。范围必须在 `source_start` 和 `source_end` 内，不能重叠，并且不能删空整个片段。
 
-## Codex 定时自动化
+## Agent 定时自动化
 
-无人值守流程建议用 Codex 定时任务做编排。`live-clipper` 负责确定性的本地工作，并在需要判断时写出明确文件。
+无人值守流程建议用当前 Agent 软件的定时任务能力做编排，例如 Codex 的定时任务、其他 Agent 的周期任务，或系统 `cron`、macOS `launchd`、Windows 任务计划程序。`live-clipper` 负责确定性的本地工作，并在需要判断时写出明确文件。
 
 建议拆成两个定时任务：
 
 1. **录制检测任务**：寻找新的稳定录制文件，并启动后台流水线。
-2. **Codex 决策任务**：检查已完成或失败的 run，读取 `codex_task.md`，执行选片、渲染、失败诊断或清理预演。
+2. **Agent 决策任务**：检查已完成或失败的 run，读取 `codex_task.md`，执行选片、渲染、失败诊断或清理预演。这里的 `codex_task.md` 是项目内部文件名，不代表只能使用 Codex。
 
-不要把两件事塞进一个大提示词。录制检测可以围绕直播结束后的时间段运行；Codex 决策可以在处理窗口内更频繁运行。
+不要把两件事塞进一个大提示词。录制检测可以围绕直播结束后的时间段运行；Agent 决策可以在处理窗口内更频繁运行。
 
 推荐时间：
 
 - 录制检测任务：直播结束后几个小时内，每 30-60 分钟运行一次。
-- Codex 决策任务：预计录制被拾取后，每 15-30 分钟运行一次。
+- Agent 决策任务：预计录制被拾取后，每 15-30 分钟运行一次。
 - 非发布日可以暂停两个定时任务。
 
 ### 定时任务 1：录制检测
 
-在 Codex 中创建一个定时任务，工作目录选择本项目目录。
+在你的 Agent 软件中创建一个定时任务，工作目录选择本项目目录。如果当前 Agent 不支持定时任务，可以把这段命令交给系统计划任务执行。
 
 提示词模板：
 
 ```text
-You are maintaining the live-clipper workspace.
+你是 live-clipper 的录制检测助手。
 
-Check whether there is a new stable recording and start the local pipeline if appropriate.
+你的任务是：检查是否有新的直播录制文件。如果有，就启动后台处理流程；如果没有，就简短说明当前没有可处理录制。
 
-Run:
+请在项目目录中运行：
 
   .venv/bin/live-clipper automation start-latest \
     --source-dir /path/to/recordings \
@@ -223,56 +244,71 @@ Run:
     --min-age-minutes 10 \
     --top-n 25
 
-Rules:
-- Do not start a duplicate job if the command reports that a matching run is already running or already has a candidate package.
-- Do not delete or modify original recordings in the source directory.
-- If a job starts, report the run directory, state file, log file, and PID.
-- If no recording is ready, report the command result briefly.
-- If the command fails, inspect the error and summarize the next manual action.
+执行规则：
+- 不要重复启动已经在运行的任务。
+- 不要删除或修改录制源目录里的原始视频。
+- 如果命令显示任务已启动，请告诉我 run 目录、日志文件、状态文件和进程 PID。
+- 如果没有发现录制文件，请简短说明，不要创建无关文件。
+- 如果失败，请解释失败原因，并给出下一步我应该怎么处理。
 ```
 
 把 `/path/to/recordings` 替换成你的录制目录。如果希望先做转录校对，追加 `--correct-transcript`。如果想跳过复评，追加 `--no-refine`。
 
-### 定时任务 2：Codex 决策
+### 定时任务 2：Agent 决策
 
-创建第二个 Codex 定时任务，工作目录同样选择本项目目录。
+创建第二个 Agent 定时任务，工作目录同样选择本项目目录。
 
 提示词模板：
 
 ```text
-You are the Codex decision worker for live-clipper.
+你是 live-clipper 的选片与收尾助手。
 
-First run:
+你的任务是：检查 live-clipper 是否有需要 Agent 判断的任务，并按任务文件要求处理。
+
+第一步，请运行：
 
   .venv/bin/live-clipper automation check --output-root output
 
-Read the JSON response carefully.
+然后阅读 JSON 结果。
 
-If `requires_codex` is false:
-- Report that there is currently no Codex action needed.
-- Do not modify files.
+如果 requires_codex 是 false：
+- 告诉我“当前没有需要 Agent 处理的任务”。
+- 不要修改文件。
 
-For each item in `codex_tasks`:
-- Open `codex_task_file` and follow its instructions.
-- If the phase is `needs_codex_selection`, read the referenced `codex_brief.json` and `refined_candidates.json` when present, choose publishable clips, and write `selected_clips.json` in the run directory.
-- After writing `selected_clips.json`, run:
+如果 codex_tasks 里有任务：
+- 对每个任务，先打开 codex_task_file。
+- 严格按 codex_task.md 的要求执行。
+- 注意：requires_codex、codex_tasks、codex_task_file 是当前项目里的字段名，不代表只能用 Codex。
+
+当 phase 是 needs_codex_selection：
+- 阅读 run 目录里的 codex_brief.json。
+- 如果 refined_candidates.json 存在，也一起参考。
+- 选择适合发布的片段。
+- 写入 selected_clips.json。
+- 写完后运行：
 
   .venv/bin/live-clipper render <run_dir>/selected_clips.json
 
-- If the phase is `failed_needs_codex`, inspect the log tail and run directory. Prefer a safe resume command when the failure is retryable. Do not delete source recordings.
-- If the phase is `cleanup_ready`, run cleanup preview first:
+当 phase 是 failed_needs_codex：
+- 查看日志尾部和 run 目录已有文件。
+- 优先判断能否安全 resume。
+- 不要删除原始视频。
+- 给出明确的恢复命令或人工处理建议。
+
+当 phase 是 cleanup_ready：
+- 先运行：
 
   .venv/bin/live-clipper cleanup <run_dir>
 
-  Only run cleanup with `--confirm` if the preview says it will delete local input copies or intermediate files and preserve the original recording.
+- 只有确认预演结果只会删除本地副本和中间文件、不会删除原始录制时，才可以运行带 --confirm 的清理命令。
 
-Output:
-- Summarize every run you touched.
-- List files created or modified.
-- Include any commands that should be retried manually.
+输出要求：
+- 用中文总结处理了哪些 run。
+- 列出创建或修改的文件。
+- 如果有需要我人工确认的地方，明确写出来。
 ```
 
-Codex 的介入信号是文件状态：
+Agent 的介入信号是文件状态：
 
 - `codex_brief.json` 已存在；
 - `selected_clips.json` 不存在；
@@ -281,7 +317,7 @@ Codex 的介入信号是文件状态：
 
 用户可以通过三个地方感知：
 
-- Codex 定时任务输出中的 `requires_codex: true`；
+- 当前 Agent 定时任务输出中的 `requires_codex: true`；
 - run 目录里的 `codex_task.md`；
 - Web 控制台里的 `Codex 选择` 等待状态。
 
@@ -334,4 +370,3 @@ cp glossary/common_terms.example.json glossary/common_terms.json
 .venv/bin/python -m pytest
 .venv/bin/python -m build
 ```
-

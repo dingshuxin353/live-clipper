@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 import shutil
+from pathlib import Path
 
+from .ai_guide import AI_ASSISTANT_GUIDE
 from .automation import DEFAULT_NAS_DIR, check_automation_runs, start_latest_recording_job
 from .build_codex_brief import (
     build_codex_brief_file,
@@ -30,8 +31,16 @@ from .video import extract_audio
 from .web import WebPaths, run_web_server
 from .windows import write_windows_file
 
-
 SUPPORTED_VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".m4v"}
+
+ENV_TEMPLATE = """# live-clipper environment
+#
+# 不要把真实 API key 粘贴到聊天窗口。请只在本机 .env 文件里填写。
+
+CHEAP_MODEL_API_KEY=
+ASR_API_KEY=
+HF_TOKEN=
+"""
 
 
 def emit_progress(message: str) -> None:
@@ -57,6 +66,113 @@ def run_prompts_export(output_dir: Path = Path("prompts.local"), *, force: bool 
     return exported
 
 
+def run_ai_guide(output_path: Path | None = None) -> str:
+    text = AI_ASSISTANT_GUIDE.rstrip() + "\n"
+    if output_path is None:
+        print(text, end="")
+    else:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(text, encoding="utf-8")
+        emit_progress(f"[说明] 已写入 AI 使用说明: {output_path}")
+    return text
+
+
+def run_setup(
+    *,
+    config_path: Path = Path("live-clipper.toml"),
+    env_path: Path = Path(".env"),
+    prompts_dir: Path = Path("prompts.local"),
+    force_config: bool = False,
+    force_prompts: bool = False,
+) -> dict[str, object]:
+    created_dirs = []
+    for directory in [
+        Path("input"),
+        Path("output"),
+        Path("work"),
+        Path("work") / "cache",
+        Path("work") / "logs",
+        Path("work") / "automation_state",
+        prompts_dir,
+    ]:
+        ensure_dir(directory)
+        created_dirs.append(str(directory))
+
+    config_written = False
+    if force_config or not config_path.exists():
+        write_default_config(config_path, overwrite=force_config)
+        config_written = True
+        emit_progress(f"[初始化] 已写入配置模板: {config_path}")
+    else:
+        emit_progress(f"[初始化] 已保留已有配置: {config_path}")
+
+    env_written = False
+    if not env_path.exists():
+        env_path.write_text(ENV_TEMPLATE, encoding="utf-8")
+        env_written = True
+        emit_progress(f"[初始化] 已写入 .env 模板: {env_path}")
+    else:
+        emit_progress(f"[初始化] 已保留已有 .env: {env_path}")
+
+    prompt_files = sorted(prompts_dir.glob("*.md"))
+    prompts_exported = False
+    if force_prompts or not prompt_files:
+        export_prompts(prompts_dir, overwrite=force_prompts)
+        prompts_exported = True
+        emit_progress(f"[初始化] 已导出提示词模板: {prompts_dir}")
+    else:
+        emit_progress(f"[初始化] 已保留已有提示词目录: {prompts_dir}")
+
+    emit_progress("[初始化] 不要把 API key 粘贴到聊天窗口；请只写入本机 .env 文件。")
+    emit_progress("[初始化] 下一步建议运行: .venv/bin/live-clipper doctor")
+    return {
+        "config_path": str(config_path),
+        "env_path": str(env_path),
+        "prompts_dir": str(prompts_dir),
+        "created_dirs": created_dirs,
+        "config_written": config_written,
+        "env_written": env_written,
+        "prompts_exported": prompts_exported,
+    }
+
+
+def _friendly_next_step(next_step: str) -> str:
+    if "selected_clips.json" in next_step and "审阅" in next_step:
+        return "等待 Codex 或人工选片：阅读 codex_brief.json，写入 selected_clips.json。"
+    if "render" in next_step:
+        return "可以渲染：运行 render 生成成片。"
+    if "refine" in next_step:
+        return "可以复评：运行 refine 提升候选质量，或直接 brief 生成审阅包。"
+    if next_step == "已完成":
+        return "已完成：到 clips 目录查看成片。"
+    return next_step
+
+
+def run_next(output_root: Path = Path("output")) -> dict[str, object]:
+    run_dirs = sorted(
+        [path for path in output_root.iterdir() if path.is_dir()] if output_root.exists() else [],
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    reports = [build_run_status(run_dir, write_report=False) for run_dir in run_dirs]
+    actionable = [report for report in reports if report["next_step"] != "已完成"]
+
+    if not reports:
+        emit_progress("[下一步] 还没有发现处理任务。请先把视频放进 input/，然后运行 scan。")
+    else:
+        visible_reports = actionable or reports[:1]
+        emit_progress(f"[下一步] 当前发现 {len(actionable)} 个任务需要处理。")
+        for report in visible_reports:
+            emit_progress(f"[下一步] 任务目录: {report['run_dir']}")
+            emit_progress(f"[下一步] 建议动作: {_friendly_next_step(str(report['next_step']))}")
+
+    return {
+        "output_root": str(output_root),
+        "actionable_count": len(actionable),
+        "runs": actionable or reports[:1],
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="live-clipper")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -72,6 +188,18 @@ def build_parser() -> argparse.ArgumentParser:
     prompts_export = prompts_subparsers.add_parser("export", help="Export packaged prompts for local editing.")
     prompts_export.add_argument("--output", type=Path, default=Path("prompts.local"))
     prompts_export.add_argument("--force", action="store_true", help="Overwrite existing prompt files.")
+
+    guide = subparsers.add_parser("guide", help="Print beginner-friendly usage guides.")
+    guide_subparsers = guide.add_subparsers(dest="guide_command", required=True)
+    guide_ai = guide_subparsers.add_parser("ai", help="Print the Chinese AI assistant setup guide.")
+    guide_ai.add_argument("--output", type=Path, default=None, help="Write the guide to a markdown file.")
+
+    setup = subparsers.add_parser("setup", help="Create beginner-friendly local config, folders, and prompt templates.")
+    setup.add_argument("--force-config", action="store_true", help="Overwrite live-clipper.toml.")
+    setup.add_argument("--force-prompts", action="store_true", help="Overwrite files in prompts.local.")
+
+    next_step = subparsers.add_parser("next", help="Explain the next action for output runs.")
+    next_step.add_argument("--output-root", type=Path, default=Path("output"))
 
     doctor = subparsers.add_parser("doctor", help="Check local deployment readiness.")
     doctor.add_argument("--input-dir", type=Path, default=Path("input"))
@@ -364,7 +492,7 @@ def run_pipeline(
         brief_kwargs = {"prompt_dir": prompt_dir} if prompt_dir else {}
         run_brief(run_dir, source="merged", **brief_kwargs)
     build_run_status(run_dir)
-    emit_progress(f"[流水线] 阶段完成: 已生成候选包, 下一步审阅 codex_brief.json 并写入 selected_clips.json")
+    emit_progress("[流水线] 阶段完成: 已生成候选包, 下一步审阅 codex_brief.json 并写入 selected_clips.json")
     return run_dir
 
 
@@ -459,6 +587,15 @@ def main() -> None:
         if args.prompts_command == "export":
             exported = run_prompts_export(args.output, force=args.force)
             print(json.dumps([str(path) for path in exported], ensure_ascii=False, indent=2))
+    elif args.command == "guide":
+        if args.guide_command == "ai":
+            run_ai_guide(args.output)
+    elif args.command == "setup":
+        report = run_setup(force_config=args.force_config, force_prompts=args.force_prompts)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    elif args.command == "next":
+        report = run_next(args.output_root)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
     elif args.command == "doctor":
         report = run_doctor(args.input_dir)
         print(json.dumps(report, ensure_ascii=False, indent=2))
