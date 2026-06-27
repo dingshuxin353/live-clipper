@@ -100,6 +100,8 @@ class CheapModelClient:
         self.timeout = timeout
         self.request_attempts = request_attempts
         self.retry_delay_seconds = retry_delay_seconds
+        self.failure_log_mode = settings.privacy.failure_log_mode
+        self.failure_log_max_chars = settings.privacy.failure_log_max_chars
 
     def complete_json(
         self,
@@ -182,12 +184,26 @@ class CheapModelClient:
         response_payload: Any | None = None,
         attempt: int | None = None,
     ) -> None:
-        payload = {
-            "model": self.model,
-            "system_prompt": system_prompt,
-            "user_payload": user_payload,
-            "content": content,
-        }
+        if self.failure_log_mode == "disabled":
+            return
+        if self.failure_log_mode == "full":
+            payload = {
+                "model": self.model,
+                "system_prompt": system_prompt,
+                "user_payload": user_payload,
+                "content": content,
+            }
+        else:
+            payload = {
+                "model": self.model,
+                "system_prompt": "[redacted]",
+                "user_payload": "[redacted]",
+                "content": "[redacted]" if content else "",
+                "redaction": {
+                    "mode": self.failure_log_mode,
+                    "max_chars": self.failure_log_max_chars,
+                },
+            }
         if attempt is not None:
             payload["attempt"] = attempt
             payload["request_attempts"] = self.request_attempts

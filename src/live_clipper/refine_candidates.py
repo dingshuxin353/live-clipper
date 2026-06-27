@@ -71,11 +71,12 @@ def refine_candidates_file(
     client: Any,
     *,
     top_n: int = 25,
+    prompt_dir: Path | None = None,
 ) -> list[dict[str, Any]]:
     if top_n <= 0:
         raise ValueError("top_n must be greater than 0")
 
-    system_prompt = load_prompt("cheap_refine_candidate.md", "cheap candidate refinement prompt")
+    system_prompt = load_prompt("cheap_refine_candidate.md", "cheap candidate refinement prompt", prompt_dir=prompt_dir)
     candidates = [ClipCandidate.model_validate(item) for item in read_json(candidates_path)]
     transcript = CorrectedTranscript.model_validate(read_json(transcript_path))
     ranked = sorted(candidates, key=lambda item: (-item.score, item.start, item.end))[:top_n]

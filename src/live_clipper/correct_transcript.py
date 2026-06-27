@@ -87,6 +87,7 @@ def correct_transcript_file(
     batch_size: int = DEFAULT_CORRECTION_BATCH_SIZE,
     *,
     resume: bool = False,
+    prompt_dir: Path | None = None,
 ) -> CorrectedTranscript:
     if batch_size <= 0:
         raise ValueError("Transcript correction batch_size must be greater than 0")
@@ -94,7 +95,7 @@ def correct_transcript_file(
     raw = read_json(raw_transcript_path)
     sentences = transcript_sentences_from_raw(raw)
     glossary = load_glossary(glossary_path)
-    system_prompt = load_prompt("cheap_correct_transcript.md", "cheap transcript correction prompt")
+    system_prompt = load_prompt("cheap_correct_transcript.md", "cheap transcript correction prompt", prompt_dir=prompt_dir)
     glossary_payload = [term.model_dump() for term in glossary]
     checkpoint_path = correction_checkpoint_path(output_path)
     if resume and checkpoint_path.exists():

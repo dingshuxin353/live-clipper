@@ -6,6 +6,13 @@ __pycache__/
 build/
 dist/
 .DS_Store
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+*.log
+.worktrees/
+worktrees/
 
 input/*
 !input/.gitkeep

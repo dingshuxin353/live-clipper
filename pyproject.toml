@@ -8,18 +8,52 @@ version = "0.1.0"
 description = "CLI pipeline for extracting highlight clips from livestream recordings."
 readme = "README.md"
 requires-python = ">=3.11"
+license = "MIT"
+authors = [
+  {name = "live-clipper contributors"},
+]
+keywords = ["video", "clips", "livestream", "transcription", "ffmpeg", "llm"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: End Users/Desktop",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Multimedia :: Video",
+  "Topic :: Utilities",
+]
 dependencies = [
-  "mlx-whisper>=0.4.2",
   "python-dotenv>=1.0.1",
   "pydantic>=2.8.0",
   "requests>=2.32.0",
   "socksio>=1.0.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/live-clipper/live-clipper"
+Issues = "https://github.com/live-clipper/live-clipper/issues"
+Documentation = "https://github.com/live-clipper/live-clipper#readme"
+
 [project.optional-dependencies]
-dev = [
-  "pytest>=8.0.0",
+mlx = [
+  "mlx-whisper>=0.4.2",
 ]
+dev = [
+  "build>=1.2.0",
+  "mlx-whisper>=0.4.2",
+  "pytest>=8.0.0",
+  "ruff>=0.5.0",
+  "twine>=5.0.0",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
 
 [project.scripts]
 live-clipper = "live_clipper.cli:main"

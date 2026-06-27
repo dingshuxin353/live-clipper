@@ -18,6 +18,7 @@ def build_codex_brief_file(
     *,
     source_name: str,
     context_seconds: int = 5,
+    prompt_dir: Path | None = None,
 ) -> dict[str, Any]:
     raw_candidates = read_json(candidates_path)
     candidates = [ClipCandidate.model_validate(item) for item in raw_candidates]
@@ -45,7 +46,7 @@ def build_codex_brief_file(
 
     brief = {
         "source_name": source_name,
-        "review_instructions": load_prompt("codex_select_clips.md", "Codex selection prompt"),
+        "review_instructions": load_prompt("codex_select_clips.md", "Codex selection prompt", prompt_dir=prompt_dir),
         "expected_output": {
             "path": "selected_clips.json",
             "type": "array",

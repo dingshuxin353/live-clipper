@@ -36,6 +36,27 @@ def test_transcribe_audio_writes_mlx_whisper_raw_json(tmp_path, monkeypatch):
     assert calls == [(str(audio), "mlx-community/whisper-large-v3-turbo", "zh")]
 
 
+def test_transcribe_audio_uses_configured_auto_language(tmp_path, monkeypatch):
+    audio = tmp_path / "audio.wav"
+    output = tmp_path / "transcript_raw.json"
+    audio.write_bytes(b"wav")
+    calls = []
+
+    def fake_transcribe(path, path_or_hf_repo, language):
+        calls.append((path, path_or_hf_repo, language))
+        return {"segments": []}
+
+    monkeypatch.setattr("live_clipper.transcribe.mlx_whisper.transcribe", fake_transcribe)
+
+    transcribe_audio(
+        audio,
+        output,
+        Settings(asr_backend="mlx_whisper", asr_model="mlx-community/whisper-large-v3-turbo", asr_language="auto"),
+    )
+
+    assert calls == [(str(audio), "mlx-community/whisper-large-v3-turbo", None)]
+
+
 def test_transcribe_audio_writes_openai_compatible_verbose_json(tmp_path, monkeypatch):
     audio = tmp_path / "audio.wav"
     output = tmp_path / "transcript_raw.json"

@@ -5,25 +5,33 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import mlx_whisper
 import requests
 
 from .config import Settings
 from .models import TranscriptSentence
 from .utils import write_json
 
+try:
+    import mlx_whisper
+except ImportError:
+    mlx_whisper = None
+
 
 DEFAULT_ASR_MODEL = "mlx-community/whisper-large-v3-turbo"
+DEFAULT_ASR_LANGUAGE = "zh"
 
 
 def transcribe_audio(audio_path: Path, output_json_path: Path, settings: Settings) -> dict[str, Any]:
     backend = settings.asr_backend or "mlx_whisper"
     if backend == "mlx_whisper":
+        if mlx_whisper is None:
+            raise RuntimeError("Install the mlx extra to use ASR_BACKEND=mlx_whisper: pip install 'live-clipper[mlx]'")
         model = settings.asr_model or DEFAULT_ASR_MODEL
+        language = None if (settings.asr_language or "zh") == "auto" else (settings.asr_language or "zh")
         result = mlx_whisper.transcribe(
             str(audio_path),
             path_or_hf_repo=model,
-            language="zh",
+            language=language,
         )
     elif backend == "openai":
         result = transcribe_audio_openai(audio_path, settings)
@@ -46,6 +54,11 @@ def transcribe_audio_openai(audio_path: Path, settings: Settings) -> dict[str, A
                 "model": model,
                 "response_format": "verbose_json",
                 "timestamp_granularities[]": "segment",
+                **(
+                    {"language": settings.asr_language}
+                    if settings.asr_language and settings.asr_language not in {"auto", DEFAULT_ASR_LANGUAGE}
+                    else {}
+                ),
             },
             files={"file": (audio_path.name, audio_file)},
             timeout=300,

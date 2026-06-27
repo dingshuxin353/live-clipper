@@ -13,7 +13,7 @@ from .status import build_run_status
 from .utils import ensure_dir, read_json, write_json
 
 
-DEFAULT_NAS_DIR = Path("/Volumes/homes/weixiaodan12/录播")
+DEFAULT_NAS_DIR = Path("recordings")
 DEFAULT_STATE_DIR = Path("work") / "automation_state"
 DEFAULT_LOG_DIR = Path("work") / "automation_logs"
 SUPPORTED_VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".m4v"}

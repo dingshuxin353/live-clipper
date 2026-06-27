@@ -13,11 +13,12 @@ from .build_codex_brief import (
 )
 from .cheap_model_client import CheapModelClient, CheapModelServiceError
 from .codex_selection import validate_selected_clips_file
-from .config import load_settings
+from .config import load_settings, write_default_config
 from .correct_transcript import correct_transcript_file
 from .merge_candidates import merge_candidates_file
 from .models import CorrectedTranscript
 from .pipeline import cleanup_local_artifacts, record_pipeline_metadata, stage_source_file
+from .prompt_loader import export_prompts
 from .refine_candidates import refine_candidates_file
 from .render_clips import render_selected_clips
 from .scan_windows import scan_windows_file
@@ -44,9 +45,33 @@ def resolve_glossary_path(glossary_dir: Path = Path("glossary")) -> Path:
     return glossary_dir / "common_terms.example.json"
 
 
+def run_config_init(output_path: Path = Path("live-clipper.toml"), *, force: bool = False) -> Path:
+    path = write_default_config(output_path, overwrite=force)
+    emit_progress(f"[配置] 已写入配置模板: {path}")
+    return path
+
+
+def run_prompts_export(output_dir: Path = Path("prompts.local"), *, force: bool = False) -> list[Path]:
+    exported = export_prompts(output_dir, overwrite=force)
+    emit_progress(f"[提示词] 已导出 {len(exported)} 个提示词到: {output_dir}")
+    return exported
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="live-clipper")
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    config = subparsers.add_parser("config", help="Manage live-clipper configuration.")
+    config_subparsers = config.add_subparsers(dest="config_command", required=True)
+    config_init = config_subparsers.add_parser("init", help="Write a friendly config template.")
+    config_init.add_argument("--output", type=Path, default=Path("live-clipper.toml"))
+    config_init.add_argument("--force", action="store_true", help="Overwrite an existing config file.")
+
+    prompts = subparsers.add_parser("prompts", help="Manage editable prompt templates.")
+    prompts_subparsers = prompts.add_subparsers(dest="prompts_command", required=True)
+    prompts_export = prompts_subparsers.add_parser("export", help="Export packaged prompts for local editing.")
+    prompts_export.add_argument("--output", type=Path, default=Path("prompts.local"))
+    prompts_export.add_argument("--force", action="store_true", help="Overwrite existing prompt files.")
 
     doctor = subparsers.add_parser("doctor", help="Check local deployment readiness.")
     doctor.add_argument("--input-dir", type=Path, default=Path("input"))
@@ -64,6 +89,7 @@ def build_parser() -> argparse.ArgumentParser:
     pipeline.add_argument("--correct-transcript", action="store_true", help="Use Agnes transcript correction instead of raw ASR.")
     pipeline.add_argument("--refine", action="store_true", help="Run Agnes refinement before building brief.")
     pipeline.add_argument("--top-n", type=int, default=25)
+    pipeline.add_argument("--prompt-dir", type=Path, default=None)
 
     scan = subparsers.add_parser("scan", help="Run pipeline up to cheap-model candidate generation.")
     scan.add_argument("video_path", type=Path)
@@ -74,14 +100,17 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Use raw ASR segments as transcript.json and skip cheap-model transcript correction.",
     )
+    scan.add_argument("--prompt-dir", type=Path, default=None)
 
     refine = subparsers.add_parser("refine", help="Use Agnes to re-rank merged candidates before final review.")
     refine.add_argument("run_dir", type=Path)
     refine.add_argument("--top-n", type=int, default=25)
+    refine.add_argument("--prompt-dir", type=Path, default=None)
 
     brief = subparsers.add_parser("brief", help="Build a compact Codex review package.")
     brief.add_argument("run_dir", type=Path)
     brief.add_argument("--source", choices=["merged", "refined"], default="merged")
+    brief.add_argument("--prompt-dir", type=Path, default=None)
 
     render = subparsers.add_parser("render", help="Render clips from selected_clips.json.")
     render.add_argument("selection_path", type=Path)
@@ -193,8 +222,10 @@ def run_scan(
     *,
     resume: bool = False,
     skip_transcript_correction: bool = False,
+    prompt_dir: Path | None = None,
 ) -> Path:
     settings = load_settings()
+    active_prompt_dir = prompt_dir or settings.prompts.directory
     if not video_path.exists():
         raise FileNotFoundError(video_path)
 
@@ -234,6 +265,10 @@ def run_scan(
             "api_base": settings.cheap_model_api_base,
             "model": settings.cheap_model_name,
         },
+        "prompts": {
+            "source": str(active_prompt_dir) if active_prompt_dir else "packaged",
+            "profile": settings.prompts.profile,
+        },
     })
     if needs_audio:
         emit_progress("[扫描] 1/6 提取音频: 开始")
@@ -270,6 +305,7 @@ def run_scan(
             transcript_path,
             client,
             resume=resume,
+            **({"prompt_dir": active_prompt_dir} if active_prompt_dir else {}),
         )
         emit_progress(f"[扫描] 3/6 Agnes校对文字稿: 完成 -> {transcript_path}")
     if not (resume and windows_path.exists()):
@@ -280,7 +316,13 @@ def run_scan(
         emit_progress(f"[扫描] 4/6 生成候选窗口: 复用已有文件 -> {windows_path}")
     if not (resume and cheap_candidates_path.exists()):
         emit_progress("[扫描] 5/6 Agnes粗扫候选片段: 开始")
-        scan_windows_file(windows_path, cheap_candidates_path, client, resume=resume)
+        scan_windows_file(
+            windows_path,
+            cheap_candidates_path,
+            client,
+            resume=resume,
+            **({"prompt_dir": active_prompt_dir} if active_prompt_dir else {}),
+        )
         emit_progress(f"[扫描] 5/6 Agnes粗扫候选片段: 完成 -> {cheap_candidates_path}")
     else:
         emit_progress(f"[扫描] 5/6 Agnes粗扫候选片段: 复用已有文件 -> {cheap_candidates_path}")
@@ -302,27 +344,33 @@ def run_pipeline(
     correct_transcript: bool = False,
     refine: bool = False,
     top_n: int = 25,
+    prompt_dir: Path | None = None,
 ) -> Path:
     local_source_path = stage_source_file(source_path, input_dir=input_dir)
+    scan_kwargs = {"prompt_dir": prompt_dir} if prompt_dir else {}
     run_dir = run_scan(
         local_source_path,
         output_dir,
         resume=True,
         skip_transcript_correction=not correct_transcript,
+        **scan_kwargs,
     )
     record_pipeline_metadata(run_dir, source_path, local_source_path)
     if refine:
-        run_refine(run_dir, top_n=top_n)
-        run_brief(run_dir, source="refined")
+        refine_kwargs = {"prompt_dir": prompt_dir} if prompt_dir else {}
+        run_refine(run_dir, top_n=top_n, **refine_kwargs)
+        run_brief(run_dir, source="refined", **refine_kwargs)
     else:
-        run_brief(run_dir, source="merged")
+        brief_kwargs = {"prompt_dir": prompt_dir} if prompt_dir else {}
+        run_brief(run_dir, source="merged", **brief_kwargs)
     build_run_status(run_dir)
     emit_progress(f"[流水线] 阶段完成: 已生成候选包, 下一步审阅 codex_brief.json 并写入 selected_clips.json")
     return run_dir
 
 
-def run_refine(run_dir: Path, *, top_n: int = 25) -> Path:
+def run_refine(run_dir: Path, *, top_n: int = 25, prompt_dir: Path | None = None) -> Path:
     settings = load_settings()
+    active_prompt_dir = prompt_dir or settings.prompts.directory
     if not settings.cheap_model_api_key:
         raise ValueError("CHEAP_MODEL_API_KEY is required before running refine")
     for required_path in [
@@ -339,11 +387,14 @@ def run_refine(run_dir: Path, *, top_n: int = 25) -> Path:
         output_path,
         client,
         top_n=top_n,
+        **({"prompt_dir": active_prompt_dir} if active_prompt_dir else {}),
     )
     return output_path
 
 
-def run_brief(run_dir: Path, *, source: str = "merged") -> Path:
+def run_brief(run_dir: Path, *, source: str = "merged", prompt_dir: Path | None = None) -> Path:
+    settings = load_settings()
+    active_prompt_dir = prompt_dir or settings.prompts.directory
     if source == "merged":
         candidates_path = run_dir / "merged_candidates.json"
     elif source == "refined":
@@ -359,11 +410,13 @@ def run_brief(run_dir: Path, *, source: str = "merged") -> Path:
         if not required_path.exists():
             raise FileNotFoundError(required_path)
     metadata = read_json(run_dir / "run_metadata.json")
+    build_kwargs = {"prompt_dir": active_prompt_dir} if active_prompt_dir else {}
     brief = build_codex_brief_file(
         candidates_path,
         run_dir / "transcript.json",
         run_dir / "codex_brief.json",
         source_name=metadata["source_name"],
+        **build_kwargs,
     )
     (run_dir / "codex_review.md").write_text(
         build_codex_review_markdown(
@@ -399,7 +452,14 @@ def run_cleanup(run_dir: Path, *, input_dir: Path = Path("input"), confirm: bool
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
-    if args.command == "doctor":
+    if args.command == "config":
+        if args.config_command == "init":
+            run_config_init(args.output, force=args.force)
+    elif args.command == "prompts":
+        if args.prompts_command == "export":
+            exported = run_prompts_export(args.output, force=args.force)
+            print(json.dumps([str(path) for path in exported], ensure_ascii=False, indent=2))
+    elif args.command == "doctor":
         report = run_doctor(args.input_dir)
         print(json.dumps(report, ensure_ascii=False, indent=2))
         if not report["ok"]:
@@ -412,6 +472,7 @@ def main() -> None:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     elif args.command == "pipeline":
         try:
+            pipeline_kwargs = {"prompt_dir": args.prompt_dir} if args.prompt_dir else {}
             run_pipeline(
                 args.source_path,
                 input_dir=args.input_dir,
@@ -419,6 +480,7 @@ def main() -> None:
                 correct_transcript=args.correct_transcript,
                 refine=args.refine,
                 top_n=args.top_n,
+                **pipeline_kwargs,
             )
         except CheapModelServiceError as exc:
             raise SystemExit(
@@ -426,11 +488,13 @@ def main() -> None:
             ) from None
     elif args.command == "scan":
         try:
+            scan_kwargs = {"prompt_dir": args.prompt_dir} if args.prompt_dir else {}
             run_scan(
                 args.video_path,
                 args.output_dir,
                 resume=args.resume,
                 skip_transcript_correction=args.skip_transcript_correction,
+                **scan_kwargs,
             )
         except CheapModelServiceError as exc:
             raise SystemExit(
@@ -438,13 +502,15 @@ def main() -> None:
             ) from None
     elif args.command == "refine":
         try:
-            run_refine(args.run_dir, top_n=args.top_n)
+            refine_kwargs = {"prompt_dir": args.prompt_dir} if args.prompt_dir else {}
+            run_refine(args.run_dir, top_n=args.top_n, **refine_kwargs)
         except CheapModelServiceError as exc:
             raise SystemExit(
                 f"{exc}\n请用相同参数重新运行 refine，继续重试 Agnes 复评。"
             ) from None
     elif args.command == "brief":
-        run_brief(args.run_dir, source=args.source)
+        brief_kwargs = {"prompt_dir": args.prompt_dir} if args.prompt_dir else {}
+        run_brief(args.run_dir, source=args.source, **brief_kwargs)
     elif args.command == "render":
         run_render(args.selection_path)
     elif args.command == "cleanup":

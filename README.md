@@ -1,163 +1,135 @@
 # live-clipper
 
-Local CLI pipeline for turning long livestream recordings into reviewable clip candidates and rendered highlights.
+本地直播切片流水线：把长直播录制转成可审阅的候选片段，再渲染成短视频高光。
 
-## Handoff Notes
+English readers can start from [docs/README.en.md](docs/README.en.md). 当前主文档以中文为准。
 
-See [docs/session-handoff.md](docs/session-handoff.md) for the current design summary, decisions, and next steps.
+## 它解决什么问题
 
-## First MVP
+`live-clipper` 适合创作者、运营或内容团队在本机处理长视频：
 
-The first version keeps the expensive judgment step small:
+1. 从直播录制提取音频。
+2. 生成带时间戳的转录。
+3. 用 OpenAI-compatible LLM 做 ASR 校对、候选扫描和可选复评。
+4. 生成候选审阅包。
+5. 由 Codex 或人工写入最终选择。
+6. 用 `ffmpeg` 渲染成片和字幕。
 
-1. Extract audio from a livestream recording.
-2. Transcribe audio with sentence-level timestamps into `transcript_raw.json`.
-3. Use the cheap model and a maintained glossary to correct ASR errors into `transcript.json`.
-4. Split the corrected transcript into overlapping 3-5 minute windows.
-5. Use a cheap model API to scan windows and produce clip candidates.
-6. Merge duplicate or overlapping candidates.
-7. Build a compact `codex_brief.json` for Codex review.
-8. Save final selections in `selected_clips.json`.
-9. Render selected clips with `ffmpeg`.
+默认产物都写在本地目录。只有当你配置云端 ASR 或 LLM 服务时，音频或转录文本才会发送到对应服务。详见 [docs/privacy.md](docs/privacy.md)。
 
-## Project Layout
+## 快速开始
 
-```text
-live-clipper/
-  input/
-    .gitkeep
+准备 Python 3.11+ 和 `ffmpeg`。
 
-  output/
-    .gitkeep
-
-  glossary/
-    common_terms.example.json
-
-  src/
-    live_clipper/
-      __init__.py
-      __main__.py
-      cli.py
-      config.py
-      models.py
-      video.py
-      transcribe.py
-      correct_transcript.py
-      windows.py
-      cheap_model_client.py
-      scan_windows.py
-      merge_candidates.py
-      build_codex_brief.py
-      codex_selection.py
-      render_clips.py
-      subtitles.py
-      smoke.py
-      prompt_loader.py
-      utils.py
-      prompts/
-        cheap_correct_transcript.md
-        cheap_scan_window.md
-        cheap_refine_candidate.md
-        cheap_reverse_review.md
-        codex_select_clips.md
-
-  work/
-    cache/
-      .gitkeep
-    logs/
-      .gitkeep
+```bash
+python -m venv .venv
+.venv/bin/python -m pip install -e '.[dev]'
+cp .env.example .env
+.venv/bin/live-clipper config init
+.venv/bin/live-clipper prompts export --output prompts.local
+.venv/bin/live-clipper smoke
 ```
 
-## Commands
+如果使用 Apple Silicon 本地 ASR，安装时可使用 MLX extra：
+
+```bash
+.venv/bin/python -m pip install -e '.[dev,mlx]'
+```
+
+`smoke` 会生成合成视频并跑完整本地链路，不调用远程 ASR 或 LLM。
+
+## 常用命令
 
 ```bash
 .venv/bin/live-clipper doctor
 .venv/bin/live-clipper smoke
 .venv/bin/live-clipper scan input/week_023_live.mp4 --output-dir output/week_023
 .venv/bin/live-clipper scan input/week_023_live.mp4 --output-dir output/week_023 --resume
-.venv/bin/live-clipper brief output/week_023
+.venv/bin/live-clipper refine output/week_023
+.venv/bin/live-clipper brief output/week_023 --source refined
 .venv/bin/live-clipper render output/week_023/selected_clips.json
+.venv/bin/live-clipper cleanup output/week_023
 ```
 
-`doctor` checks local deployment readiness and exits non-zero when required items are missing. `smoke` runs a synthetic local pipeline check without ASR or cheap-model API calls. `scan` runs the batch pipeline up to candidate generation. `scan --resume` reuses existing intermediate files in the output directory after an interrupted run. `brief` builds the Codex review package. `render` renders clips from the reviewed selection file.
+命令说明：
 
-## Local Setup
+- `doctor`: 检查 ffmpeg、输入视频、ASR 和 LLM 配置。
+- `smoke`: 本地烟测。
+- `scan`: 生成音频、转录、窗口和候选。
+- `scan --resume`: 复用已有中间文件，从断点继续。
+- `refine`: 用 LLM 对候选做二次复评。
+- `brief`: 生成 `codex_brief.json`、`codex_review.md` 和 `selected_clips.template.json`。
+- `render`: 根据 `selected_clips.json` 渲染成片。
+- `cleanup`: 预演或清理本地中间大文件。
 
-Use Python 3.11+ and install the project in editable mode:
+## 配置
+
+推荐用统一配置文件管理非敏感项：
 
 ```bash
-uv venv --python /Users/gouzi/.local/bin/python3.11 .venv
-uv pip install --python .venv/bin/python -e '.[dev]'
+.venv/bin/live-clipper config init
 ```
 
-`ffmpeg` must be available on `PATH`.
+这会生成 `live-clipper.toml`。API key 仍建议放在 `.env` 或 shell 环境变量里。
 
-The MVP has defaults for the local ASR backend and Agnes model endpoint. The only required secret for the cheap-model stages is:
+最常用配置：
+
+```toml
+[paths]
+input_dir = "input"
+output_root = "output"
+
+[asr]
+backend = "mlx_whisper"
+model = "mlx-community/whisper-large-v3-turbo"
+language = "zh"
+
+[llm]
+api_base = "https://apihub.agnes-ai.com/v1"
+api_key_env = "CHEAP_MODEL_API_KEY"
+model = "agnes-2.0-flash"
+
+[prompts]
+directory = "prompts.local"
+
+[privacy]
+failure_log_mode = "redacted"
+```
+
+更多说明见 [docs/configuration.md](docs/configuration.md)。
+
+## 提示词自定义
+
+导出默认提示词：
 
 ```bash
-export CHEAP_MODEL_API_KEY="your_agnes_key"
+.venv/bin/live-clipper prompts export --output prompts.local
 ```
 
-Optional Hugging Face authentication can speed up first-time model downloads:
+编辑 `prompts.local/*.md` 后，在 `live-clipper.toml` 中启用：
+
+```toml
+[prompts]
+directory = "prompts.local"
+```
+
+也可以对单次命令指定：
 
 ```bash
-export HF_TOKEN="your_huggingface_token"
+.venv/bin/live-clipper scan input/week_023_live.mp4 --prompt-dir prompts.local
 ```
 
-Default runtime values:
+当前运行会在 `run_metadata.json` 中记录提示词来源。详见 [docs/prompts.md](docs/prompts.md)。
 
-```text
-ASR_BACKEND=mlx_whisper
-ASR_MODEL=mlx-community/whisper-large-v3-turbo
-CHEAP_MODEL_API_BASE=https://apihub.agnes-ai.com/v1
-CHEAP_MODEL_NAME=agnes-2.0-flash
-```
+## 完整流程
 
-Cloud ASR fallback is available when local transcription is not practical:
-
-```bash
-export ASR_BACKEND=openai
-export ASR_API_BASE=https://api.openai.com/v1
-export ASR_API_KEY="your_openai_key"
-export ASR_MODEL=whisper-1
-```
-
-When `ASR_BACKEND=openai` and `ASR_MODEL` is not set, the CLI defaults to `whisper-1`.
-
-## MVP Run Flow
-
-Check the local environment before a long run:
-
-```bash
-.venv/bin/live-clipper doctor
-```
-
-The report is JSON so it can be read by humans or automation. Required checks are `ffmpeg`, at least one supported input video, `CHEAP_MODEL_API_KEY`, cheap-model config, and ASR config. Missing `HF_TOKEN` is reported as a warning because downloads can still work unauthenticated.
-The glossary check is informational: the CLI prefers `glossary/common_terms.json` and falls back to `glossary/common_terms.example.json` when the editable file has not been created yet.
-
-Run a local smoke test before using a real recording:
-
-```bash
-.venv/bin/live-clipper smoke
-```
-
-This creates a synthetic video and fixture transcript under `work/smoke/`, builds `codex_brief.json`, writes a minimal `selected_clips.json`, and renders one clip. It does not call ASR or the cheap model API.
-
-Run scan:
+运行扫描：
 
 ```bash
 .venv/bin/live-clipper scan input/week_023_live.mp4 --output-dir output/week_023
 ```
 
-If a long scan fails after producing some files, resume from the existing output directory:
-
-```bash
-.venv/bin/live-clipper scan input/week_023_live.mp4 --output-dir output/week_023 --resume
-```
-
-`--resume` skips existing `audio.wav`, `transcript_raw.json`, `transcript.json`, `windows.json`, `cheap_candidates.json`, and `merged_candidates.json` as applicable. During cheap-model transcript correction, completed batches are checkpointed to `transcript.partial.json`; during cheap-model window scanning, completed windows are checkpointed to `cheap_candidates.partial.json`. A resumed scan continues from these checkpoints when the final `transcript.json` or `cheap_candidates.json` has not been completed yet. If `transcript.json` and `cheap_candidates.json` already exist, resume can finish local-only stages such as window regeneration or candidate merge without calling the cheap model again.
-
-Expected files:
+典型输出：
 
 ```text
 output/week_023/
@@ -170,13 +142,19 @@ output/week_023/
   merged_candidates.json
 ```
 
-Build the compact Codex review package:
+可选复评：
 
 ```bash
-.venv/bin/live-clipper brief output/week_023
+.venv/bin/live-clipper refine output/week_023
 ```
 
-This writes:
+生成审阅包：
+
+```bash
+.venv/bin/live-clipper brief output/week_023 --source refined
+```
+
+这会写入：
 
 ```text
 output/week_023/
@@ -185,11 +163,13 @@ output/week_023/
   selected_clips.template.json
 ```
 
-Open `codex_review.md` when handing the candidate package to Codex. It points to `codex_brief.json` and restates the required `selected_clips.json` output contract.
-Use `selected_clips.template.json` as a copyable starting point, then save the reviewed result as `selected_clips.json`. Each `clip_id` may be selected at most once, and IDs must stay filename-safe: letters, numbers, dots, underscores, or hyphens only.
-Candidate IDs are validated as unique before merge output, brief generation, and final selection validation so older or hand-edited files fail before ambiguous review or rendering.
+当 Codex 或人工写入 `selected_clips.json` 后，渲染：
 
-After Codex or a human creates `selected_clips.json`, render clips:
+```bash
+.venv/bin/live-clipper render output/week_023/selected_clips.json
+```
+
+`selected_clips.json` 示例：
 
 ```json
 [
@@ -203,37 +183,135 @@ After Codex or a human creates `selected_clips.json`, render clips:
 ]
 ```
 
-```bash
-.venv/bin/live-clipper render output/week_023/selected_clips.json
-```
+`remove_ranges` 会在渲染时移除片段内部的小段内容。范围必须在 `source_start` 和 `source_end` 内，不能重叠，并且不能删空整个片段。
 
-This writes:
+## Codex 定时自动化
+
+无人值守流程建议用 Codex 定时任务做编排。`live-clipper` 负责确定性的本地工作，并在需要判断时写出明确文件。
+
+建议拆成两个定时任务：
+
+1. **录制检测任务**：寻找新的稳定录制文件，并启动后台流水线。
+2. **Codex 决策任务**：检查已完成或失败的 run，读取 `codex_task.md`，执行选片、渲染、失败诊断或清理预演。
+
+不要把两件事塞进一个大提示词。录制检测可以围绕直播结束后的时间段运行；Codex 决策可以在处理窗口内更频繁运行。
+
+推荐时间：
+
+- 录制检测任务：直播结束后几个小时内，每 30-60 分钟运行一次。
+- Codex 决策任务：预计录制被拾取后，每 15-30 分钟运行一次。
+- 非发布日可以暂停两个定时任务。
+
+### 定时任务 1：录制检测
+
+在 Codex 中创建一个定时任务，工作目录选择本项目目录。
+
+提示词模板：
 
 ```text
-output/week_023/
-  edit_decision_list.json
-  subtitles/
-  clips/
+You are maintaining the live-clipper workspace.
+
+Check whether there is a new stable recording and start the local pipeline if appropriate.
+
+Run:
+
+  .venv/bin/live-clipper automation start-latest \
+    --source-dir /path/to/recordings \
+    --input-dir input \
+    --output-root output \
+    --since-hours 36 \
+    --min-age-minutes 10 \
+    --top-n 25
+
+Rules:
+- Do not start a duplicate job if the command reports that a matching run is already running or already has a candidate package.
+- Do not delete or modify original recordings in the source directory.
+- If a job starts, report the run directory, state file, log file, and PID.
+- If no recording is ready, report the command result briefly.
+- If the command fails, inspect the error and summarize the next manual action.
 ```
 
-`remove_ranges` are applied during rendering by keeping the remaining source segments and concatenating them into the final clip. Kept segments are re-encoded with reset timestamps before concatenation so the final MP4 has stable stream timing. SRT subtitles are written on the final post-removal timeline. `edit_decision_list.json` records whether ranges were applied.
-Remove ranges must stay inside the selected clip, must not overlap, and must leave at least one kept segment.
+把 `/path/to/recordings` 替换成你的录制目录。如果希望先做转录校对，追加 `--correct-transcript`。如果想跳过复评，追加 `--no-refine`。
 
-## Transcript Correction
+### 定时任务 2：Codex 决策
 
-ASR output should be kept as `transcript_raw.json`. The correction stage uses the cheap model plus `glossary/common_terms.json` to produce `transcript.json`.
+创建第二个 Codex 定时任务，工作目录同样选择本项目目录。
 
-This stage sends transcript sentences to the cheap model in bounded batches. It should preserve timestamps and sentence boundaries whenever possible. It should only correct likely ASR mistakes, especially recurring terms that are common in our livestreams.
+提示词模板：
 
-Create an editable glossary before production runs:
+```text
+You are the Codex decision worker for live-clipper.
+
+First run:
+
+  .venv/bin/live-clipper automation check --output-root output
+
+Read the JSON response carefully.
+
+If `requires_codex` is false:
+- Report that there is currently no Codex action needed.
+- Do not modify files.
+
+For each item in `codex_tasks`:
+- Open `codex_task_file` and follow its instructions.
+- If the phase is `needs_codex_selection`, read the referenced `codex_brief.json` and `refined_candidates.json` when present, choose publishable clips, and write `selected_clips.json` in the run directory.
+- After writing `selected_clips.json`, run:
+
+  .venv/bin/live-clipper render <run_dir>/selected_clips.json
+
+- If the phase is `failed_needs_codex`, inspect the log tail and run directory. Prefer a safe resume command when the failure is retryable. Do not delete source recordings.
+- If the phase is `cleanup_ready`, run cleanup preview first:
+
+  .venv/bin/live-clipper cleanup <run_dir>
+
+  Only run cleanup with `--confirm` if the preview says it will delete local input copies or intermediate files and preserve the original recording.
+
+Output:
+- Summarize every run you touched.
+- List files created or modified.
+- Include any commands that should be retried manually.
+```
+
+Codex 的介入信号是文件状态：
+
+- `codex_brief.json` 已存在；
+- `selected_clips.json` 不存在；
+- `automation check` 标记 run 为 `needs_codex_selection`；
+- run 目录中出现 `codex_task.md`。
+
+用户可以通过三个地方感知：
+
+- Codex 定时任务输出中的 `requires_codex: true`；
+- run 目录里的 `codex_task.md`；
+- Web 控制台里的 `Codex 选择` 等待状态。
+
+## Web 控制台
+
+默认只允许本机访问：
+
+```bash
+.venv/bin/live-clipper web
+```
+
+打开 `http://127.0.0.1:8765`。
+
+如果确实需要局域网访问：
+
+```bash
+.venv/bin/live-clipper web --host 0.0.0.0
+```
+
+不要把 Web 控制台暴露到公网。它包含渲染、清理和删除本地文件的操作。
+
+## 术语表
+
+ASR 校对会优先读取 `glossary/common_terms.json`。首次使用可以复制示例：
 
 ```bash
 cp glossary/common_terms.example.json glossary/common_terms.json
 ```
 
-If `common_terms.json` is missing, `scan` uses `common_terms.example.json` so the first run still has baseline terms.
-
-Example glossary entry:
+示例：
 
 ```json
 {
@@ -242,3 +320,18 @@ Example glossary entry:
   "notes": "OpenAI coding agent product name"
 }
 ```
+
+## 开发与贡献
+
+- 贡献指南：[CONTRIBUTING.md](CONTRIBUTING.md)
+- 安全策略：[SECURITY.md](SECURITY.md)
+- 更新记录：[CHANGELOG.md](CHANGELOG.md)
+- 许可证：[LICENSE](LICENSE)
+
+本地验证：
+
+```bash
+.venv/bin/python -m pytest
+.venv/bin/python -m build
+```
+

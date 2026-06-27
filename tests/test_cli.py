@@ -197,6 +197,37 @@ def test_run_scan_reports_stage_progress_for_resumed_run(tmp_path, monkeypatch, 
     assert f"[扫描] 全部完成: {output_dir}" in output
 
 
+def test_web_command_defaults_to_localhost():
+    args = cli.build_parser().parse_args(["web"])
+
+    assert args.host == "127.0.0.1"
+    assert args.port == 8765
+
+
+def test_web_command_allows_explicit_lan_host():
+    args = cli.build_parser().parse_args(["web", "--host", "0.0.0.0"])
+
+    assert args.host == "0.0.0.0"
+
+
+def test_config_init_writes_default_config(tmp_path):
+    output_path = tmp_path / "live-clipper.toml"
+
+    result = cli.run_config_init(output_path)
+
+    assert result == output_path
+    assert "[paths]" in output_path.read_text(encoding="utf-8")
+
+
+def test_prompts_export_writes_prompt_files(tmp_path):
+    output_dir = tmp_path / "prompts.local"
+
+    exported = cli.run_prompts_export(output_dir)
+
+    assert output_dir / "cheap_scan_window.md" in exported
+    assert (output_dir / "codex_select_clips.md").exists()
+
+
 def test_run_scan_resume_passes_resume_to_window_scan(tmp_path, monkeypatch):
     video_path = tmp_path / "source.mp4"
     output_dir = tmp_path / "run"

@@ -7,7 +7,7 @@ import pytest
 import requests
 
 from live_clipper.cheap_model_client import CheapModelClient, CheapModelServiceError
-from live_clipper.config import Settings
+from live_clipper.config import PrivacyConfig, Settings
 
 
 class FakeResponse:
@@ -89,6 +89,7 @@ def test_complete_json_retries_once_when_content_is_not_json(monkeypatch):
         cheap_model_api_base="https://apihub.agnes-ai.com/v1",
         cheap_model_api_key="secret",
         cheap_model_name="agnes-2.0-flash",
+        privacy=PrivacyConfig(failure_log_mode="full"),
     ))
 
     assert client.complete_json("system", {"x": 1}) == {"ok": True}
@@ -114,6 +115,7 @@ def test_complete_json_retries_request_failures_until_success(monkeypatch):
             cheap_model_api_base="https://apihub.agnes-ai.com/v1",
             cheap_model_api_key="secret",
             cheap_model_name="agnes-2.0-flash",
+            privacy=PrivacyConfig(failure_log_mode="full"),
         ),
         retry_delay_seconds=0,
     )
@@ -135,6 +137,7 @@ def test_complete_json_accepts_markdown_json_fence(monkeypatch):
         cheap_model_api_base="https://apihub.agnes-ai.com/v1",
         cheap_model_api_key="secret",
         cheap_model_name="agnes-2.0-flash",
+        privacy=PrivacyConfig(failure_log_mode="full"),
     ))
 
     assert client.complete_json("system", {"x": 1}) == {"ok": True}
@@ -153,6 +156,7 @@ def test_complete_json_extracts_json_after_leading_explanation(monkeypatch):
         cheap_model_api_base="https://apihub.agnes-ai.com/v1",
         cheap_model_api_key="secret",
         cheap_model_name="agnes-2.0-flash",
+        privacy=PrivacyConfig(failure_log_mode="full"),
     ))
 
     assert client.complete_json("system", {"x": 1}) == {"ok": True}
@@ -173,6 +177,7 @@ def test_complete_json_writes_failure_log_after_retry(monkeypatch, tmp_path):
         cheap_model_api_base="https://apihub.agnes-ai.com/v1",
         cheap_model_api_key="secret",
         cheap_model_name="agnes-2.0-flash",
+        privacy=PrivacyConfig(failure_log_mode="full"),
     ))
 
     try:
@@ -200,6 +205,7 @@ def test_complete_json_writes_failure_log_for_request_exception(monkeypatch, tmp
             cheap_model_api_base="https://apihub.agnes-ai.com/v1",
             cheap_model_api_key="secret",
             cheap_model_name="agnes-2.0-flash",
+            privacy=PrivacyConfig(failure_log_mode="full"),
         ),
         request_attempts=3,
         retry_delay_seconds=0,
@@ -230,6 +236,7 @@ def test_complete_json_writes_failure_log_for_malformed_response(monkeypatch, tm
         cheap_model_api_base="https://apihub.agnes-ai.com/v1",
         cheap_model_api_key="secret",
         cheap_model_name="agnes-2.0-flash",
+        privacy=PrivacyConfig(failure_log_mode="full"),
     ))
 
     with pytest.raises(ValueError, match="OpenAI-compatible"):
@@ -254,6 +261,7 @@ def test_complete_json_writes_failure_log_for_non_json_http_body(monkeypatch, tm
         cheap_model_api_base="https://apihub.agnes-ai.com/v1",
         cheap_model_api_key="secret",
         cheap_model_name="agnes-2.0-flash",
+        privacy=PrivacyConfig(failure_log_mode="full"),
     ))
 
     with pytest.raises(ValueError, match="invalid json body"):
@@ -265,3 +273,24 @@ def test_complete_json_writes_failure_log_for_non_json_http_body(monkeypatch, tm
     assert log["error_type"] == "ValueError"
     assert log["error"] == "invalid json body"
     assert log["content"] == "<html>not json</html>"
+
+
+def test_client_redacts_failure_payload_by_default(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    client = CheapModelClient(Settings(
+        cheap_model_api_base="https://apihub.agnes-ai.com/v1",
+        cheap_model_api_key="secret",
+        cheap_model_name="agnes-2.0-flash",
+    ))
+
+    client._write_failure_log(
+        "system prompt with private context",
+        {"sentences": [{"text": "private transcript"}]},
+        "private model response",
+    )
+
+    [log_path] = sorted((tmp_path / "work" / "logs").glob("cheap_model_failure_*.json"))
+    log = json.loads(log_path.read_text(encoding="utf-8"))
+    assert log["system_prompt"] == "[redacted]"
+    assert log["user_payload"] == "[redacted]"
+    assert log["content"] == "[redacted]"

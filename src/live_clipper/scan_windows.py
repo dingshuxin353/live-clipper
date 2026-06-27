@@ -74,8 +74,9 @@ def scan_windows_file(
     client: Any,
     *,
     resume: bool = False,
+    prompt_dir: Path | None = None,
 ) -> list[ClipCandidate]:
-    system_prompt = load_prompt("cheap_scan_window.md", "cheap scan prompt")
+    system_prompt = load_prompt("cheap_scan_window.md", "cheap scan prompt", prompt_dir=prompt_dir)
     windows = [TranscriptWindow.model_validate(item) for item in read_json(windows_path)]
     checkpoint_path = scan_checkpoint_path(output_path)
     if resume and checkpoint_path.exists():
