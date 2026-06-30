@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-from . import config_editor, mcp_tools, scheduler, service
+from . import config_editor, mcp_tools, review_automation, scheduler, service
 from .automation import DEFAULT_LOG_DIR, DEFAULT_STATE_DIR, _pid_is_running, check_automation_runs
 from .config import RecordingSourceDefaultConfig, ServiceConfig, Settings, load_settings
 from .pipeline import cleanup_local_artifacts, cleanup_plan
@@ -97,6 +97,7 @@ def _settings_for_paths(paths: WebPaths) -> Settings:
         review=loaded.review,
         render=loaded.render,
         scheduler=loaded.scheduler,
+        review_automation=loaded.review_automation,
     )
 
 
@@ -289,6 +290,7 @@ def build_run_detail(run_id: str, paths: WebPaths | None = None, *, log_lines: i
                 "can_cleanup_preview": (run_dir / "selected_clips.json").exists(),
                 "can_cleanup": bool(detail.get("rendered_clip_count")),
                 "can_delete_local_source": bool(service_run.get("local_source_path")) and bool(detail.get("rendered_clip_count")),
+                "can_ai_review": run.get("phase") == "needs_review" and not (run_dir / "selected_clips.json").exists(),
             },
             "log": mcp_tools.get_run_log(run_id, lines=log_lines, service_dir=paths.service_dir),
         }
@@ -319,6 +321,7 @@ def build_run_detail(run_id: str, paths: WebPaths | None = None, *, log_lines: i
             "can_cleanup_preview": files["selected_clips.json"]["exists"],
             "can_cleanup": files["selected_clips.json"]["exists"] and files["clips"].get("count", 0) > 0,
             "can_delete_local_source": can_delete_local_source and files["clips"].get("count", 0) > 0,
+            "can_ai_review": run.get("phase") == "needs_codex_selection" and not files["selected_clips.json"]["exists"],
         },
         "log": {
             "path": str(log_path) if log_path.exists() else None,
@@ -414,6 +417,13 @@ def handle_api_request(
             return _json_response(scheduler.get_scheduler_status(_settings_for_paths(paths), service_dir=paths.service_dir))
         if method == "GET" and parts == ["api", "scheduler", "events"]:
             return _json_response({"ok": True, "events": scheduler.read_scheduler_events(paths.service_dir)})
+        if method == "GET" and parts == ["api", "review-automation"]:
+            return _json_response(review_automation.get_review_automation_status(_settings_for_paths(paths), service_dir=paths.service_dir))
+        if method == "POST" and parts == ["api", "review-automation", "check"]:
+            return _json_response(review_automation.check_environment(_settings_for_paths(paths)))
+        if method == "POST" and parts == ["api", "review-automation", "run-due"]:
+            payload = review_automation.run_due_ai_reviews(_settings_for_paths(paths), service_dir=paths.service_dir)
+            return _json_response(payload, status=200 if payload.get("ok") else 400)
         if method == "POST" and parts == ["api", "scheduler", "jobs"]:
             payload = _upsert_scheduler_job(paths, (body or {}).get("job", {}))
             return _json_response(payload, status=200 if payload.get("ok") else 400)
@@ -430,6 +440,10 @@ def handle_api_request(
             if service.find_run(parts[2], paths.service_dir):
                 return _json_response(mcp_tools.render_run(parts[2], settings=_settings_for_paths(paths), service_dir=paths.service_dir))
             return _json_response(_render_run(paths.output_root / parts[2]))
+        if method == "POST" and len(parts) == 4 and parts[:2] == ["api", "runs"] and parts[3] == "ai-review":
+            payload = review_automation.run_ai_review_for_run(parts[2], _settings_for_paths(paths), service_dir=paths.service_dir)
+            status = 200 if payload.get("ok") else (404 if payload.get("error_code") == "run_not_found" else 400)
+            return _json_response(payload, status=status)
         if method == "POST" and len(parts) == 4 and parts[:2] == ["api", "runs"] and parts[3] == "cleanup-preview":
             if service.find_run(parts[2], paths.service_dir):
                 return _json_response(mcp_tools.preview_cleanup(parts[2], settings=_settings_for_paths(paths), service_dir=paths.service_dir))

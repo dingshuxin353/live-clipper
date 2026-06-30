@@ -9,6 +9,7 @@ const state = {
   config: null,
   configDirty: false,
   scheduler: null,
+  reviewAutomation: null,
 };
 
 const el = (id) => document.getElementById(id);
@@ -86,12 +87,19 @@ const valueLabels = {
   high: "高风险",
   scan_recordings: "扫描录播",
   review_due_check: "审阅检查",
+  ai_review: "AI 自动审阅",
   maintenance_check: "维护检查",
   weekly: "每周",
   daily: "每天",
   interval_minutes: "每隔 N 分钟",
   success: "成功",
   skipped: "已跳过",
+  local_agent: "本地 Agent",
+  model: "配置模型直连",
+  codex_cli: "Codex CLI",
+  claude_code: "Claude Code",
+  keep_needs_review: "保留待审阅",
+  mark_failed: "标记失败",
 };
 
 const cleanupKindLabels = {
@@ -163,6 +171,7 @@ function renderRunDetail() {
     el("runDetail").innerHTML = '<div class="empty">请选择一个任务。</div>';
     el("renderRunBtn").disabled = true;
     el("cleanupPreviewBtn").disabled = true;
+    el("aiReviewRunBtn").disabled = true;
     return;
   }
   const run = detail.run;
@@ -196,6 +205,7 @@ function renderRunDetail() {
   `;
   el("renderRunBtn").disabled = !detail.actions?.can_render;
   el("cleanupPreviewBtn").disabled = !detail.actions?.can_cleanup_preview;
+  el("aiReviewRunBtn").disabled = !detail.actions?.can_ai_review;
   el("logOutput").textContent = detail.log?.log || detail.log?.tail || "暂无任务日志。";
 }
 
@@ -282,8 +292,13 @@ async function loadScheduler() {
   renderScheduler(state.scheduler);
 }
 
+async function loadReviewAutomation() {
+  state.reviewAutomation = await api("/api/review-automation");
+  renderReviewAutomation(state.reviewAutomation);
+}
+
 async function refreshAll() {
-  await Promise.all([loadService(), loadRuns(), loadConfirmations(), loadEvents(), loadConfig(), loadScheduler()]);
+  await Promise.all([loadService(), loadRuns(), loadConfirmations(), loadEvents(), loadConfig(), loadScheduler(), loadReviewAutomation()]);
 }
 
 function renderConfig(payload) {
@@ -323,6 +338,22 @@ function renderScheduler(payload) {
       </div>
     </div>
   `).join("") || '<div class="empty">还没有定时任务。</div>';
+}
+
+function renderReviewAutomation(payload) {
+  if (!payload?.ok) return;
+  const review = payload.review_automation || {};
+  const environment = payload.environment || {};
+  el("reviewAutomationStatus").innerHTML = [
+    ["AI 审阅状态", review.enabled ? "已启用" : "未启用"],
+    ["审阅方式", labelFor(review.mode)],
+    ["Provider", labelFor(review.provider)],
+    ["Codex CLI", environment.codex_cli?.available ? "可用" : "未检测到"],
+    ["Claude Code", environment.claude_code?.available ? "可用" : "未检测到"],
+    ["LLM API key", environment.llm?.api_key_configured ? "已配置" : "未配置"],
+    ["最近结果", labelFor(review.last_status)],
+    ["最近错误", review.last_error || "-"],
+  ].map(([label, value]) => infoRow(label, value)).join("");
 }
 
 function renderEnvStatus(envStatus) {
@@ -425,6 +456,30 @@ function defaultConfig() {
         skip_if_running: true,
       },
     ],
+    review_automation: {
+      enabled: false,
+      mode: "local_agent",
+      max_runs_per_tick: 1,
+      auto_render_after_selection: true,
+      on_failure: "keep_needs_review",
+      timeout_minutes: 60,
+      prompt_template: "default_clip_review",
+    },
+    review_automation_local_agent: {
+      provider: "codex_cli",
+      command_timeout_minutes: 60,
+      include_review_package_inline: true,
+      allow_agent_file_writes: false,
+    },
+    review_automation_model: {
+      provider: "openai_compatible",
+      use_llm_config: true,
+      model: "",
+      max_candidates: 40,
+      temperature: 0.2,
+      max_tokens: 4096,
+      retry_attempts: 2,
+    },
     web: { host: "127.0.0.1", port: 8765 },
   };
 }
@@ -510,6 +565,10 @@ document.addEventListener("click", async (event) => {
       const result = await post(`/api/runs/${encodeURIComponent(state.selectedRunId)}/cleanup-preview`);
       el("logOutput").textContent = JSON.stringify(result, null, 2);
     }
+    if (event.target.id === "aiReviewRunBtn" && state.selectedRunId) {
+      const result = await post(`/api/runs/${encodeURIComponent(state.selectedRunId)}/ai-review`);
+      el("logOutput").textContent = JSON.stringify(result, null, 2);
+    }
     if (event.target.dataset.approve) await post(`/api/confirmations/${event.target.dataset.approve}/approve`);
     if (event.target.dataset.reject) await post(`/api/confirmations/${event.target.dataset.reject}/reject`, { reason: "在 Web 控制台拒绝" });
     if (event.target.id === "batchApproveBtn") {
@@ -538,6 +597,14 @@ document.addEventListener("click", async (event) => {
     if (event.target.id === "restartServiceBtn") {
       const result = await post("/api/config/restart-service");
       renderConfigNotice([{ message: result.restarted ? "服务已重启。" : "服务未运行，无需重启。" }], "success");
+    }
+    if (event.target.id === "checkReviewAutomationBtn") {
+      const result = await post("/api/review-automation/check");
+      renderConfigNotice([{ message: result.current_mode_available ? "AI 审阅环境可用。" : "当前 AI 审阅环境不可用，请检查 Codex CLI、Claude Code 或 LLM API key。" }], result.current_mode_available ? "success" : "warning");
+    }
+    if (event.target.id === "runDueReviewAutomationBtn") {
+      const result = await post("/api/review-automation/run-due");
+      el("logOutput").textContent = JSON.stringify(result, null, 2);
     }
     if (event.target.id === "saveSchedulerJobBtn") {
       await post("/api/scheduler/jobs", { job: schedulerJobFromForm() });

@@ -524,6 +524,36 @@ V5 增加内置 Scheduler，跟随 `live-clipper service` 运行，不再依赖 
 - V5 的 `review_due_check` 不会自动生成 selected_clips.json，也不会调用 Codex CLI、Claude Code 或模型自动选片。
 - AI 自动审阅将在后续版本配置；当前 V5 只做定时提醒和状态标记。
 
+### V6 AI 自动审阅
+
+V6 增加 AI 自动审阅执行器，用来把 `needs_review` 任务的审阅包转换成经过系统校验的 `selected_clips.json`。默认不会静默启用，必须在 Web `配置` 页的 `AI 审阅` 分区明确打开。
+
+支持三种方式：
+
+- `本地 Agent / Codex CLI`：检测本机 `codex` 命令，使用非交互方式让 Codex 返回选片 JSON。
+- `本地 Agent / Claude Code`：检测本机 `claude` 命令，使用非交互方式让 Claude Code 返回选片 JSON。
+- `配置模型直连`：复用 `[llm]` 的 OpenAI-compatible API 地址、模型名和 API key 环境变量。
+
+执行流程：
+
+1. Scheduler 的任务类型可以选择 `AI 自动审阅`，也可以在 `任务` 页对单个 `needs_review` run 点击 `立即 AI 审阅`。
+2. AI 只返回 JSON 数组，不直接写文件。
+3. `live-clipper` 先写入 `selected_clips.tmp.json`。
+4. 系统调用 `validate_selected_clips_file()` 校验 clip id、时间范围和 remove ranges。
+5. 校验通过后才替换成正式 `selected_clips.json`。
+6. `service` 继续复用已有自动渲染链路。
+
+安全边界：
+
+- AI 不会直接删除文件。
+- AI 不会移动 NAS 原始录播。
+- AI 不会执行 cleanup confirm。
+- AI 不会 approve/reject confirmation。
+- 选片校验失败时会删除临时文件，不会写入 `selected_clips.json`，也不会进入渲染。
+- 页面只展示 API key 环境变量是否已配置，不展示明文 secret。
+
+老用户提示：已有的周日 12:00 `review_due_check` 不会被自动强改成 `AI 自动审阅`。如果你确认要自动选片，请在 `配置` 页编辑该定时任务，把动作类型改为 `AI 自动审阅`，并先用 `测试 AI 审阅环境` 检查本机 Agent 或模型配置。
+
 如果确实需要局域网访问：
 
 ```bash

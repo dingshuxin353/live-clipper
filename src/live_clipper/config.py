@@ -125,6 +125,30 @@ schedule = "weekly"
 day_of_week = "sun"
 time = "12:00"
 skip_if_running = true
+
+[review_automation]
+enabled = false
+mode = "local_agent"
+max_runs_per_tick = 1
+auto_render_after_selection = true
+on_failure = "keep_needs_review"
+timeout_minutes = 60
+prompt_template = "default_clip_review"
+
+[review_automation.local_agent]
+provider = "codex_cli"
+command_timeout_minutes = 60
+include_review_package_inline = true
+allow_agent_file_writes = false
+
+[review_automation.model]
+provider = "openai_compatible"
+use_llm_config = true
+model = ""
+max_candidates = 40
+temperature = 0.2
+max_tokens = 4096
+retry_attempts = 2
 """
 
 
@@ -271,6 +295,38 @@ class SchedulerConfig:
 
 
 @dataclass(frozen=True)
+class ReviewAutomationLocalAgentConfig:
+    provider: str = "codex_cli"
+    command_timeout_minutes: int = 60
+    include_review_package_inline: bool = True
+    allow_agent_file_writes: bool = False
+
+
+@dataclass(frozen=True)
+class ReviewAutomationModelConfig:
+    provider: str = "openai_compatible"
+    use_llm_config: bool = True
+    model: str = ""
+    max_candidates: int = 40
+    temperature: float = 0.2
+    max_tokens: int = 4096
+    retry_attempts: int = 2
+
+
+@dataclass(frozen=True)
+class ReviewAutomationConfig:
+    enabled: bool = False
+    mode: str = "local_agent"
+    max_runs_per_tick: int = 1
+    auto_render_after_selection: bool = True
+    on_failure: str = "keep_needs_review"
+    timeout_minutes: int = 60
+    prompt_template: str = "default_clip_review"
+    local_agent: ReviewAutomationLocalAgentConfig = field(default_factory=ReviewAutomationLocalAgentConfig)
+    model: ReviewAutomationModelConfig = field(default_factory=ReviewAutomationModelConfig)
+
+
+@dataclass(frozen=True)
 class Settings:
     cheap_model_api_base: str | None = None
     cheap_model_api_key: str | None = None
@@ -293,6 +349,7 @@ class Settings:
     review: ReviewConfig = field(default_factory=ReviewConfig)
     render: RenderConfig = field(default_factory=RenderConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
+    review_automation: ReviewAutomationConfig = field(default_factory=ReviewAutomationConfig)
 
     def __post_init__(self) -> None:
         asr_backend = self.asr_backend or (self.asr.backend if self.asr else DEFAULT_ASR_BACKEND)
@@ -380,6 +437,17 @@ def load_settings(config_path: Path | None = None) -> Settings:
     review_data = config.get("review", {})
     render_data = config.get("render", {})
     scheduler_data = config.get("scheduler", {})
+    review_automation_data = config.get("review_automation", {})
+    local_agent_data = (
+        review_automation_data.get("local_agent", {})
+        if isinstance(review_automation_data, dict) and isinstance(review_automation_data.get("local_agent"), dict)
+        else {}
+    )
+    model_data = (
+        review_automation_data.get("model", {})
+        if isinstance(review_automation_data, dict) and isinstance(review_automation_data.get("model"), dict)
+        else {}
+    )
 
     asr_backend = os.getenv("ASR_BACKEND", str(asr_data.get("backend", DEFAULT_ASR_BACKEND)))
     asr_model = os.getenv("ASR_MODEL", str(asr_data.get("model", "")) or None)
@@ -473,6 +541,30 @@ def load_settings(config_path: Path | None = None) -> Settings:
             missed_policy=str(scheduler_data.get("missed_policy", "run_once")),
             state_dir=_path_value(scheduler_data, "state_dir", Path("work") / "service"),
             jobs=_scheduler_jobs(scheduler_data.get("jobs")),
+        ),
+        review_automation=ReviewAutomationConfig(
+            enabled=bool(review_automation_data.get("enabled", False)),
+            mode=str(review_automation_data.get("mode", "local_agent")),
+            max_runs_per_tick=int(review_automation_data.get("max_runs_per_tick", 1)),
+            auto_render_after_selection=bool(review_automation_data.get("auto_render_after_selection", True)),
+            on_failure=str(review_automation_data.get("on_failure", "keep_needs_review")),
+            timeout_minutes=int(review_automation_data.get("timeout_minutes", 60)),
+            prompt_template=str(review_automation_data.get("prompt_template", "default_clip_review")),
+            local_agent=ReviewAutomationLocalAgentConfig(
+                provider=str(local_agent_data.get("provider", "codex_cli")),
+                command_timeout_minutes=int(local_agent_data.get("command_timeout_minutes", 60)),
+                include_review_package_inline=bool(local_agent_data.get("include_review_package_inline", True)),
+                allow_agent_file_writes=bool(local_agent_data.get("allow_agent_file_writes", False)),
+            ),
+            model=ReviewAutomationModelConfig(
+                provider=str(model_data.get("provider", "openai_compatible")),
+                use_llm_config=bool(model_data.get("use_llm_config", True)),
+                model=str(model_data.get("model", "")),
+                max_candidates=int(model_data.get("max_candidates", 40)),
+                temperature=float(model_data.get("temperature", 0.2)),
+                max_tokens=int(model_data.get("max_tokens", 4096)),
+                retry_attempts=int(model_data.get("retry_attempts", 2)),
+            ),
         ),
     )
 

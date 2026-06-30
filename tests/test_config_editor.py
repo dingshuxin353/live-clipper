@@ -76,6 +76,10 @@ def test_load_editable_config_returns_whitelist_and_secret_status(monkeypatch, t
     assert "secret-token" not in str(payload)
     assert payload["config"]["scheduler"]["timezone"] == "Asia/Shanghai"
     assert payload["config"]["scheduler_jobs"][0]["id"] == "weekly_recording_scan"
+    assert payload["config"]["review_automation"]["enabled"] is False
+    assert payload["config"]["review_automation"]["mode"] == "local_agent"
+    assert payload["config"]["review_automation_local_agent"]["provider"] == "codex_cli"
+    assert payload["config"]["review_automation_model"]["provider"] == "openai_compatible"
 
 
 def test_validate_editable_config_rejects_invalid_values_with_chinese_errors(tmp_path):
@@ -96,12 +100,30 @@ def test_validate_editable_config_rejects_invalid_values_with_chinese_errors(tmp
         "service": {"scan_interval_minutes": 0, "cleanup_mode": "delete"},
         "web": {"port": 80},
         "scheduler": {"timezone": "Mars/Base", "tick_seconds": 2, "missed_policy": "catch_all"},
+        "review_automation": {
+            "mode": "remote_agent",
+            "max_runs_per_tick": 0,
+            "on_failure": "delete_run",
+            "timeout_minutes": 0,
+        },
+        "review_automation_local_agent": {
+            "provider": "shell",
+            "command_timeout_minutes": 0,
+            "allow_agent_file_writes": True,
+        },
+        "review_automation_model": {
+            "provider": "anthropic",
+            "max_candidates": 0,
+            "temperature": 3.0,
+            "max_tokens": 128,
+            "retry_attempts": 9,
+        },
         "scheduler_jobs": [
             {
                 "id": "Bad Job!",
                 "name": "",
                 "enabled": True,
-                "type": "ai_review",
+                "type": "delete_all",
                 "schedule": "weekly",
                 "day_of_week": "funday",
                 "time": "25:61",
@@ -131,10 +153,15 @@ def test_validate_editable_config_rejects_invalid_values_with_chinese_errors(tmp
     assert "调度时区无效" in messages
     assert "missed_policy 只能是 run_once 或 skip" in messages
     assert "任务 id 只能使用小写字母" in messages
-    assert "V5 不支持 AI 自动审阅任务" in messages
+    assert "任务类型只能是 scan_recordings、review_due_check、maintenance_check 或 ai_review" in messages
     assert "星期必须是 mon 到 sun" in messages
     assert "时间必须使用 HH:MM 格式" in messages
     assert "间隔分钟数必须在 5 到 1440 之间" in messages
+    assert "AI 审阅方式只能是 local_agent 或 model" in messages
+    assert "失败后处理只能是 keep_needs_review 或 mark_failed" in messages
+    assert "本地 Agent 只能选择 codex_cli 或 claude_code" in messages
+    assert "P0 不允许 Agent 直接写文件" in messages
+    assert "模型直连目前只支持 openai_compatible" in messages
 
 
 def test_save_editable_config_creates_backup_and_writes_loadable_toml(monkeypatch, tmp_path):
@@ -149,6 +176,10 @@ def test_save_editable_config_creates_backup_and_writes_loadable_toml(monkeypatc
     draft["web"]["port"] = 9876
     draft["scheduler"]["timezone"] = "Asia/Tokyo"
     draft["scheduler_jobs"][0]["enabled"] = False
+    draft["review_automation"]["enabled"] = True
+    draft["review_automation"]["mode"] = "model"
+    draft["review_automation_model"]["model"] = "review-model"
+    draft["review_automation_model"]["max_candidates"] = 20
 
     result = save_editable_config(
         draft,
@@ -165,6 +196,10 @@ def test_save_editable_config_creates_backup_and_writes_loadable_toml(monkeypatc
     assert settings.web.port == 9876
     assert settings.scheduler.timezone == "Asia/Tokyo"
     assert settings.scheduler.jobs[0].enabled is False
+    assert settings.review_automation.enabled is True
+    assert settings.review_automation.mode == "model"
+    assert settings.review_automation.model.model == "review-model"
+    assert settings.review_automation.model.max_candidates == 20
     assert result["requires_service_restart"] is True
     assert result["requires_web_restart"] is True
 

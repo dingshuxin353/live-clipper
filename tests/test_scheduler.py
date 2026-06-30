@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from live_clipper import service
+from live_clipper import review_automation, service
 from live_clipper.config import SchedulerConfig, SchedulerJobConfig, Settings
 from live_clipper.scheduler import (
     get_scheduler_status,
@@ -108,7 +108,7 @@ def test_tick_scheduler_skip_if_running_skips_job(tmp_path):
     assert read_json(tmp_path / "scheduler_runs.json")["jobs"]["daily_scan"]["status"] == "skipped"
 
 
-def test_validate_scheduler_job_rejects_v6_ai_review_with_chinese_error():
+def test_validate_scheduler_job_accepts_ai_review_in_v6():
     result = validate_scheduler_job({
         "id": "ai_review",
         "name": "AI 审阅",
@@ -120,8 +120,31 @@ def test_validate_scheduler_job_rejects_v6_ai_review_with_chinese_error():
         "skip_if_running": True,
     })
 
-    assert result["ok"] is False
-    assert "V5 不支持 AI 自动审阅任务" in result["errors"][0]["message"]
+    assert result["ok"] is True
+    assert result["errors"] == []
+
+
+def test_run_ai_review_job_delegates_to_review_automation(monkeypatch, tmp_path):
+    job = SchedulerJobConfig(
+        id="weekly_ai_review",
+        name="每周 AI 审阅",
+        enabled=True,
+        type="ai_review",
+        schedule="weekly",
+        day_of_week="sun",
+        time="12:00",
+    )
+
+    def fake_run_due(settings, service_dir):
+        assert service_dir == tmp_path
+        return {"ok": True, "processed_runs": ["run-1"]}
+
+    monkeypatch.setattr(review_automation, "run_due_ai_reviews", fake_run_due)
+
+    result = run_job_now(job, _settings([job]), service_dir=tmp_path)
+
+    assert result["ok"] is True
+    assert result["result"]["processed_runs"] == ["run-1"]
 
 
 def test_run_scan_recordings_job_calls_existing_service_action(monkeypatch, tmp_path):

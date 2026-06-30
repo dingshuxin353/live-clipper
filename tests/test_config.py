@@ -163,6 +163,12 @@ def test_load_settings_uses_default_scheduler_jobs(monkeypatch, tmp_path):
     assert settings.scheduler.jobs[0].time == "00:00"
     assert settings.scheduler.jobs[1].type == "review_due_check"
     assert settings.scheduler.jobs[1].time == "12:00"
+    assert settings.review_automation.enabled is False
+    assert settings.review_automation.mode == "local_agent"
+    assert settings.review_automation.local_agent.provider == "codex_cli"
+    assert settings.review_automation.local_agent.allow_agent_file_writes is False
+    assert settings.review_automation.model.provider == "openai_compatible"
+    assert settings.review_automation.model.use_llm_config is True
 
 
 def test_load_settings_reads_scheduler_config_from_toml(monkeypatch, tmp_path):
@@ -209,6 +215,54 @@ def test_load_settings_reads_scheduler_config_from_toml(monkeypatch, tmp_path):
     assert settings.scheduler.jobs[1].interval_minutes == 60
 
 
+def test_load_settings_reads_review_automation_config_from_toml(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "live-clipper.toml").write_text(
+        "\n".join([
+            "[review_automation]",
+            "enabled = true",
+            "mode = 'model'",
+            "max_runs_per_tick = 2",
+            "auto_render_after_selection = true",
+            "on_failure = 'mark_failed'",
+            "timeout_minutes = 45",
+            "prompt_template = 'default_clip_review'",
+            "",
+            "[review_automation.local_agent]",
+            "provider = 'claude_code'",
+            "command_timeout_minutes = 30",
+            "include_review_package_inline = false",
+            "allow_agent_file_writes = false",
+            "",
+            "[review_automation.model]",
+            "provider = 'openai_compatible'",
+            "use_llm_config = true",
+            "model = 'review-model'",
+            "max_candidates = 12",
+            "temperature = 0.4",
+            "max_tokens = 2048",
+            "retry_attempts = 3",
+        ]),
+        encoding="utf-8",
+    )
+
+    settings = load_settings()
+
+    assert settings.review_automation.enabled is True
+    assert settings.review_automation.mode == "model"
+    assert settings.review_automation.max_runs_per_tick == 2
+    assert settings.review_automation.on_failure == "mark_failed"
+    assert settings.review_automation.timeout_minutes == 45
+    assert settings.review_automation.local_agent.provider == "claude_code"
+    assert settings.review_automation.local_agent.command_timeout_minutes == 30
+    assert settings.review_automation.local_agent.include_review_package_inline is False
+    assert settings.review_automation.model.model == "review-model"
+    assert settings.review_automation.model.max_candidates == 12
+    assert settings.review_automation.model.temperature == 0.4
+    assert settings.review_automation.model.max_tokens == 2048
+    assert settings.review_automation.model.retry_attempts == 3
+
+
 def test_write_default_config_creates_friendly_template(tmp_path):
     output_path = tmp_path / "live-clipper.toml"
 
@@ -221,3 +275,6 @@ def test_write_default_config_creates_friendly_template(tmp_path):
     assert "[prompts]" in text
     assert "[scheduler]" in text
     assert "[[scheduler.jobs]]" in text
+    assert "[review_automation]" in text
+    assert "[review_automation.local_agent]" in text
+    assert "[review_automation.model]" in text

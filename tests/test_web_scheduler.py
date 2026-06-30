@@ -57,7 +57,7 @@ def test_post_api_scheduler_jobs_writes_config_and_returns_status(tmp_path):
 
 def test_post_api_scheduler_jobs_rejects_invalid_job_with_chinese_error(tmp_path):
     invalid = _job("Bad Job!")
-    invalid["type"] = "ai_review"
+    invalid["type"] = "delete_all"
 
     status, _headers, payload = handle_api_request(
         "POST",
@@ -70,7 +70,7 @@ def test_post_api_scheduler_jobs_rejects_invalid_job_with_chinese_error(tmp_path
     assert payload["ok"] is False
     messages = "\n".join(error["message"] for error in payload["errors"])
     assert "任务 id 只能使用小写字母" in messages
-    assert "V5 不支持 AI 自动审阅任务" in messages
+    assert "任务类型只能是 scan_recordings、review_due_check、maintenance_check 或 ai_review" in messages
 
 
 def test_post_api_scheduler_run_now_pause_and_resume(tmp_path):
