@@ -32,6 +32,8 @@ English readers can start from [docs/README.en.md](docs/README.en.md). 当前主
 .venv/bin/live-clipper guide ai
 ```
 
+如果你想使用当前 MCP 工作台版本，尤其是想知道“如何让 AI 选片”，请看 [docs/mcp-workbench-user-guide.md](docs/mcp-workbench-user-guide.md)。
+
 安全提醒：不要把 API key、Token、Cookie 或任何密钥粘贴到聊天窗口。只把它们写进你本机的 `.env` 文件。
 
 ## 命令行快速开始
