@@ -370,6 +370,10 @@ h3 {
   gap: 10px 14px;
 }
 
+.config-form .full-span {
+  grid-column: 1 / -1;
+}
+
 .config-form label {
   display: grid;
   gap: 6px;
@@ -467,6 +471,39 @@ h3 {
   font-weight: 800;
 }
 
+.scheduler-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(240px, 1fr));
+  gap: 8px;
+}
+
+.scheduler-jobs {
+  display: grid;
+  gap: 8px;
+}
+
+.scheduler-job {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 10px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.scheduler-job small {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.scheduler-editor h3 {
+  margin-top: 0;
+}
+
 @media (max-width: 760px) {
   body {
     min-width: 0;
@@ -492,7 +529,9 @@ h3 {
   .runs-layout,
   .config-form fieldset,
   .config-form.nested,
-  .env-grid {
+  .env-grid,
+  .scheduler-summary,
+  .scheduler-job {
     grid-template-columns: 1fr;
   }
 

@@ -8,6 +8,7 @@ const state = {
   events: [],
   config: null,
   configDirty: false,
+  scheduler: null,
 };
 
 const el = (id) => document.getElementById(id);
@@ -83,6 +84,14 @@ const valueLabels = {
   low: "低风险",
   medium: "中风险",
   high: "高风险",
+  scan_recordings: "扫描录播",
+  review_due_check: "审阅检查",
+  maintenance_check: "维护检查",
+  weekly: "每周",
+  daily: "每天",
+  interval_minutes: "每隔 N 分钟",
+  success: "成功",
+  skipped: "已跳过",
 };
 
 const cleanupKindLabels = {
@@ -268,8 +277,13 @@ async function loadConfig(force = false) {
   renderConfig(payload);
 }
 
+async function loadScheduler() {
+  state.scheduler = await api("/api/scheduler");
+  renderScheduler(state.scheduler);
+}
+
 async function refreshAll() {
-  await Promise.all([loadService(), loadRuns(), loadConfirmations(), loadEvents(), loadConfig()]);
+  await Promise.all([loadService(), loadRuns(), loadConfirmations(), loadEvents(), loadConfig(), loadScheduler()]);
 }
 
 function renderConfig(payload) {
@@ -282,6 +296,33 @@ function renderConfig(payload) {
   });
   renderEnvStatus(payload.env_status || {});
   renderConfigNotice(payload.warnings || [], "warning");
+}
+
+function renderScheduler(payload) {
+  if (!payload?.ok) return;
+  const scheduler = payload.scheduler || {};
+  el("schedulerSummary").innerHTML = [
+    ["Scheduler 状态", scheduler.enabled ? "运行中" : "未启用"],
+    ["调度时区", scheduler.timezone || "-"],
+    ["当前系统时间", scheduler.current_time || "-"],
+    ["下一次任务", scheduler.next_due_job_id || "-"],
+    ["下次执行", scheduler.next_due_at || "-"],
+  ].map(([label, value]) => infoRow(label, value)).join("");
+  el("schedulerJobList").innerHTML = (payload.jobs || []).map((job) => `
+    <div class="scheduler-job">
+      <div>
+        <strong>${escapeHtml(job.name || job.id)}</strong>
+        <small>${escapeHtml(job.id)} · ${escapeHtml(labelFor(job.type))} · ${escapeHtml(labelFor(job.schedule))}</small>
+        <small>下次执行：${escapeHtml(job.next_run_at || "-")} · 上次结果：${escapeHtml(labelFor(job.status) || "-")}</small>
+      </div>
+      <div class="button-row">
+        <button class="secondary-button small" data-scheduler-edit="${escapeHtml(job.id)}">编辑</button>
+        <button class="primary-button small" data-scheduler-run="${escapeHtml(job.id)}">立即执行</button>
+        <button class="secondary-button small" data-scheduler-pause="${escapeHtml(job.id)}">暂停</button>
+        <button class="secondary-button small" data-scheduler-resume="${escapeHtml(job.id)}">启用</button>
+      </div>
+    </div>
+  `).join("") || '<div class="empty">还没有定时任务。</div>';
 }
 
 function renderEnvStatus(envStatus) {
@@ -361,8 +402,59 @@ function defaultConfig() {
       hf_token_env: "HF_TOKEN",
     },
     service: { enabled: true, scan_interval_minutes: 30, auto_render_after_selection: true, cleanup_mode: "preview_only" },
+    scheduler: { enabled: true, timezone: "Asia/Shanghai", tick_seconds: 30, missed_policy: "run_once", state_dir: "work/service" },
+    scheduler_jobs: [
+      {
+        id: "weekly_recording_scan",
+        name: "每周录播扫描",
+        enabled: true,
+        type: "scan_recordings",
+        schedule: "weekly",
+        day_of_week: "sun",
+        time: "00:00",
+        skip_if_running: true,
+      },
+      {
+        id: "weekly_review_due",
+        name: "每周审阅检查",
+        enabled: true,
+        type: "review_due_check",
+        schedule: "weekly",
+        day_of_week: "sun",
+        time: "12:00",
+        skip_if_running: true,
+      },
+    ],
     web: { host: "127.0.0.1", port: 8765 },
   };
+}
+
+function schedulerJobFromForm() {
+  const schedule = el("schedulerJobSchedule").value;
+  const job = {
+    id: el("schedulerJobId").value.trim(),
+    name: el("schedulerJobName").value.trim(),
+    enabled: el("schedulerJobEnabled").checked,
+    type: el("schedulerJobType").value,
+    schedule,
+    skip_if_running: el("schedulerJobSkip").checked,
+  };
+  if (schedule === "weekly") job.day_of_week = el("schedulerJobDay").value;
+  if (schedule === "weekly" || schedule === "daily") job.time = el("schedulerJobTime").value.trim();
+  if (schedule === "interval_minutes") job.interval_minutes = Number(el("schedulerJobInterval").value);
+  return job;
+}
+
+function fillSchedulerJobForm(job) {
+  el("schedulerJobId").value = job.id || "";
+  el("schedulerJobName").value = job.name || "";
+  el("schedulerJobEnabled").checked = Boolean(job.enabled);
+  el("schedulerJobType").value = job.type || "scan_recordings";
+  el("schedulerJobSchedule").value = job.schedule || "weekly";
+  el("schedulerJobDay").value = job.day_of_week || "sun";
+  el("schedulerJobTime").value = job.time || "00:00";
+  el("schedulerJobInterval").value = job.interval_minutes || 60;
+  el("schedulerJobSkip").checked = job.skip_if_running !== false;
 }
 
 async function validateConfig() {
@@ -446,6 +538,26 @@ document.addEventListener("click", async (event) => {
     if (event.target.id === "restartServiceBtn") {
       const result = await post("/api/config/restart-service");
       renderConfigNotice([{ message: result.restarted ? "服务已重启。" : "服务未运行，无需重启。" }], "success");
+    }
+    if (event.target.id === "saveSchedulerJobBtn") {
+      await post("/api/scheduler/jobs", { job: schedulerJobFromForm() });
+      renderConfigNotice([{ message: "定时任务已保存。为了让服务使用新配置，请重启服务。" }], "success");
+    }
+    if (event.target.dataset.schedulerRun) {
+      const result = await post(`/api/scheduler/jobs/${encodeURIComponent(event.target.dataset.schedulerRun)}/run-now`);
+      renderConfigNotice([{ message: result.result?.message || "定时任务已执行。" }], "success");
+    }
+    if (event.target.dataset.schedulerPause) {
+      await post(`/api/scheduler/jobs/${encodeURIComponent(event.target.dataset.schedulerPause)}/pause`);
+      renderConfigNotice([{ message: "定时任务已暂停。" }], "success");
+    }
+    if (event.target.dataset.schedulerResume) {
+      await post(`/api/scheduler/jobs/${encodeURIComponent(event.target.dataset.schedulerResume)}/resume`);
+      renderConfigNotice([{ message: "定时任务已启用。" }], "success");
+    }
+    if (event.target.dataset.schedulerEdit) {
+      const job = (state.scheduler?.jobs || []).find((item) => item.id === event.target.dataset.schedulerEdit);
+      if (job) fillSchedulerJobForm(job);
     }
     if (event.target.id === "clearLogBtn") el("logOutput").textContent = "";
   } catch (error) {

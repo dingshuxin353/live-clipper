@@ -148,6 +148,67 @@ def test_load_settings_supports_service_and_default_recording_source(monkeypatch
     assert settings.recording_source_default.stable_check_seconds == 5
 
 
+def test_load_settings_uses_default_scheduler_jobs(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+
+    settings = load_settings()
+
+    assert settings.scheduler.enabled is True
+    assert settings.scheduler.timezone == "Asia/Shanghai"
+    assert settings.scheduler.tick_seconds == 30
+    assert settings.scheduler.missed_policy == "run_once"
+    assert [job.id for job in settings.scheduler.jobs] == ["weekly_recording_scan", "weekly_review_due"]
+    assert settings.scheduler.jobs[0].type == "scan_recordings"
+    assert settings.scheduler.jobs[0].day_of_week == "sun"
+    assert settings.scheduler.jobs[0].time == "00:00"
+    assert settings.scheduler.jobs[1].type == "review_due_check"
+    assert settings.scheduler.jobs[1].time == "12:00"
+
+
+def test_load_settings_reads_scheduler_config_from_toml(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "live-clipper.toml").write_text(
+        "\n".join([
+            "[scheduler]",
+            "enabled = true",
+            "timezone = 'Asia/Tokyo'",
+            "tick_seconds = 10",
+            "missed_policy = 'skip'",
+            "state_dir = 'work/service'",
+            "",
+            "[[scheduler.jobs]]",
+            "id = 'daily_scan'",
+            "name = '每日扫描'",
+            "enabled = false",
+            "type = 'scan_recordings'",
+            "schedule = 'daily'",
+            "time = '08:30'",
+            "skip_if_running = true",
+            "",
+            "[[scheduler.jobs]]",
+            "id = 'interval_maintenance'",
+            "name = '维护检查'",
+            "enabled = true",
+            "type = 'maintenance_check'",
+            "schedule = 'interval_minutes'",
+            "interval_minutes = 60",
+            "skip_if_running = true",
+        ]),
+        encoding="utf-8",
+    )
+
+    settings = load_settings()
+
+    assert settings.scheduler.timezone == "Asia/Tokyo"
+    assert settings.scheduler.tick_seconds == 10
+    assert settings.scheduler.missed_policy == "skip"
+    assert settings.scheduler.jobs[0].id == "daily_scan"
+    assert settings.scheduler.jobs[0].enabled is False
+    assert settings.scheduler.jobs[0].schedule == "daily"
+    assert settings.scheduler.jobs[0].time == "08:30"
+    assert settings.scheduler.jobs[1].interval_minutes == 60
+
+
 def test_write_default_config_creates_friendly_template(tmp_path):
     output_path = tmp_path / "live-clipper.toml"
 
@@ -158,3 +219,5 @@ def test_write_default_config_creates_friendly_template(tmp_path):
     assert "[paths]" in text
     assert "[llm]" in text
     assert "[prompts]" in text
+    assert "[scheduler]" in text
+    assert "[[scheduler.jobs]]" in text

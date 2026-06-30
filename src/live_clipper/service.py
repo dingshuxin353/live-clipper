@@ -679,6 +679,28 @@ def run_service_once(settings: Settings, *, service_dir: Path = DEFAULT_SERVICE_
     }
 
 
+def run_service_tick(settings: Settings, *, service_dir: Path = DEFAULT_SERVICE_DIR) -> dict[str, Any]:
+    validate_service_settings(settings)
+    ensure_dir(service_dir)
+    runs = load_runs(service_dir)
+    changed_runs = 0
+    for run in runs:
+        if reconcile_run(run, settings, service_dir=service_dir):
+            changed_runs += 1
+    save_runs(runs, service_dir)
+
+    from . import scheduler
+
+    scheduler_report = scheduler.tick_scheduler(settings, service_dir=service_dir)
+    return {
+        "ok": True,
+        "known_runs": len(runs),
+        "changed_runs": changed_runs,
+        "scheduler": scheduler_report,
+        "service_dir": str(service_dir),
+    }
+
+
 def service_loop(settings: Settings, *, service_dir: Path = DEFAULT_SERVICE_DIR) -> None:
     validate_service_settings(settings)
     ensure_dir(service_dir)
@@ -688,11 +710,11 @@ def service_loop(settings: Settings, *, service_dir: Path = DEFAULT_SERVICE_DIR)
     append_event(service_dir, "service_started", pid=pid)
     while True:
         try:
-            report = run_service_once(settings, service_dir=service_dir)
+            report = run_service_tick(settings, service_dir=service_dir)
             state = _service_state("running", pid, settings)
             state["last_report"] = report
             _write_service_state(service_dir, state)
-            time.sleep(settings.service.scan_interval_minutes * 60)
+            time.sleep(settings.scheduler.tick_seconds)
         except KeyboardInterrupt:
             break
         except Exception as exc:  # pragma: no cover - defensive for long-running service
@@ -700,7 +722,7 @@ def service_loop(settings: Settings, *, service_dir: Path = DEFAULT_SERVICE_DIR)
             state["last_error"] = str(exc)
             _write_service_state(service_dir, state)
             append_event(service_dir, "service_error", error=str(exc))
-            time.sleep(min(settings.service.scan_interval_minutes * 60, 60))
+            time.sleep(min(settings.scheduler.tick_seconds, 60))
     _write_service_state(service_dir, {"status": "stopped", "pid": pid, "stopped_at": now_utc()})
     append_event(service_dir, "service_stopped", pid=pid)
 

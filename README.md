@@ -501,6 +501,29 @@ V4 Web 配置页把原来的只读 `设置` 升级为可编辑 `配置`，适合
 - 修改 Web host/port 后，需要手动重启 Web 控制台命令本身才会生效。
 - 如果 TOML 解析失败，Web 配置页不会覆盖旧配置；请先修复 `live-clipper.toml`。
 
+### V5 内置定时调度
+
+V5 增加内置 Scheduler，跟随 `live-clipper service` 运行，不再依赖 Codex 定时任务、cron 或 launchd。定时配置统一放在 Web `配置` 页的 `定时任务` 分区。
+
+默认定时任务：
+
+- 每周日 00:00：`每周录播扫描`，执行 `scan_recordings`，扫描录播源并为稳定录播创建 run。
+- 每周日 12:00：`每周审阅检查`，执行 `review_due_check`，只标记和提醒待审阅任务。
+
+你可以在 `配置` 页完成这些操作：
+
+- 查看 Scheduler 状态、调度时区、当前系统时间、下一次执行任务和最近结果。
+- 创建或编辑任务，支持每周、每天、每隔 N 分钟。
+- 对任务执行 `立即执行`、`暂停`、`启用`。
+- 修改 `timezone`、`tick_seconds`、`missed_policy` 后保存配置，并重启 service 让新设置生效。
+
+安全边界：
+
+- Scheduler 不会删除文件，不会执行 cleanup confirm，不会 approve/reject confirmation。
+- Scheduler 不会主动终止已经启动的 pipeline 子进程。
+- V5 的 `review_due_check` 不会自动生成 selected_clips.json，也不会调用 Codex CLI、Claude Code 或模型自动选片。
+- AI 自动审阅将在后续版本配置；当前 V5 只做定时提醒和状态标记。
+
 如果确实需要局域网访问：
 
 ```bash

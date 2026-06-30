@@ -108,6 +108,18 @@ def test_web_static_exposes_v4_config_editor():
     assert "/api/config/restart-service" in app
 
 
+def test_web_static_exposes_v5_scheduler_config_section():
+    html = Path("src/live_clipper/web_static/index.html").read_text(encoding="utf-8")
+    app = Path("src/live_clipper/web_static/app.js").read_text(encoding="utf-8")
+
+    for label in ["定时任务", "每周录播扫描", "每周审阅检查", "立即执行", "暂停", "启用"]:
+        assert label in html
+    assert "/api/scheduler" in app
+    assert "/api/scheduler/jobs" in app
+    assert "/run-now" in app
+    assert "AI 自动审阅将在后续版本配置" in html
+
+
 def test_readme_documents_v3_web_console_confirmation_flow():
     text = Path("README.md").read_text(encoding="utf-8")
 
@@ -127,3 +139,14 @@ def test_readme_documents_v4_web_config_editor():
     assert "保存配置" in text
     assert "work/config_backups/" in text
     assert "不会显示明文 API key" in text
+
+
+def test_readme_documents_v5_internal_scheduler_without_v6_ai_review():
+    text = Path("README.md").read_text(encoding="utf-8")
+
+    assert "V5 内置定时调度" in text
+    assert "不再依赖 Codex 定时任务、cron 或 launchd" in text
+    assert "每周日 00:00" in text
+    assert "每周日 12:00" in text
+    assert "只标记和提醒待审阅任务" in text
+    assert "不会自动生成 selected_clips.json" in text
