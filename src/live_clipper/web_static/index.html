@@ -57,6 +57,7 @@
           <div class="detail-panel">
             <div id="runDetail"></div>
             <div class="button-row detail-actions">
+              <button id="aiReviewRunBtn" class="secondary-button" disabled>立即 AI 审阅</button>
               <button id="renderRunBtn" class="primary-button" disabled>渲染</button>
               <button id="cleanupPreviewBtn" class="secondary-button" disabled>预览清理</button>
             </div>
@@ -150,7 +151,7 @@
 
           <fieldset class="scheduler-fieldset">
             <legend>定时任务</legend>
-            <div class="notice subtle full-span">服务未运行时不会执行定时任务。AI 自动审阅将在后续版本配置；当前任务只负责提醒和标记待审阅。任务支持立即执行、暂停和启用。</div>
+            <div class="notice subtle full-span">服务未运行时不会执行定时任务。任务支持立即执行、暂停和启用。老用户已有的审阅检查不会自动改成 AI 自动审阅；需要时可把任务动作改为 AI 自动审阅，并在下方明确启用 AI 审阅。</div>
             <label class="check-row"><input type="checkbox" data-config-field="scheduler.enabled" /> 启用内置定时调度</label>
             <label>调度时区<input data-config-field="scheduler.timezone" /></label>
             <label>tick 秒数<input type="number" data-config-field="scheduler.tick_seconds" /></label>
@@ -173,6 +174,7 @@
                   <select id="schedulerJobType">
                     <option value="scan_recordings">扫描录播</option>
                     <option value="review_due_check">审阅检查</option>
+                    <option value="ai_review">AI 自动审阅</option>
                     <option value="maintenance_check">维护检查</option>
                   </select>
                 </label>
@@ -200,6 +202,45 @@
                 <button id="saveSchedulerJobBtn" class="secondary-button" type="button">保存定时任务</button>
               </div>
             </div>
+          </fieldset>
+
+          <fieldset class="review-automation-fieldset">
+            <legend>AI 审阅</legend>
+            <div class="notice subtle full-span">AI 审阅只会生成选片结果。删除、清理和确认仍需要你在确认页处理。默认不会静默启用，请确认环境可用后再打开。</div>
+            <label class="check-row"><input type="checkbox" data-config-field="review_automation.enabled" /> 启用自动 AI 审阅</label>
+            <label>审阅方式
+              <select data-config-field="review_automation.mode">
+                <option value="local_agent">本地 Agent</option>
+                <option value="model">配置模型直连</option>
+              </select>
+            </label>
+            <label>每次最多处理任务数<input type="number" data-config-field="review_automation.max_runs_per_tick" /></label>
+            <label>单任务超时时间（分钟）<input type="number" data-config-field="review_automation.timeout_minutes" /></label>
+            <label>失败后处理
+              <select data-config-field="review_automation.on_failure">
+                <option value="keep_needs_review">保留待审阅</option>
+                <option value="mark_failed">标记失败</option>
+              </select>
+            </label>
+            <label class="check-row"><input type="checkbox" data-config-field="review_automation.auto_render_after_selection" /> 选片后沿用自动渲染</label>
+            <label>提示词模板<input data-config-field="review_automation.prompt_template" /></label>
+            <label>本地 Agent
+              <select data-config-field="review_automation_local_agent.provider">
+                <option value="codex_cli">Codex CLI</option>
+                <option value="claude_code">Claude Code</option>
+              </select>
+            </label>
+            <label>Agent 超时（分钟）<input type="number" data-config-field="review_automation_local_agent.command_timeout_minutes" /></label>
+            <label class="check-row"><input type="checkbox" data-config-field="review_automation_local_agent.include_review_package_inline" /> 把审阅包放入 prompt</label>
+            <label class="check-row"><input type="checkbox" data-config-field="review_automation_local_agent.allow_agent_file_writes" disabled /> 允许 Agent 直接写文件（P0 固定关闭）</label>
+            <label>模型<input data-config-field="review_automation_model.model" placeholder="为空时复用 LLM 模型" /></label>
+            <label>最多候选数<input type="number" data-config-field="review_automation_model.max_candidates" /></label>
+            <label>Temperature<input type="number" step="0.1" data-config-field="review_automation_model.temperature" /></label>
+            <label>Max tokens<input type="number" data-config-field="review_automation_model.max_tokens" /></label>
+            <label>重试次数<input type="number" data-config-field="review_automation_model.retry_attempts" /></label>
+            <button id="checkReviewAutomationBtn" class="secondary-button" type="button">测试 AI 审阅环境</button>
+            <button id="runDueReviewAutomationBtn" class="secondary-button" type="button">立即处理待审阅</button>
+            <div id="reviewAutomationStatus" class="scheduler-summary full-span"></div>
           </fieldset>
 
           <details>

@@ -31,6 +31,13 @@ NUMBER_RANGES: dict[tuple[str, str], tuple[float, float]] = {
     ("service", "scan_interval_minutes"): (1, 1440),
     ("web", "port"): (1024, 65535),
     ("scheduler", "tick_seconds"): (5, 300),
+    ("review_automation", "max_runs_per_tick"): (1, 20),
+    ("review_automation", "timeout_minutes"): (1, 240),
+    ("review_automation_local_agent", "command_timeout_minutes"): (1, 240),
+    ("review_automation_model", "max_candidates"): (1, 200),
+    ("review_automation_model", "temperature"): (0, 2),
+    ("review_automation_model", "max_tokens"): (512, 32000),
+    ("review_automation_model", "retry_attempts"): (0, 5),
 }
 INTEGER_FIELDS = {
     ("recording_source_default", "since_hours"),
@@ -41,21 +48,43 @@ INTEGER_FIELDS = {
     ("service", "scan_interval_minutes"),
     ("web", "port"),
     ("scheduler", "tick_seconds"),
+    ("review_automation", "max_runs_per_tick"),
+    ("review_automation", "timeout_minutes"),
+    ("review_automation_local_agent", "command_timeout_minutes"),
+    ("review_automation_model", "max_candidates"),
+    ("review_automation_model", "max_tokens"),
+    ("review_automation_model", "retry_attempts"),
 }
 BOOLEAN_FIELDS = {
     ("service", "enabled"),
     ("service", "auto_render_after_selection"),
     ("scheduler", "enabled"),
+    ("review_automation", "enabled"),
+    ("review_automation", "auto_render_after_selection"),
+    ("review_automation_local_agent", "include_review_package_inline"),
+    ("review_automation_local_agent", "allow_agent_file_writes"),
+    ("review_automation_model", "use_llm_config"),
 }
 ENV_VAR_FIELDS = {
     ("llm", "api_key_env"),
     ("asr", "api_key_env"),
     ("asr", "hf_token_env"),
 }
-SERVICE_RESTART_SECTIONS = {"paths", "recording_source_default", "llm", "asr", "service", "scheduler", "scheduler_jobs"}
+SERVICE_RESTART_SECTIONS = {
+    "paths",
+    "recording_source_default",
+    "llm",
+    "asr",
+    "service",
+    "scheduler",
+    "scheduler_jobs",
+    "review_automation",
+    "review_automation_local_agent",
+    "review_automation_model",
+}
 ENV_VAR_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 JOB_ID_RE = re.compile(r"^[a-z0-9_-]{1,64}$")
-JOB_TYPES = {"scan_recordings", "review_due_check", "maintenance_check"}
+JOB_TYPES = {"scan_recordings", "review_due_check", "maintenance_check", "ai_review"}
 SCHEDULES = {"weekly", "daily", "interval_minutes"}
 DAYS_OF_WEEK = {"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
 
@@ -93,6 +122,7 @@ def validate_editable_config(
     _validate_enums(clean, errors)
     _validate_env_vars(clean, errors)
     _validate_scheduler(clean, errors)
+    _validate_review_automation(clean, errors)
 
     current_result = _load_raw_config(config_path)
     current = _editable_from_raw(current_result["config"]) if current_result["ok"] else _editable_from_raw({})
@@ -190,7 +220,17 @@ def _editable_from_raw(raw: dict[str, Any]) -> EditableConfig:
     recording_default = recording_source.get("default", {}) if isinstance(recording_source, dict) else {}
     web = raw.get("web", {}) if isinstance(raw.get("web"), dict) else {}
     scheduler = raw.get("scheduler", {}) if isinstance(raw.get("scheduler"), dict) else {}
+    review_automation = raw.get("review_automation", {}) if isinstance(raw.get("review_automation"), dict) else {}
+    review_local_agent = (
+        review_automation.get("local_agent", {})
+        if isinstance(review_automation.get("local_agent"), dict)
+        else {}
+    )
+    review_model = review_automation.get("model", {}) if isinstance(review_automation.get("model"), dict) else {}
     default_scheduler = defaults.get("scheduler", {})
+    default_review = defaults.get("review_automation", {})
+    default_review_local = default_review.get("local_agent", {}) if isinstance(default_review.get("local_agent"), dict) else {}
+    default_review_model = default_review.get("model", {}) if isinstance(default_review.get("model"), dict) else {}
     scheduler_jobs = scheduler.get("jobs")
     if not isinstance(scheduler_jobs, list) or not scheduler_jobs:
         scheduler_jobs = default_scheduler.get("jobs", [])
@@ -215,6 +255,36 @@ def _editable_from_raw(raw: dict[str, Any]) -> EditableConfig:
             **_pick(scheduler, ["enabled", "timezone", "tick_seconds", "missed_policy", "state_dir"]),
         },
         "scheduler_jobs": [_clean_job(job) for job in scheduler_jobs if isinstance(job, dict)],
+        "review_automation": {
+            **_pick(
+                default_review,
+                ["enabled", "mode", "max_runs_per_tick", "auto_render_after_selection", "on_failure", "timeout_minutes", "prompt_template"],
+            ),
+            **_pick(
+                review_automation,
+                ["enabled", "mode", "max_runs_per_tick", "auto_render_after_selection", "on_failure", "timeout_minutes", "prompt_template"],
+            ),
+        },
+        "review_automation_local_agent": {
+            **_pick(
+                default_review_local,
+                ["provider", "command_timeout_minutes", "include_review_package_inline", "allow_agent_file_writes"],
+            ),
+            **_pick(
+                review_local_agent,
+                ["provider", "command_timeout_minutes", "include_review_package_inline", "allow_agent_file_writes"],
+            ),
+        },
+        "review_automation_model": {
+            **_pick(
+                default_review_model,
+                ["provider", "use_llm_config", "model", "max_candidates", "temperature", "max_tokens", "retry_attempts"],
+            ),
+            **_pick(
+                review_model,
+                ["provider", "use_llm_config", "model", "max_candidates", "temperature", "max_tokens", "retry_attempts"],
+            ),
+        },
     }
 
 
@@ -350,10 +420,8 @@ def _validate_scheduler(config: EditableConfig, errors: list[dict[str, str]]) ->
         if not (1 <= len(name) <= 40):
             errors.append(_error(f"{prefix}.name", "任务名称必须填写，且不超过 40 个字符。"))
         job_type = str(job.get("type") or "")
-        if job_type == "ai_review":
-            errors.append(_error(f"{prefix}.type", "V5 不支持 AI 自动审阅任务；AI 自动审阅将在 V6 实现。"))
-        elif job_type not in JOB_TYPES:
-            errors.append(_error(f"{prefix}.type", "任务类型只能是 scan_recordings、review_due_check 或 maintenance_check。"))
+        if job_type not in JOB_TYPES:
+            errors.append(_error(f"{prefix}.type", "任务类型只能是 scan_recordings、review_due_check、maintenance_check 或 ai_review。"))
         schedule = str(job.get("schedule") or "")
         if schedule not in SCHEDULES:
             errors.append(_error(f"{prefix}.schedule", "频率只能是 weekly、daily 或 interval_minutes。"))
@@ -370,6 +438,22 @@ def _validate_scheduler(config: EditableConfig, errors: list[dict[str, str]]) ->
                 errors.append(_error(f"{prefix}.interval_minutes", "间隔分钟数必须在 5 到 1440 之间。"))
 
 
+def _validate_review_automation(config: EditableConfig, errors: list[dict[str, str]]) -> None:
+    review = config["review_automation"]
+    local_agent = config["review_automation_local_agent"]
+    model = config["review_automation_model"]
+    if review.get("mode") not in {"local_agent", "model"}:
+        errors.append(_error("review_automation.mode", "AI 审阅方式只能是 local_agent 或 model。"))
+    if review.get("on_failure") not in {"keep_needs_review", "mark_failed"}:
+        errors.append(_error("review_automation.on_failure", "失败后处理只能是 keep_needs_review 或 mark_failed。"))
+    if local_agent.get("provider") not in {"codex_cli", "claude_code"}:
+        errors.append(_error("review_automation_local_agent.provider", "本地 Agent 只能选择 codex_cli 或 claude_code。"))
+    if local_agent.get("allow_agent_file_writes") is not False:
+        errors.append(_error("review_automation_local_agent.allow_agent_file_writes", "P0 不允许 Agent 直接写文件，请保持关闭。"))
+    if model.get("provider") != "openai_compatible":
+        errors.append(_error("review_automation_model.provider", "模型直连目前只支持 openai_compatible。"))
+
+
 def _valid_hhmm(value: str) -> bool:
     raw_hour, sep, raw_minute = value.partition(":")
     if sep != ":" or len(raw_hour) != 2 or len(raw_minute) != 2:
@@ -383,9 +467,25 @@ def _valid_hhmm(value: str) -> bool:
 
 def _merge_editable(raw: dict[str, Any], clean: EditableConfig) -> dict[str, Any]:
     merged = deepcopy(raw)
-    for section in ["paths", "llm", "asr", "service", "scheduler"]:
+    for section in [
+        "paths",
+        "llm",
+        "asr",
+        "service",
+        "scheduler",
+        "review_automation",
+    ]:
         merged.setdefault(section, {})
         merged[section].update(_coerce_section(section, clean[section]))
+    merged.setdefault("review_automation", {})
+    merged["review_automation"]["local_agent"] = _coerce_section(
+        "review_automation_local_agent",
+        clean["review_automation_local_agent"],
+    )
+    merged["review_automation"]["model"] = _coerce_section(
+        "review_automation_model",
+        clean["review_automation_model"],
+    )
     merged["scheduler"]["jobs"] = [_coerce_job(job) for job in clean.get("scheduler_jobs", [])]
     merged.setdefault("recording_source", {})
     merged["recording_source"].setdefault("default", {})

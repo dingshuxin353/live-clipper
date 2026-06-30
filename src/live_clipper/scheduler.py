@@ -11,7 +11,7 @@ from .config import SchedulerJobConfig, Settings
 from .utils import ensure_dir, read_json, write_json
 
 JOB_ID_RE = re.compile(r"^[a-z0-9_-]{1,64}$")
-JOB_TYPES = {"scan_recordings", "review_due_check", "maintenance_check"}
+JOB_TYPES = {"scan_recordings", "review_due_check", "maintenance_check", "ai_review"}
 SCHEDULES = {"weekly", "daily", "interval_minutes"}
 DAYS_OF_WEEK = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
 MAX_MISSED_AGE = timedelta(days=7)
@@ -76,10 +76,8 @@ def validate_scheduler_job(job: dict[str, Any] | SchedulerJobConfig) -> dict[str
     if not (1 <= len(name) <= 40):
         errors.append(_error("name", "任务名称必须填写，且不超过 40 个字符。"))
     job_type = str(data.get("type") or "")
-    if job_type == "ai_review":
-        errors.append(_error("type", "V5 不支持 AI 自动审阅任务；AI 自动审阅将在 V6 实现。"))
-    elif job_type not in JOB_TYPES:
-        errors.append(_error("type", "任务类型只能是 scan_recordings、review_due_check 或 maintenance_check。"))
+    if job_type not in JOB_TYPES:
+        errors.append(_error("type", "任务类型只能是 scan_recordings、review_due_check、maintenance_check 或 ai_review。"))
     schedule = str(data.get("schedule") or "")
     if schedule not in SCHEDULES:
         errors.append(_error("schedule", "频率只能是 weekly、daily 或 interval_minutes。"))
@@ -280,6 +278,10 @@ def _run_job_action(job: SchedulerJobConfig, settings: Settings, *, service_dir:
         return _review_due_check(service_dir, now=now)
     if job.type == "maintenance_check":
         return _maintenance_check(settings, service_dir)
+    if job.type == "ai_review":
+        from . import review_automation
+
+        return review_automation.run_due_ai_reviews(settings, service_dir=service_dir)
     raise ValueError(f"Unsupported scheduler job type: {job.type}")
 
 

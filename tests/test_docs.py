@@ -117,7 +117,7 @@ def test_web_static_exposes_v5_scheduler_config_section():
     assert "/api/scheduler" in app
     assert "/api/scheduler/jobs" in app
     assert "/run-now" in app
-    assert "AI 自动审阅将在后续版本配置" in html
+    assert "老用户已有的审阅检查不会自动改成 AI 自动审阅" in html
 
 
 def test_readme_documents_v3_web_console_confirmation_flow():
@@ -150,3 +150,32 @@ def test_readme_documents_v5_internal_scheduler_without_v6_ai_review():
     assert "每周日 12:00" in text
     assert "只标记和提醒待审阅任务" in text
     assert "不会自动生成 selected_clips.json" in text
+
+
+def test_web_static_exposes_v6_ai_review_automation_controls():
+    html = Path("src/live_clipper/web_static/index.html").read_text(encoding="utf-8")
+    app = Path("src/live_clipper/web_static/app.js").read_text(encoding="utf-8")
+
+    assert "AI 审阅" in html
+    assert "启用自动 AI 审阅" in html
+    assert "测试 AI 审阅环境" in html
+    assert "立即 AI 审阅" in html
+    assert "/api/review-automation" in app
+    assert "/api/review-automation/check" in app
+    assert "/api/review-automation/run-due" in app
+    assert "/ai-review" in app
+    assert "ai_review" in app
+
+
+def test_readme_documents_v6_ai_review_safety_and_modes():
+    text = Path("README.md").read_text(encoding="utf-8")
+
+    assert "V6 AI 自动审阅" in text
+    assert "默认不会静默启用" in text
+    assert "Codex CLI" in text
+    assert "Claude Code" in text
+    assert "配置模型直连" in text
+    assert "validate_selected_clips_file" in text
+    assert "AI 不会直接删除文件" in text
+    assert "不会执行 cleanup confirm" in text
+    assert "不会 approve/reject confirmation" in text
