@@ -105,6 +105,10 @@ def _events_path(service_dir: Path) -> Path:
     return service_dir / "events.jsonl"
 
 
+def _confirmations_path(service_dir: Path) -> Path:
+    return service_dir / "confirmations.json"
+
+
 def load_runs(service_dir: Path = DEFAULT_SERVICE_DIR) -> list[dict[str, Any]]:
     path = _runs_path(service_dir)
     if not path.exists():
@@ -117,6 +121,37 @@ def save_runs(runs: list[dict[str, Any]], service_dir: Path = DEFAULT_SERVICE_DI
     write_json(_runs_path(ensure_dir(service_dir)), {"runs": runs})
 
 
+def find_run(run_id: str, service_dir: Path = DEFAULT_SERVICE_DIR) -> dict[str, Any] | None:
+    return next((run for run in load_runs(service_dir) if run.get("run_id") == run_id), None)
+
+
+def replace_run(updated_run: dict[str, Any], service_dir: Path = DEFAULT_SERVICE_DIR) -> None:
+    runs = load_runs(service_dir)
+    for index, run in enumerate(runs):
+        if run.get("run_id") == updated_run.get("run_id"):
+            runs[index] = updated_run
+            save_runs(runs, service_dir)
+            return
+    runs.append(updated_run)
+    save_runs(runs, service_dir)
+
+
+def load_confirmations(service_dir: Path = DEFAULT_SERVICE_DIR) -> list[dict[str, Any]]:
+    path = _confirmations_path(service_dir)
+    if not path.exists():
+        return []
+    data = read_json(path)
+    return list(data.get("confirmations", []))
+
+
+def save_confirmations(confirmations: list[dict[str, Any]], service_dir: Path = DEFAULT_SERVICE_DIR) -> None:
+    write_json(_confirmations_path(ensure_dir(service_dir)), {"confirmations": confirmations})
+
+
+def pending_confirmation_count(service_dir: Path = DEFAULT_SERVICE_DIR) -> int:
+    return sum(1 for confirmation in load_confirmations(service_dir) if confirmation.get("status") == "pending")
+
+
 def append_event(service_dir: Path, event_type: str, **payload: Any) -> None:
     ensure_dir(service_dir)
     event = {
@@ -126,6 +161,66 @@ def append_event(service_dir: Path, event_type: str, **payload: Any) -> None:
     }
     with _events_path(service_dir).open("a", encoding="utf-8") as file:
         file.write(json.dumps(event, ensure_ascii=False) + "\n")
+
+
+def read_event_tail(
+    service_dir: Path = DEFAULT_SERVICE_DIR,
+    *,
+    run_id: str | None = None,
+    max_events: int = 50,
+) -> list[dict[str, Any]]:
+    path = _events_path(service_dir)
+    if not path.exists():
+        return []
+    events = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        event = json.loads(line)
+        if run_id is not None and event.get("run_id") != run_id:
+            continue
+        events.append(event)
+    return events[-max_events:]
+
+
+def create_confirmation(
+    *,
+    action: str,
+    run_id: str,
+    target_path: Path,
+    reason: str,
+    risk_level: str,
+    validation: dict[str, Any],
+    service_dir: Path = DEFAULT_SERVICE_DIR,
+    created_by: str = "mcp",
+) -> dict[str, Any]:
+    confirmations = load_confirmations(service_dir)
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    confirmation = {
+        "id": f"confirm_{timestamp}_{len(confirmations) + 1:03d}",
+        "action": action,
+        "run_id": run_id,
+        "target_path": str(target_path),
+        "reason": reason,
+        "risk_level": risk_level,
+        "created_by": created_by,
+        "created_at": now_utc(),
+        "status": "pending",
+        "validation": validation,
+    }
+    confirmations.append(confirmation)
+    save_confirmations(confirmations, service_dir)
+    append_event(
+        service_dir,
+        "confirmation_created",
+        run_id=run_id,
+        confirmation_id=confirmation["id"],
+        action=action,
+        target_path=str(target_path),
+        risk_level=risk_level,
+        created_by=created_by,
+    )
+    return confirmation
 
 
 def _read_pid(service_dir: Path) -> int | None:
@@ -296,6 +391,27 @@ def _start_run_for_source(
     run["pid"] = pid
     run["updated_at"] = now_utc()
     append_event(service_dir, "pipeline_started", run_id=run["run_id"], pid=pid, run_dir=run["run_dir"])
+    return run
+
+
+def start_run_for_source(
+    source_path: Path,
+    *,
+    settings: Settings,
+    service_dir: Path = DEFAULT_SERVICE_DIR,
+) -> dict[str, Any]:
+    validate_service_settings(settings)
+    runs = load_runs(service_dir)
+    identity = build_run_identity(
+        settings.recording_source_default.source_id,
+        source_path,
+        output_root=settings.recording_source_default.output_root,
+    )
+    if identity["fingerprint"] in _known_fingerprints(runs):
+        raise ValueError("duplicate_run")
+    run = _start_run_for_source(source_path, settings=settings, service_dir=service_dir)
+    runs.append(run)
+    save_runs(runs, service_dir)
     return run
 
 

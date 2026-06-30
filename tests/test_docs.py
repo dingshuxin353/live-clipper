@@ -72,3 +72,15 @@ def test_readme_documents_service_core_commands_and_safety():
     assert "cleanup_mode = \"preview_only\"" in text
     assert "不会自动删除" in text
     assert "不会主动终止已经启动的 pipeline 子进程" in text
+
+
+def test_readme_documents_mcp_tools_and_confirmation_safety():
+    text = Path("README.md").read_text(encoding="utf-8")
+
+    assert "## MCP 工具面" in text
+    assert "live_clipper.mcp_tools" in text
+    assert "get_service_status" in text
+    assert "write_selected_clips" in text
+    assert "confirmation_required" in text
+    assert "work/service/confirmations.json" in text
+    assert "不会直接删除任何文件" in text
