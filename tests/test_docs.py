@@ -84,3 +84,24 @@ def test_readme_documents_mcp_tools_and_confirmation_safety():
     assert "confirmation_required" in text
     assert "work/service/confirmations.json" in text
     assert "不会直接删除任何文件" in text
+
+
+def test_web_static_exposes_v3_console_sections():
+    html = Path("src/live_clipper/web_static/index.html").read_text(encoding="utf-8")
+    app = Path("src/live_clipper/web_static/app.js").read_text(encoding="utf-8")
+
+    for label in ["Service", "Runs", "Confirmations", "Logs", "Settings"]:
+        assert label in html
+    assert "/api/confirmations/batch-approve" in app
+    assert "/api/service/scan-now" in app
+    assert "confirmation_required" in app
+
+
+def test_readme_documents_v3_web_console_confirmation_flow():
+    text = Path("README.md").read_text(encoding="utf-8")
+
+    assert "V3 Web 控制台" in text
+    assert "Confirmations" in text
+    assert "批量 approve/reject" in text
+    assert "work/service/confirmations.json" in text
+    assert "NAS 原始录播不会被 Web 直接删除" in text

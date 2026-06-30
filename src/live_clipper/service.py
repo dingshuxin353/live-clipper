@@ -16,7 +16,7 @@ from typing import Any
 
 from .automation import SUPPORTED_VIDEO_EXTENSIONS
 from .config import RecordingSourceDefaultConfig, Settings
-from .pipeline import cleanup_local_artifacts, stage_source_file
+from .pipeline import cleanup_local_artifacts, cleanup_plan, stage_source_file
 from .render_clips import render_selected_clips
 from .utils import ensure_dir, read_json, write_json
 
@@ -152,6 +152,27 @@ def pending_confirmation_count(service_dir: Path = DEFAULT_SERVICE_DIR) -> int:
     return sum(1 for confirmation in load_confirmations(service_dir) if confirmation.get("status") == "pending")
 
 
+def find_confirmation(confirmation_id: str, service_dir: Path = DEFAULT_SERVICE_DIR) -> dict[str, Any] | None:
+    return next(
+        (confirmation for confirmation in load_confirmations(service_dir) if confirmation.get("id") == confirmation_id),
+        None,
+    )
+
+
+def _replace_confirmation(
+    updated_confirmation: dict[str, Any],
+    service_dir: Path = DEFAULT_SERVICE_DIR,
+) -> None:
+    confirmations = load_confirmations(service_dir)
+    for index, confirmation in enumerate(confirmations):
+        if confirmation.get("id") == updated_confirmation.get("id"):
+            confirmations[index] = updated_confirmation
+            save_confirmations(confirmations, service_dir)
+            return
+    confirmations.append(updated_confirmation)
+    save_confirmations(confirmations, service_dir)
+
+
 def append_event(service_dir: Path, event_type: str, **payload: Any) -> None:
     ensure_dir(service_dir)
     event = {
@@ -161,6 +182,218 @@ def append_event(service_dir: Path, event_type: str, **payload: Any) -> None:
     }
     with _events_path(service_dir).open("a", encoding="utf-8") as file:
         file.write(json.dumps(event, ensure_ascii=False) + "\n")
+
+
+def _path_is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def _confirmation_error(error_code: str, message: str, **payload: Any) -> dict[str, Any]:
+    return {"ok": False, "error_code": error_code, "message": message, **payload}
+
+
+def _confirmation_ok(**payload: Any) -> dict[str, Any]:
+    return {"ok": True, **payload}
+
+
+def _clips_exist(run_dir: Path) -> bool:
+    clips_dir = run_dir / "clips"
+    return clips_dir.exists() and any(clips_dir.glob("*.mp4"))
+
+
+def _metadata_pipeline(run_dir: Path) -> dict[str, Any]:
+    metadata_path = run_dir / "run_metadata.json"
+    if not metadata_path.exists():
+        return {}
+    metadata = read_json(metadata_path)
+    pipeline = metadata.get("pipeline", {})
+    return pipeline if isinstance(pipeline, dict) else {}
+
+
+def _mark_confirmation_executed(
+    confirmation: dict[str, Any],
+    *,
+    result: dict[str, Any],
+    service_dir: Path,
+) -> dict[str, Any]:
+    updated = {
+        **confirmation,
+        "status": "approved_executed",
+        "executed_at": now_utc(),
+        "result": result,
+    }
+    _replace_confirmation(updated, service_dir)
+    append_event(
+        service_dir,
+        "confirmation_executed",
+        confirmation_id=updated["id"],
+        run_id=updated.get("run_id"),
+        action=updated.get("action"),
+        target_path=updated.get("target_path"),
+        result=result,
+    )
+    return updated
+
+
+def reject_confirmation(
+    confirmation_id: str,
+    *,
+    reason: str | None = None,
+    service_dir: Path = DEFAULT_SERVICE_DIR,
+) -> dict[str, Any]:
+    confirmation = find_confirmation(confirmation_id, service_dir)
+    if confirmation is None:
+        return _confirmation_error("confirmation_not_found", f"Confirmation not found: {confirmation_id}")
+    if confirmation.get("status") != "pending":
+        return _confirmation_error("invalid_phase", f"Confirmation is not pending: {confirmation_id}")
+    updated = {
+        **confirmation,
+        "status": "rejected",
+        "rejected_at": now_utc(),
+        "rejection_reason": reason,
+    }
+    _replace_confirmation(updated, service_dir)
+    append_event(
+        service_dir,
+        "confirmation_rejected",
+        confirmation_id=confirmation_id,
+        run_id=confirmation.get("run_id"),
+        action=confirmation.get("action"),
+        target_path=confirmation.get("target_path"),
+        reason=reason,
+    )
+    return _confirmation_ok(confirmation=updated)
+
+
+def reject_confirmations(
+    confirmation_ids: list[str],
+    *,
+    reason: str | None = None,
+    service_dir: Path = DEFAULT_SERVICE_DIR,
+) -> dict[str, Any]:
+    results = [
+        {"confirmation_id": confirmation_id, **reject_confirmation(confirmation_id, reason=reason, service_dir=service_dir)}
+        for confirmation_id in confirmation_ids
+    ]
+    return {"ok": all(result.get("ok") for result in results), "results": results}
+
+
+def approve_confirmation(
+    confirmation_id: str,
+    *,
+    settings: Settings,
+    service_dir: Path = DEFAULT_SERVICE_DIR,
+) -> dict[str, Any]:
+    confirmation = find_confirmation(confirmation_id, service_dir)
+    if confirmation is None:
+        return _confirmation_error("confirmation_not_found", f"Confirmation not found: {confirmation_id}")
+    if confirmation.get("status") != "pending":
+        return _confirmation_error("invalid_phase", f"Confirmation is not pending: {confirmation_id}")
+    run = find_run(str(confirmation.get("run_id")), service_dir)
+    if run is None:
+        return _confirmation_error("run_not_found", f"Run not found: {confirmation.get('run_id')}")
+    action = str(confirmation.get("action"))
+    if action == "delete_clip":
+        result = _approve_delete_clip(confirmation, run)
+    elif action == "cleanup_confirm":
+        result = _approve_cleanup_confirm(confirmation, run, settings=settings)
+    elif action == "delete_local_source":
+        result = _approve_delete_local_source(confirmation, run, settings=settings)
+    else:
+        return _confirmation_error("invalid_phase", f"Unsupported confirmation action: {action}")
+    if not result.get("ok"):
+        return result
+    updated = _mark_confirmation_executed(confirmation, result=result, service_dir=service_dir)
+    return _confirmation_ok(confirmation=updated, result=result)
+
+
+def approve_confirmations(
+    confirmation_ids: list[str],
+    *,
+    settings: Settings,
+    service_dir: Path = DEFAULT_SERVICE_DIR,
+) -> dict[str, Any]:
+    results = [
+        {"confirmation_id": confirmation_id, **approve_confirmation(confirmation_id, settings=settings, service_dir=service_dir)}
+        for confirmation_id in confirmation_ids
+    ]
+    return {"ok": all(result.get("ok") for result in results), "results": results}
+
+
+def _approve_delete_clip(confirmation: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
+    run_dir = Path(str(run["run_dir"]))
+    clips_dir = run_dir / "clips"
+    target = Path(str(confirmation.get("target_path")))
+    validation = confirmation.get("validation", {})
+    allowed_root = Path(str(validation.get("must_be_relative_to", clips_dir)))
+    allowed_suffixes = set(validation.get("allowed_suffixes", [".mp4"]))
+    if (
+        not target.exists()
+        or not _path_is_relative_to(target, clips_dir)
+        or not _path_is_relative_to(target, allowed_root)
+        or target.suffix.lower() not in allowed_suffixes
+    ):
+        return _confirmation_error("path_rejected", f"Clip target is no longer valid: {target}")
+    if run.get("phase") not in {"rendered", "needs_review", "rendering"} or not _clips_exist(run_dir):
+        return _confirmation_error("invalid_phase", "Run does not have rendered clips")
+    target.unlink()
+    return _confirmation_ok(action="delete_clip", deleted=[str(target)], target_path=str(target))
+
+
+def _approve_cleanup_confirm(
+    confirmation: dict[str, Any],
+    run: dict[str, Any],
+    *,
+    settings: Settings,
+) -> dict[str, Any]:
+    run_dir = Path(str(run["run_dir"]))
+    if not _clips_exist(run_dir):
+        return _confirmation_error("invalid_phase", "Run does not have rendered clips")
+    validation = confirmation.get("validation", {})
+    allowed_paths = {
+        str(Path(str(target.get("path"))).resolve())
+        for target in validation.get("cleanup_targets", [])
+        if target.get("deletable")
+    }
+    current_targets = cleanup_plan(run_dir, input_dir=settings.recording_source_default.input_dir)
+    deleted = []
+    skipped = []
+    for target in current_targets:
+        path = Path(str(target["path"]))
+        if not target.get("deletable") or str(path.resolve()) not in allowed_paths:
+            skipped.append(str(path))
+            continue
+        path.unlink(missing_ok=True)
+        deleted.append(str(path))
+    return _confirmation_ok(action="cleanup_confirm", deleted=deleted, skipped=skipped, target_path=str(run_dir))
+
+
+def _approve_delete_local_source(
+    confirmation: dict[str, Any],
+    run: dict[str, Any],
+    *,
+    settings: Settings,
+) -> dict[str, Any]:
+    run_dir = Path(str(run["run_dir"]))
+    target = Path(str(confirmation.get("target_path")))
+    input_dir = settings.recording_source_default.input_dir
+    pipeline = _metadata_pipeline(run_dir)
+    original_value = pipeline.get("original_source_path")
+    original_source = Path(str(original_value)) if original_value else None
+    if not _clips_exist(run_dir):
+        return _confirmation_error("invalid_phase", "Run does not have rendered clips")
+    if (
+        not target.exists()
+        or not _path_is_relative_to(target, input_dir)
+        or (original_source is not None and target.resolve() == original_source.resolve())
+    ):
+        return _confirmation_error("path_rejected", f"Local source target is protected or invalid: {target}")
+    target.unlink()
+    return _confirmation_ok(action="delete_local_source", deleted=[str(target)], target_path=str(target))
 
 
 def read_event_tail(
