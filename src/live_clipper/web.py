@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-from . import mcp_tools, service
+from . import config_editor, mcp_tools, service
 from .automation import DEFAULT_LOG_DIR, DEFAULT_STATE_DIR, _pid_is_running, check_automation_runs
 from .config import RecordingSourceDefaultConfig, ServiceConfig, Settings, load_settings
 from .pipeline import cleanup_local_artifacts, cleanup_plan
@@ -30,6 +30,7 @@ class WebPaths:
     log_dir: Path = DEFAULT_LOG_DIR
     input_dir: Path = Path("input")
     service_dir: Path = service.DEFAULT_SERVICE_DIR
+    config_path: Path = Path("live-clipper.toml")
 
 
 def _safe_read_json(path: Path) -> Any:
@@ -69,7 +70,7 @@ def _path_is_relative_to(path: Path, root: Path) -> bool:
 
 def _settings_for_paths(paths: WebPaths) -> Settings:
     try:
-        loaded = load_settings()
+        loaded = load_settings(paths.config_path)
     except Exception:
         loaded = Settings()
     return Settings(
@@ -388,6 +389,26 @@ def handle_api_request(
             return _json_response({"ok": True, "events": service.read_event_tail(paths.service_dir, max_events=200)})
         if method == "GET" and parts == ["api", "settings"]:
             return _json_response(_build_settings_payload(paths))
+        if method == "GET" and parts == ["api", "config"]:
+            payload = config_editor.load_editable_config(config_path=paths.config_path)
+            return _json_response(payload, status=200 if payload.get("ok") else 400)
+        if method == "POST" and parts == ["api", "config", "validate"]:
+            payload = config_editor.validate_editable_config(
+                (body or {}).get("config", {}),
+                config_path=paths.config_path,
+                base_dir=paths.config_path.parent,
+            )
+            return _json_response(payload)
+        if method == "POST" and parts == ["api", "config"]:
+            payload = config_editor.save_editable_config(
+                (body or {}).get("config", {}),
+                config_path=paths.config_path,
+                backup_root=paths.config_path.parent / "work" / "config_backups",
+                base_dir=paths.config_path.parent,
+            )
+            return _json_response(payload, status=200 if payload.get("ok") else 400)
+        if method == "POST" and parts == ["api", "config", "restart-service"]:
+            return _json_response(_restart_service_from_config(paths))
         if method == "POST" and parts == ["api", "automation", "check"]:
             return _json_response(check_automation_runs(paths.output_root, state_dir=paths.state_dir))
         if method == "POST" and len(parts) == 4 and parts[:2] == ["api", "runs"] and parts[3] == "render":
@@ -465,6 +486,26 @@ def _build_settings_payload(paths: WebPaths) -> dict[str, Any]:
                 "port": 8765,
             },
         },
+    }
+
+
+def _restart_service_from_config(paths: WebPaths) -> dict[str, Any]:
+    status = service.get_service_status(service_dir=paths.service_dir)
+    if not status.get("running"):
+        return {
+            "ok": True,
+            "restarted": False,
+            "reason": "service_not_running",
+            "status": status,
+        }
+    stopped = service.stop_service(service_dir=paths.service_dir)
+    started = service.start_service(load_settings(paths.config_path), service_dir=paths.service_dir)
+    return {
+        "ok": bool(stopped.get("ok") and started.get("ok")),
+        "restarted": True,
+        "stop": stopped,
+        "start": started,
+        "status": service.get_service_status(service_dir=paths.service_dir),
     }
 
 
