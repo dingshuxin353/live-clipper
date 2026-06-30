@@ -1,0 +1,16 @@
+{
+  "language": "zh",
+  "name": "live-clipper 最小工作 Pack",
+  "paths": {
+    "project_docs": "docs/",
+    "runtime_output": "output/",
+    "runtime_work": "work/"
+  },
+  "directories": [],
+  "rules": [
+    { "slot": "pack.general.overview", "from": "rules/zh/overview.md" },
+    { "slot": "pack.general.workflow", "from": "rules/zh/workflow.md" }
+  ],
+  "templates": [],
+  "seed": []
+}

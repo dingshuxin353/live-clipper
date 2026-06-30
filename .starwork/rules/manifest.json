@@ -1,0 +1,17 @@
+{
+  "schema": "starwork.agent_rules.v0.1",
+  "slots": [
+    {
+      "slot": "pack.live-clipper-minimal.general.overview",
+      "title": "通用工作场景",
+      "group": "场景规则",
+      "file": ".starwork/rules/pack.live-clipper-minimal.general.overview.md"
+    },
+    {
+      "slot": "pack.live-clipper-minimal.general.workflow",
+      "title": "通用工作流",
+      "group": "场景规则",
+      "file": ".starwork/rules/pack.live-clipper-minimal.general.workflow.md"
+    }
+  ]
+}

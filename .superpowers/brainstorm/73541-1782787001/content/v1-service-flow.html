@@ -1,0 +1,41 @@
+<h2>V1：常驻服务内核</h2>
+<p class="subtitle">第一版目标：用 CLI 自管进程替代外部定时任务，让本地服务持续推进 run 生命周期。</p>
+
+<div class="mockup">
+  <div class="mockup-header">服务主循环</div>
+  <div class="mockup-body">
+    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;align-items:stretch">
+      <div class="placeholder"><strong>1. Scan Source</strong><br>按配置扫描 NAS 录播源</div>
+      <div class="placeholder"><strong>2. Stable Check</strong><br>确认文件年龄和大小稳定</div>
+      <div class="placeholder"><strong>3. Stage</strong><br>复制到 input，记录 source fingerprint</div>
+      <div class="placeholder"><strong>4. Pipeline</strong><br>后台执行 pipeline 到审阅包</div>
+      <div class="placeholder"><strong>5. Lifecycle</strong><br>等待选择，自动 render，cleanup 预演</div>
+    </div>
+  </div>
+</div>
+
+<div class="split">
+  <div class="mockup">
+    <div class="mockup-header">CLI 控制面</div>
+    <div class="mockup-body">
+      <div class="placeholder">live-clipper service start</div>
+      <div class="placeholder">live-clipper service stop</div>
+      <div class="placeholder">live-clipper service status</div>
+      <div class="placeholder">live-clipper service logs</div>
+    </div>
+  </div>
+  <div class="mockup">
+    <div class="mockup-header">状态与日志</div>
+    <div class="mockup-body">
+      <div class="placeholder">work/service/service.pid</div>
+      <div class="placeholder">work/service/service.json</div>
+      <div class="placeholder">work/service/events.jsonl</div>
+      <div class="placeholder">work/automation_state/*.json</div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>V1 不做</h3>
+  <p>MCP 工具、Web 控制台重构、launchd 安装、自动删除文件、多录播源完整 UI。V1 只把常驻服务跑稳。</p>
+</div>

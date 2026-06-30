@@ -1,0 +1,87 @@
+{
+  "version": 1,
+  "lanes": {
+    "product-manager": {
+      "host": "codex",
+      "current_session": "codex:019f115f-fe1f-78b0-8e96-4e44c686a83a",
+      "thread_id": "019f115f-fe1f-78b0-8e96-4e44c686a83a",
+      "session_id": "019f115f-fe1f-78b0-8e96-4e44c686a83a",
+      "session_name": "live-clipper 产品经理",
+      "pinned": false,
+      "created_by": "starwork multiagent bind",
+      "created_at": "2026-06-29T08:13:07.357Z"
+    },
+    "development-manager": {
+      "host": "codex",
+      "current_session": "codex:019efa2a-e498-70b3-aaf7-cf1ad4376013",
+      "thread_id": "019efa2a-e498-70b3-aaf7-cf1ad4376013",
+      "session_id": "019efa2a-e498-70b3-aaf7-cf1ad4376013",
+      "session_name": "live-clipper 开发经理",
+      "pinned": false,
+      "created_by": "starwork multiagent bind",
+      "created_at": "2026-06-29T08:21:57.302Z"
+    }
+  },
+  "requests": [
+    {
+      "id": "REQ-20260630-055654Z-development-manager",
+      "from": "product-manager",
+      "to": "development-manager",
+      "message_type": "instruction",
+      "recorded_in": "_系统/协作/shared.md",
+      "host_delivery": {
+        "status": "delivered_via_codex_thread_tool",
+        "delivery_tool": "send_message_to_thread",
+        "mode": "record_only"
+      }
+    },
+    {
+      "id": "REQ-20260630-061038Z-product-manager",
+      "from": "development-manager",
+      "to": "product-manager",
+      "message_type": "instruction",
+      "recorded_in": "_系统/协作/shared.md",
+      "host_delivery": {
+        "status": "delivered_via_codex_thread_tool",
+        "delivery_tool": "send_message_to_thread",
+        "mode": "record_only"
+      }
+    },
+    {
+      "id": "REQ-20260630-061038Z-product-manager-response",
+      "from": "product-manager",
+      "to": "development-manager",
+      "message_type": "instruction",
+      "recorded_in": "_系统/协作/shared.md",
+      "host_delivery": {
+        "status": "delivered_via_codex_thread_tool",
+        "delivery_tool": "send_message_to_thread",
+        "mode": "record_only"
+      }
+    },
+    {
+      "id": "REQ-20260630-061804Z-product-manager",
+      "from": "development-manager",
+      "to": "product-manager",
+      "message_type": "instruction",
+      "recorded_in": "_系统/协作/shared.md",
+      "host_delivery": {
+        "status": "delivered_via_codex_thread_tool",
+        "delivery_tool": "send_message_to_thread",
+        "mode": "record_only"
+      }
+    },
+    {
+      "id": "REQ-20260630-061913Z-development-manager-ack",
+      "from": "product-manager",
+      "to": "development-manager",
+      "message_type": "instruction",
+      "recorded_in": "_系统/协作/shared.md",
+      "host_delivery": {
+        "status": "delivered_via_codex_thread_tool",
+        "delivery_tool": "send_message_to_thread",
+        "mode": "record_only"
+      }
+    }
+  ]
+}

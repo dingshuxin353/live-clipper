@@ -1,0 +1,42 @@
+<h2>V3：确认队列与批量删除</h2>
+<p class="subtitle">删除类 MCP 工具不直接删除，而是创建待确认请求；Web 控制台集中展示、批量确认。</p>
+
+<div class="mockup">
+  <div class="mockup-header">删除请求流</div>
+  <div class="mockup-body">
+    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;align-items:stretch">
+      <div class="placeholder"><strong>AI / MCP</strong><br>提出删除动作</div>
+      <div class="placeholder"><strong>Service Core</strong><br>校验路径和规则</div>
+      <div class="placeholder"><strong>confirmation_required</strong><br>写入确认队列</div>
+      <div class="placeholder"><strong>Web Console</strong><br>用户批量确认</div>
+      <div class="placeholder"><strong>Service Core</strong><br>执行删除并记录事件</div>
+    </div>
+  </div>
+</div>
+
+<div class="mockup">
+  <div class="mockup-header">Web 控制台：确认队列示意</div>
+  <div class="mockup-body">
+    <div class="placeholder" style="display:grid;grid-template-columns:32px 1.2fr 1fr 1fr 1fr;gap:10px;text-align:left">
+      <strong></strong><strong>请求</strong><strong>范围</strong><strong>风险</strong><strong>状态</strong>
+    </div>
+    <div class="placeholder" style="display:grid;grid-template-columns:32px 1.2fr 1fr 1fr 1fr;gap:10px;text-align:left">
+      <span>[ ]</span><span>删除成片 clip_03.mp4</span><span>output/.../clips</span><span>低</span><span>待确认</span>
+    </div>
+    <div class="placeholder" style="display:grid;grid-template-columns:32px 1.2fr 1fr 1fr 1fr;gap:10px;text-align:left">
+      <span>[ ]</span><span>清理中间音频 audio.wav</span><span>cleanup plan</span><span>中</span><span>待确认</span>
+    </div>
+    <div class="placeholder" style="display:grid;grid-template-columns:32px 1.2fr 1fr 1fr 1fr;gap:10px;text-align:left">
+      <span>[ ]</span><span>删除 input 本地副本</span><span>input/</span><span>中</span><span>待确认</span>
+    </div>
+    <div style="margin-top:16px;text-align:right">
+      <button class="mock-button">拒绝所选</button>
+      <button class="mock-button">确认所选</button>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>产品规则</h3>
+  <p>V2 MCP 可以创建删除请求，但不能直接删除。V3 Web 控制台提供确认队列，用户可以逐条或批量确认。每次确认都会重新校验路径、文件状态和 run 状态，避免旧请求误删新文件。</p>
+</div>
