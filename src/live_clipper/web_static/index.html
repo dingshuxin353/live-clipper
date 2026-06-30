@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Live Clipper Web Console</title>
+    <title>Live Clipper 控制台</title>
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
@@ -12,15 +12,15 @@
         <div class="brand-mark">LC</div>
         <div>
           <h1>Live Clipper</h1>
-          <span class="version">Web Console V3</span>
+          <span class="version">Web 控制台 V3</span>
         </div>
       </div>
-      <nav class="tabs" aria-label="Console sections">
-        <button class="tab active" data-tab="service">Service</button>
-        <button class="tab" data-tab="runs">Runs</button>
-        <button class="tab" data-tab="confirmations">Confirmations</button>
-        <button class="tab" data-tab="logs">Logs</button>
-        <button class="tab" data-tab="settings">Settings</button>
+      <nav class="tabs" aria-label="控制台页面">
+        <button class="tab active" data-tab="service">服务</button>
+        <button class="tab" data-tab="runs">任务</button>
+        <button class="tab" data-tab="confirmations">确认</button>
+        <button class="tab" data-tab="logs">日志</button>
+        <button class="tab" data-tab="settings">设置</button>
       </nav>
       <div class="local-chip">127.0.0.1</div>
     </header>
@@ -28,12 +28,12 @@
     <main class="workspace">
       <section class="panel section active" id="section-service">
         <div class="panel-heading">
-          <h2>Service</h2>
+          <h2>服务</h2>
           <div class="button-row">
-            <button id="refreshBtn" class="secondary-button">Refresh</button>
-            <button id="startServiceBtn" class="primary-button">Start</button>
-            <button id="stopServiceBtn" class="secondary-button">Stop</button>
-            <button id="scanNowBtn" class="secondary-button">Scan Now</button>
+            <button id="refreshBtn" class="secondary-button">刷新</button>
+            <button id="startServiceBtn" class="primary-button">启动</button>
+            <button id="stopServiceBtn" class="secondary-button">停止</button>
+            <button id="scanNowBtn" class="secondary-button">立即扫描</button>
           </div>
         </div>
         <div id="serviceMetrics" class="metrics-grid"></div>
@@ -42,14 +42,14 @@
 
       <section class="panel section" id="section-runs">
         <div class="panel-heading">
-          <h2>Runs</h2>
+          <h2>任务</h2>
           <div class="segmented" id="phaseFilters">
-            <button class="active" data-phase="">all</button>
-            <button data-phase="processing">processing</button>
-            <button data-phase="needs_review">needs_review</button>
-            <button data-phase="rendering">rendering</button>
-            <button data-phase="rendered">rendered</button>
-            <button data-phase="failed">failed</button>
+            <button class="active" data-phase="">全部</button>
+            <button data-phase="processing">处理中</button>
+            <button data-phase="needs_review">待审阅</button>
+            <button data-phase="rendering">渲染中</button>
+            <button data-phase="rendered">已成片</button>
+            <button data-phase="failed">失败</button>
           </div>
         </div>
         <div class="runs-layout">
@@ -57,8 +57,8 @@
           <div class="detail-panel">
             <div id="runDetail"></div>
             <div class="button-row detail-actions">
-              <button id="renderRunBtn" class="primary-button" disabled>Render</button>
-              <button id="cleanupPreviewBtn" class="secondary-button" disabled>Preview Cleanup</button>
+              <button id="renderRunBtn" class="primary-button" disabled>渲染</button>
+              <button id="cleanupPreviewBtn" class="secondary-button" disabled>预览清理</button>
             </div>
           </div>
         </div>
@@ -66,10 +66,10 @@
 
       <section class="panel section" id="section-confirmations">
         <div class="panel-heading">
-          <h2>Confirmations</h2>
+          <h2>确认</h2>
           <div class="button-row">
-            <button id="batchApproveBtn" class="danger-button">Approve Selected</button>
-            <button id="batchRejectBtn" class="secondary-button">Reject Selected</button>
+            <button id="batchApproveBtn" class="danger-button">确认所选</button>
+            <button id="batchRejectBtn" class="secondary-button">拒绝所选</button>
           </div>
         </div>
         <div id="confirmationList" class="confirmation-list"></div>
@@ -77,17 +77,17 @@
 
       <section class="panel section" id="section-logs">
         <div class="panel-heading">
-          <h2>Logs</h2>
-          <button id="clearLogBtn" class="secondary-button">Clear</button>
+          <h2>日志</h2>
+          <button id="clearLogBtn" class="secondary-button">清空</button>
         </div>
         <div id="eventStream" class="event-list"></div>
-        <pre id="logOutput" class="log-output">Select a run to inspect logs.</pre>
+        <pre id="logOutput" class="log-output">选择一个任务查看日志。</pre>
       </section>
 
       <section class="panel section" id="section-settings">
         <div class="panel-heading">
-          <h2>Settings</h2>
-          <span class="muted">read only</span>
+          <h2>设置</h2>
+          <span class="muted">只读</span>
         </div>
         <div id="settingsView" class="info-grid"></div>
       </section>

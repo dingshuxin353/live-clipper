@@ -457,7 +457,7 @@ Agent 的介入信号是文件状态：
 
 - 当前 Agent 定时任务输出中的 `requires_codex: true`；
 - run 目录里的 `codex_task.md`；
-- Web 控制台里的 `Codex 选择` 等待状态。
+- Web 控制台里的 `待选片` 等待状态。
 
 ## Web 控制台
 
@@ -471,11 +471,11 @@ V3 Web 控制台是 Service Core 的统一控制面，默认只允许本机访�
 
 页面包含：
 
-- `Service`：查看服务状态、PID、心跳、下次扫描、录播源摘要，并可 start / stop / scan now。
-- `Runs`：按 `processing`、`needs_review`、`rendering`、`rendered`、`failed` 查看 run 和详情。
-- `Confirmations`：查看 MCP/Web 创建的删除确认请求，支持单条 approve/reject 和批量 approve/reject。
-- `Logs`：查看事件流和 run 日志尾部。
-- `Settings`：只读查看关键配置。
+- `服务`：查看服务状态、PID、心跳、下次扫描、录播源摘要，并可启动、停止、立即扫描。
+- `任务`：按 `processing`、`needs_review`、`rendering`、`rendered`、`failed` 查看任务和详情。
+- `确认`：查看 MCP/Web 创建的删除确认请求，支持单条确认/拒绝和批量确认/拒绝。
+- `日志`：查看事件流和任务日志尾部。
+- `设置`：只读查看关键配置。
 
 如果确实需要局域网访问：
 

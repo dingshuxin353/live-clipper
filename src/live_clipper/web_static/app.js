@@ -20,7 +20,7 @@ async function api(path, options = {}) {
   });
   const payload = await response.json();
   if (!response.ok || payload.ok === false) {
-    throw new Error(payload.message || payload.error || "request failed");
+    throw new Error(payload.message || payload.error || "请求失败");
   }
   return payload;
 }
@@ -52,6 +52,46 @@ function formatBytes(bytes) {
   return `${value} B`;
 }
 
+const phaseLabels = {
+  processing: "处理中",
+  needs_review: "待审阅",
+  rendering: "渲染中",
+  rendered: "已成片",
+  failed: "失败",
+  cleanup_ready: "可清理",
+  ready_to_render: "可渲染",
+  needs_codex_selection: "待选片",
+  running: "运行中",
+  waiting_or_manual: "等待处理",
+  missing: "缺失",
+  unknown: "未知",
+};
+
+const valueLabels = {
+  running: "运行中",
+  stopped: "已停止",
+  stale: "已失联",
+  error: "异常",
+  pending: "待确认",
+  approved_executed: "已确认执行",
+  rejected: "已拒绝",
+  delete_clip: "删除成片",
+  cleanup_confirm: "执行清理",
+  delete_local_source: "删除本地源文件",
+  low: "低风险",
+  medium: "中风险",
+  high: "高风险",
+};
+
+const cleanupKindLabels = {
+  audio: "中间音频",
+  local_source_video: "本地源视频",
+};
+
+function labelFor(value) {
+  return valueLabels[value] || phaseLabels[value] || value || "-";
+}
+
 function switchTab(tab) {
   state.activeTab = tab;
   document.querySelectorAll(".tab").forEach((button) => {
@@ -64,25 +104,25 @@ function switchTab(tab) {
 
 function renderMetrics(status) {
   const metrics = [
-    ["status", status.service?.status || "stopped"],
-    ["pid", status.service?.pid || "none"],
-    ["active", status.active_run || "none"],
-    ["needs review", String(status.pending_review_runs?.length || 0)],
-    ["failed", String(status.failed_runs?.length || 0)],
-    ["confirmations", String(status.pending_confirmation_count || 0)],
+    ["状态", labelFor(status.service?.status || "stopped")],
+    ["PID", status.service?.pid || "无"],
+    ["当前任务", status.active_run || "无"],
+    ["待审阅", String(status.pending_review_runs?.length || 0)],
+    ["失败", String(status.failed_runs?.length || 0)],
+    ["待确认", String(status.pending_confirmation_count || 0)],
   ];
   el("serviceMetrics").innerHTML = metrics
     .map(([label, value]) => `<div class="metric"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`)
     .join("");
   const source = status.source_summary || {};
   el("serviceSummary").innerHTML = [
-    ["running", status.running ? "yes" : "no"],
-    ["last heartbeat", status.service?.last_heartbeat_at || "-"],
-    ["next scan", status.service?.next_scan_at || "-"],
-    ["source", source.source_dir || "-"],
-    ["input", source.input_dir || "-"],
-    ["output", source.output_root || "-"],
-    ["last error", status.service?.last_error || "-"],
+    ["运行中", status.running ? "是" : "否"],
+    ["最近心跳", status.service?.last_heartbeat_at || "-"],
+    ["下次扫描", status.service?.next_scan_at || "-"],
+    ["录播源", source.source_dir || "-"],
+    ["输入目录", source.input_dir || "-"],
+    ["输出目录", source.output_root || "-"],
+    ["最近错误", status.service?.last_error || "-"],
   ]
     .map(([label, value]) => `<div class="info-row"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`)
     .join("");
@@ -91,14 +131,14 @@ function renderMetrics(status) {
 function renderRuns() {
   const list = el("runList");
   if (!state.runs.length) {
-    list.innerHTML = '<div class="empty">No service runs yet.</div>';
+    list.innerHTML = '<div class="empty">还没有服务任务。</div>';
     return;
   }
   list.innerHTML = state.runs
     .map((run) => `
       <button class="run-item ${run.run_id === state.selectedRunId ? "active" : ""}" data-run-id="${escapeHtml(run.run_id)}">
         <span class="run-title">${escapeHtml(run.source_name || run.run_id)}</span>
-        <span class="status-pill ${escapeHtml(run.phase || "unknown")}">${escapeHtml(run.phase || "unknown")}</span>
+        <span class="status-pill ${escapeHtml(run.phase || "unknown")}">${escapeHtml(labelFor(run.phase || "unknown"))}</span>
         <small>${escapeHtml(run.run_id)}</small>
         <small>${escapeHtml(run.updated_at || "-")}</small>
       </button>
@@ -109,7 +149,7 @@ function renderRuns() {
 function renderRunDetail() {
   const detail = state.detail;
   if (!detail || !detail.ok) {
-    el("runDetail").innerHTML = '<div class="empty">Select a run.</div>';
+    el("runDetail").innerHTML = '<div class="empty">请选择一个任务。</div>';
     el("renderRunBtn").disabled = true;
     el("cleanupPreviewBtn").disabled = true;
     return;
@@ -119,33 +159,33 @@ function renderRunDetail() {
   const cleanup = detail.cleanup || { targets: [] };
   el("runDetail").innerHTML = `
     <div class="info-grid">
-      ${infoRow("run", run.run_id)}
-      ${infoRow("phase", run.phase)}
-      ${infoRow("source", run.source_path)}
-      ${infoRow("local", run.local_source_path)}
-      ${infoRow("run dir", run.run_dir)}
-      ${infoRow("candidates", run.candidate_count || detail.candidates_count || 0)}
-      ${infoRow("selected", run.selected_count || detail.selected_count || 0)}
-      ${infoRow("clips", run.clip_count || detail.rendered_clip_count || 0)}
+      ${infoRow("任务", run.run_id)}
+      ${infoRow("阶段", labelFor(run.phase))}
+      ${infoRow("源文件", run.source_path)}
+      ${infoRow("本地副本", run.local_source_path)}
+      ${infoRow("任务目录", run.run_dir)}
+      ${infoRow("候选数", run.candidate_count || detail.candidates_count || 0)}
+      ${infoRow("已选片段", run.selected_count || detail.selected_count || 0)}
+      ${infoRow("成片数", run.clip_count || detail.rendered_clip_count || 0)}
     </div>
-    <h3>Files</h3>
+    <h3>文件</h3>
     <div class="file-grid">
-      ${Object.entries(files).map(([name, file]) => `<div class="file-row"><strong>${escapeHtml(name)}</strong><small>${file.exists ? escapeHtml(file.path) : "missing"}</small></div>`).join("")}
+      ${Object.entries(files).map(([name, file]) => `<div class="file-row"><strong>${escapeHtml(name)}</strong><small>${file.exists ? escapeHtml(file.path) : "缺失"}</small></div>`).join("")}
     </div>
-    <h3>Cleanup Preview</h3>
+    <h3>清理预览</h3>
     <div class="cleanup-list">
       ${(cleanup.targets || []).map((target) => `
         <div class="cleanup-row ${target.deletable ? "deletable" : "protected"}">
-          <strong>${target.deletable ? "deletable" : "protected"} · ${escapeHtml(target.kind)}</strong>
+          <strong>${target.deletable ? "可删除" : "受保护"} · ${escapeHtml(cleanupKindLabels[target.kind] || target.kind)}</strong>
           <small>${formatBytes(target.bytes)} · ${escapeHtml(target.path)}</small>
           <small>${escapeHtml(target.reason)}</small>
         </div>
-      `).join("") || '<div class="empty">No cleanup targets.</div>'}
+      `).join("") || '<div class="empty">没有清理目标。</div>'}
     </div>
   `;
   el("renderRunBtn").disabled = !detail.actions?.can_render;
   el("cleanupPreviewBtn").disabled = !detail.actions?.can_cleanup_preview;
-  el("logOutput").textContent = detail.log?.log || detail.log?.tail || "No run log.";
+  el("logOutput").textContent = detail.log?.log || detail.log?.tail || "暂无任务日志。";
 }
 
 function infoRow(label, value) {
@@ -155,7 +195,7 @@ function infoRow(label, value) {
 function renderConfirmations() {
   const pending = state.confirmations.filter((item) => item.status === "pending");
   if (!pending.length) {
-    el("confirmationList").innerHTML = '<div class="empty">No pending confirmations.</div>';
+    el("confirmationList").innerHTML = '<div class="empty">没有待确认请求。</div>';
     return;
   }
   el("confirmationList").innerHTML = pending
@@ -163,14 +203,14 @@ function renderConfirmations() {
       <div class="confirmation-row">
         <input type="checkbox" data-confirmation-check="${escapeHtml(item.id)}" />
         <div>
-          <strong>${escapeHtml(item.action)}</strong>
-          <small>${escapeHtml(item.id)} · run ${escapeHtml(item.run_id)}</small>
+          <strong>${escapeHtml(labelFor(item.action))}</strong>
+          <small>${escapeHtml(item.id)} · 任务 ${escapeHtml(item.run_id)}</small>
           <small>${escapeHtml(item.target_path)}</small>
         </div>
-        <span class="risk ${escapeHtml(item.risk_level)}">${escapeHtml(item.risk_level)}</span>
+        <span class="risk ${escapeHtml(item.risk_level)}">${escapeHtml(labelFor(item.risk_level))}</span>
         <div class="button-row">
-          <button class="danger-button small" data-approve="${escapeHtml(item.id)}">Approve</button>
-          <button class="secondary-button small" data-reject="${escapeHtml(item.id)}">Reject</button>
+          <button class="danger-button small" data-approve="${escapeHtml(item.id)}">确认</button>
+          <button class="secondary-button small" data-reject="${escapeHtml(item.id)}">拒绝</button>
         </div>
       </div>
     `)
@@ -180,7 +220,7 @@ function renderConfirmations() {
 function renderEvents() {
   el("eventStream").innerHTML = state.events
     .map((event) => `<div class="event-row"><strong>${escapeHtml(event.type)}</strong><small>${escapeHtml(event.created_at)} · ${escapeHtml(event.run_id || "-")}</small></div>`)
-    .join("") || '<div class="empty">No events.</div>';
+    .join("") || '<div class="empty">暂无事件。</div>';
 }
 
 function renderSettings(settings) {
@@ -188,13 +228,13 @@ function renderSettings(settings) {
   const source = settings.recording_source || {};
   const web = settings.web || {};
   el("settingsView").innerHTML = [
-    ["scan interval", `${service.scan_interval_minutes || "-"} min`],
-    ["auto render", service.auto_render_after_selection ? "true" : "false"],
-    ["cleanup mode", service.cleanup_mode || "-"],
-    ["source dir", source.source_dir || "-"],
-    ["input dir", source.input_dir || "-"],
-    ["output root", source.output_root || "-"],
-    ["web bind", `${web.host || "127.0.0.1"}:${web.port || 8765}`],
+    ["扫描间隔", `${service.scan_interval_minutes || "-"} 分钟`],
+    ["自动渲染", service.auto_render_after_selection ? "开启" : "关闭"],
+    ["清理模式", service.cleanup_mode || "-"],
+    ["录播源目录", source.source_dir || "-"],
+    ["输入目录", source.input_dir || "-"],
+    ["输出目录", source.output_root || "-"],
+    ["Web 绑定", `${web.host || "127.0.0.1"}:${web.port || 8765}`],
   ]
     .map(([label, value]) => infoRow(label, value))
     .join("");
@@ -253,7 +293,7 @@ async function post(path, payload) {
   if (payload !== undefined) options.body = JSON.stringify(payload);
   const result = await api(path, options);
   if (result.status === "confirmation_required") {
-    el("logOutput").textContent = `confirmation_required: ${result.confirmation_id}`;
+    el("logOutput").textContent = `需要确认: ${result.confirmation_id}`;
   }
   await refreshAll();
   return result;
@@ -277,16 +317,16 @@ document.addEventListener("click", async (event) => {
       el("logOutput").textContent = JSON.stringify(result, null, 2);
     }
     if (event.target.dataset.approve) await post(`/api/confirmations/${event.target.dataset.approve}/approve`);
-    if (event.target.dataset.reject) await post(`/api/confirmations/${event.target.dataset.reject}/reject`, { reason: "Rejected in Web Console" });
+    if (event.target.dataset.reject) await post(`/api/confirmations/${event.target.dataset.reject}/reject`, { reason: "在 Web 控制台拒绝" });
     if (event.target.id === "batchApproveBtn") {
       const ids = selectedConfirmationIds();
       await post("/api/confirmations/batch-approve", { ids });
-      el("logOutput").textContent = `batch approve: ${ids.join(", ") || "none"}`;
+      el("logOutput").textContent = `批量确认: ${ids.join(", ") || "无"}`;
     }
     if (event.target.id === "batchRejectBtn") {
       const ids = selectedConfirmationIds();
-      await post("/api/confirmations/batch-reject", { ids, reason: "Rejected in Web Console" });
-      el("logOutput").textContent = `batch reject: ${ids.join(", ") || "none"}`;
+      await post("/api/confirmations/batch-reject", { ids, reason: "在 Web 控制台批量拒绝" });
+      el("logOutput").textContent = `批量拒绝: ${ids.join(", ") || "无"}`;
     }
     if (event.target.id === "clearLogBtn") el("logOutput").textContent = "";
   } catch (error) {
