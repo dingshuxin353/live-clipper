@@ -99,6 +99,10 @@ PY
 .venv/bin/live-clipper guide ai
 .venv/bin/live-clipper setup
 .venv/bin/live-clipper next
+.venv/bin/live-clipper service start
+.venv/bin/live-clipper service status --json
+.venv/bin/live-clipper service logs
+.venv/bin/live-clipper service stop
 .venv/bin/live-clipper scan input/week_023_live.mp4 --output-dir output/week_023
 .venv/bin/live-clipper scan input/week_023_live.mp4 --output-dir output/week_023 --resume
 .venv/bin/live-clipper refine output/week_023
@@ -114,6 +118,7 @@ PY
 - `guide ai`: 输出可复制给 AI 助手的中文陪跑说明。
 - `setup`: 创建 `.env`、`live-clipper.toml`、常用目录和提示词模板。
 - `next`: 告诉你当前 output 里的任务下一步该做什么。
+- `service start/stop/status/logs`: 管理本机常驻服务。
 - `scan`: 生成音频、转录、窗口和候选。
 - `scan --resume`: 复用已有中间文件，从断点继续。
 - `refine`: 用 LLM 对候选做二次复评。
@@ -156,6 +161,58 @@ failure_log_mode = "redacted"
 ```
 
 更多说明见 [docs/configuration.md](docs/configuration.md)。
+
+## 本机常驻服务
+
+V1 提供一个本机常驻服务，用来替代手写的定时提示词编排。服务会按配置扫描录播目录，把稳定录制复制到本地 `input/`，启动现有 pipeline，等 `selected_clips.json` 出现后自动渲染。
+
+常用命令：
+
+```bash
+.venv/bin/live-clipper service start
+.venv/bin/live-clipper service start --foreground
+.venv/bin/live-clipper service start --once
+.venv/bin/live-clipper service status --json
+.venv/bin/live-clipper service logs
+.venv/bin/live-clipper service stop
+```
+
+服务状态写在：
+
+```text
+work/service/
+  service.pid
+  service.json
+  service.log
+  runs.json
+  events.jsonl
+```
+
+配置示例：
+
+```toml
+[service]
+enabled = true
+scan_interval_minutes = 30
+auto_render_after_selection = true
+cleanup_mode = "preview_only"
+
+[recording_source.default]
+source_dir = "/Volumes/homes/weixiaodan12/录播"
+input_dir = "input"
+output_root = "output"
+since_hours = 168
+min_age_minutes = 10
+stable_check_seconds = 60
+```
+
+安全边界：
+
+- 服务不会自动删除 NAS 原始录制。
+- 服务不会自动删除本地输入副本。
+- 服务不会自动执行 `cleanup --confirm`。
+- `service stop` 只停止服务主进程，不会主动终止已经启动的 pipeline 子进程。
+- V1 只会在渲染完成后做 cleanup preview，并把状态记录到本地文件。
 
 ## 提示词自定义
 

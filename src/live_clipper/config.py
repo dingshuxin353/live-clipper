@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import os
-from pathlib import Path
 import tomllib
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
 
 from .utils import ensure_dir
-
 
 DEFAULT_CONFIG_PATH = Path("live-clipper.toml")
 DEFAULT_LLM_API_BASE = "https://apihub.agnes-ai.com/v1"
@@ -41,6 +40,20 @@ glossary_path = "glossary/common_terms.json"
 source_dir = ""
 since_hours = 36
 min_age_minutes = 10
+
+[service]
+enabled = true
+scan_interval_minutes = 30
+auto_render_after_selection = true
+cleanup_mode = "preview_only"
+
+[recording_source.default]
+source_dir = ""
+input_dir = "input"
+output_root = "output"
+since_hours = 168
+min_age_minutes = 10
+stable_check_seconds = 60
 
 [asr]
 backend = "mlx_whisper"
@@ -104,6 +117,25 @@ class RecordingSourceConfig:
     source_dir: Path | None = None
     since_hours: int = 36
     min_age_minutes: int = 10
+
+
+@dataclass(frozen=True)
+class ServiceConfig:
+    enabled: bool = True
+    scan_interval_minutes: int = 30
+    auto_render_after_selection: bool = True
+    cleanup_mode: str = "preview_only"
+
+
+@dataclass(frozen=True)
+class RecordingSourceDefaultConfig:
+    source_id: str = "default"
+    source_dir: Path | None = None
+    input_dir: Path = Path("input")
+    output_root: Path = Path("output")
+    since_hours: int = 168
+    min_age_minutes: int = 10
+    stable_check_seconds: int = 60
 
 
 @dataclass(frozen=True)
@@ -176,6 +208,8 @@ class Settings:
     hf_token: str | None = None
     paths: PathsConfig = field(default_factory=PathsConfig)
     recording_source: RecordingSourceConfig = field(default_factory=RecordingSourceConfig)
+    service: ServiceConfig = field(default_factory=ServiceConfig)
+    recording_source_default: RecordingSourceDefaultConfig = field(default_factory=RecordingSourceDefaultConfig)
     asr: ASRConfig | None = None
     llm: LLMConfig | None = None
     prompts: PromptsConfig = field(default_factory=PromptsConfig)
@@ -258,6 +292,10 @@ def load_settings(config_path: Path | None = None) -> Settings:
 
     paths_data = config.get("paths", {})
     recording_data = config.get("recording_source", {})
+    recording_default_data = {}
+    if isinstance(recording_data.get("default"), dict):
+        recording_default_data = recording_data.get("default", {})
+    service_data = config.get("service", {})
     asr_data = config.get("asr", {})
     llm_data = config.get("llm", {})
     prompts_data = config.get("prompts", {})
@@ -310,6 +348,21 @@ def load_settings(config_path: Path | None = None) -> Settings:
             source_dir=_path_or_none(recording_data.get("source_dir")),
             since_hours=int(recording_data.get("since_hours", 36)),
             min_age_minutes=int(recording_data.get("min_age_minutes", 10)),
+        ),
+        service=ServiceConfig(
+            enabled=bool(service_data.get("enabled", True)),
+            scan_interval_minutes=int(service_data.get("scan_interval_minutes", 30)),
+            auto_render_after_selection=bool(service_data.get("auto_render_after_selection", True)),
+            cleanup_mode=str(service_data.get("cleanup_mode", "preview_only")),
+        ),
+        recording_source_default=RecordingSourceDefaultConfig(
+            source_id="default",
+            source_dir=_path_or_none(recording_default_data.get("source_dir")),
+            input_dir=_path_value(recording_default_data, "input_dir", Path("input")),
+            output_root=_path_value(recording_default_data, "output_root", Path("output")),
+            since_hours=int(recording_default_data.get("since_hours", 168)),
+            min_age_minutes=int(recording_default_data.get("min_age_minutes", 10)),
+            stable_check_seconds=int(recording_default_data.get("stable_check_seconds", 60)),
         ),
         asr=asr,
         llm=llm,
