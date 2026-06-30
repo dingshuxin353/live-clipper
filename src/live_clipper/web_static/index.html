@@ -12,7 +12,7 @@
         <div class="brand-mark">LC</div>
         <div>
           <h1>Live Clipper</h1>
-          <span class="version">Web 控制台 V3</span>
+          <span class="version">Web 控制台 V4</span>
         </div>
       </div>
       <nav class="tabs" aria-label="控制台页面">
@@ -20,7 +20,7 @@
         <button class="tab" data-tab="runs">任务</button>
         <button class="tab" data-tab="confirmations">确认</button>
         <button class="tab" data-tab="logs">日志</button>
-        <button class="tab" data-tab="settings">设置</button>
+        <button class="tab" data-tab="config">配置</button>
       </nav>
       <div class="local-chip">127.0.0.1</div>
     </header>
@@ -84,12 +84,80 @@
         <pre id="logOutput" class="log-output">选择一个任务查看日志。</pre>
       </section>
 
-      <section class="panel section" id="section-settings">
+      <section class="panel section" id="section-config">
         <div class="panel-heading">
-          <h2>设置</h2>
-          <span class="muted">只读</span>
+          <div>
+            <h2>配置</h2>
+            <span class="muted" id="configMeta">读取 live-clipper.toml</span>
+          </div>
+          <div class="button-row">
+            <button id="validateConfigBtn" class="secondary-button">检查配置</button>
+            <button id="saveConfigBtn" class="primary-button">保存配置</button>
+            <button id="reloadConfigBtn" class="secondary-button">重载配置</button>
+            <button id="resetConfigBtn" class="secondary-button">恢复默认</button>
+            <button id="restartServiceBtn" class="secondary-button">重启服务</button>
+          </div>
         </div>
-        <div id="settingsView" class="info-grid"></div>
+        <div id="configNotice" class="notice" hidden></div>
+        <form id="configForm" class="config-form">
+          <fieldset>
+            <legend>基础路径</legend>
+            <label>输入目录<input data-config-field="paths.input_dir" /></label>
+            <label>输出目录<input data-config-field="paths.output_root" /></label>
+            <label>工作目录<input data-config-field="paths.work_dir" /></label>
+            <label>术语表路径<input data-config-field="paths.glossary_path" /></label>
+          </fieldset>
+
+          <fieldset>
+            <legend>录播源</legend>
+            <label>录播源目录<input data-config-field="recording_source_default.source_dir" placeholder="可以为空；为空时不会自动扫描" /></label>
+            <label>输入目录<input data-config-field="recording_source_default.input_dir" /></label>
+            <label>输出目录<input data-config-field="recording_source_default.output_root" /></label>
+            <label>回看时间窗口（小时）<input type="number" data-config-field="recording_source_default.since_hours" /></label>
+            <label>最小文件年龄（分钟）<input type="number" data-config-field="recording_source_default.min_age_minutes" /></label>
+            <label>稳定性检查秒数<input type="number" data-config-field="recording_source_default.stable_check_seconds" /></label>
+          </fieldset>
+
+          <fieldset>
+            <legend>AI 与 ASR</legend>
+            <label>模型服务名称<input data-config-field="llm.provider_label" /></label>
+            <label>LLM API 地址<input data-config-field="llm.api_base" /></label>
+            <label>LLM API key 环境变量名<input data-config-field="llm.api_key_env" /></label>
+            <label>LLM 模型名<input data-config-field="llm.model" /></label>
+            <label>请求超时（秒）<input type="number" data-config-field="llm.timeout_seconds" /></label>
+            <label>重试次数<input type="number" data-config-field="llm.request_attempts" /></label>
+            <label>重试间隔（秒）<input type="number" step="0.1" data-config-field="llm.retry_delay_seconds" /></label>
+            <label>ASR 后端
+              <select data-config-field="asr.backend">
+                <option value="mlx_whisper">mlx_whisper</option>
+                <option value="openai">openai</option>
+              </select>
+            </label>
+            <label>ASR 模型<input data-config-field="asr.model" /></label>
+            <label>语言<input data-config-field="asr.language" /></label>
+            <label>ASR API 地址<input data-config-field="asr.api_base" /></label>
+            <label>ASR API key 环境变量名<input data-config-field="asr.api_key_env" /></label>
+            <label>Hugging Face token 环境变量名<input data-config-field="asr.hf_token_env" /></label>
+          </fieldset>
+
+          <fieldset>
+            <legend>服务行为</legend>
+            <label class="check-row"><input type="checkbox" data-config-field="service.enabled" /> 启用服务</label>
+            <label>扫描间隔（分钟）<input type="number" data-config-field="service.scan_interval_minutes" /></label>
+            <label class="check-row"><input type="checkbox" data-config-field="service.auto_render_after_selection" /> 选片后自动渲染</label>
+            <label>清理模式<input data-config-field="service.cleanup_mode" readonly /></label>
+          </fieldset>
+
+          <details>
+            <summary>高级配置</summary>
+            <div class="config-form nested">
+              <label>Web Host<input data-config-field="web.host" /></label>
+              <label>Web Port<input type="number" data-config-field="web.port" /></label>
+              <div class="notice subtle">修改 Web host/port 后，需要手动重启 Web 控制台命令本身才会生效。</div>
+            </div>
+          </details>
+        </form>
+        <div id="envStatus" class="env-grid"></div>
       </section>
     </main>
 

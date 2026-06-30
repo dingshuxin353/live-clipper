@@ -6,6 +6,8 @@ const state = {
   detail: null,
   confirmations: [],
   events: [],
+  config: null,
+  configDirty: false,
 };
 
 const el = (id) => document.getElementById(id);
@@ -223,23 +225,6 @@ function renderEvents() {
     .join("") || '<div class="empty">暂无事件。</div>';
 }
 
-function renderSettings(settings) {
-  const service = settings.service || {};
-  const source = settings.recording_source || {};
-  const web = settings.web || {};
-  el("settingsView").innerHTML = [
-    ["扫描间隔", `${service.scan_interval_minutes || "-"} 分钟`],
-    ["自动渲染", service.auto_render_after_selection ? "开启" : "关闭"],
-    ["清理模式", service.cleanup_mode || "-"],
-    ["录播源目录", source.source_dir || "-"],
-    ["输入目录", source.input_dir || "-"],
-    ["输出目录", source.output_root || "-"],
-    ["Web 绑定", `${web.host || "127.0.0.1"}:${web.port || 8765}`],
-  ]
-    .map(([label, value]) => infoRow(label, value))
-    .join("");
-}
-
 async function loadService() {
   renderMetrics(await api("/api/service"));
 }
@@ -275,13 +260,130 @@ async function loadEvents() {
   renderEvents();
 }
 
-async function loadSettings() {
-  const payload = await api("/api/settings");
-  renderSettings(payload.settings || {});
+async function loadConfig(force = false) {
+  if (state.configDirty && !force) return;
+  const payload = await api("/api/config");
+  state.config = payload.config || {};
+  state.configDirty = false;
+  renderConfig(payload);
 }
 
 async function refreshAll() {
-  await Promise.all([loadService(), loadRuns(), loadConfirmations(), loadEvents(), loadSettings()]);
+  await Promise.all([loadService(), loadRuns(), loadConfirmations(), loadEvents(), loadConfig()]);
+}
+
+function renderConfig(payload) {
+  const config = payload.config || {};
+  el("configMeta").textContent = `${payload.config_path || "live-clipper.toml"} · ${payload.exists ? "已存在" : "尚未创建"} · ${payload.loaded_at || ""}`;
+  document.querySelectorAll("[data-config-field]").forEach((field) => {
+    const value = getConfigValue(config, field.dataset.configField);
+    if (field.type === "checkbox") field.checked = Boolean(value);
+    else field.value = value ?? "";
+  });
+  renderEnvStatus(payload.env_status || {});
+  renderConfigNotice(payload.warnings || [], "warning");
+}
+
+function renderEnvStatus(envStatus) {
+  const entries = Object.entries(envStatus);
+  el("envStatus").innerHTML = entries.length
+    ? entries.map(([name, configured]) => `
+      <div class="env-row ${configured ? "ok" : "missing"}">
+        <strong>${escapeHtml(name)}</strong>
+        <span>${configured ? "已配置" : "未配置"}</span>
+      </div>
+    `).join("")
+    : '<div class="empty">没有需要展示的 API key 环境变量。</div>';
+}
+
+function renderConfigNotice(items, type = "info") {
+  const node = el("configNotice");
+  const list = Array.isArray(items) ? items : [];
+  if (!list.length) {
+    node.hidden = true;
+    node.innerHTML = "";
+    return;
+  }
+  node.hidden = false;
+  node.className = `notice ${type}`;
+  node.innerHTML = list.map((item) => `<div>${escapeHtml(item.message || item)}</div>`).join("");
+}
+
+function getConfigValue(config, field) {
+  const [section, key] = field.split(".");
+  return config?.[section]?.[key];
+}
+
+function setConfigValue(config, field, value) {
+  const [section, key] = field.split(".");
+  config[section] ||= {};
+  config[section][key] = value;
+}
+
+function collectConfigForm() {
+  const draft = structuredClone(state.config || {});
+  document.querySelectorAll("[data-config-field]").forEach((field) => {
+    let value;
+    if (field.type === "checkbox") value = field.checked;
+    else if (field.type === "number") value = field.value === "" ? "" : Number(field.value);
+    else value = field.value;
+    setConfigValue(draft, field.dataset.configField, value);
+  });
+  return draft;
+}
+
+function defaultConfig() {
+  return {
+    paths: { input_dir: "input", output_root: "output", work_dir: "work", glossary_path: "glossary/common_terms.json" },
+    recording_source_default: {
+      source_dir: "",
+      input_dir: "input",
+      output_root: "output",
+      since_hours: 168,
+      min_age_minutes: 10,
+      stable_check_seconds: 60,
+    },
+    llm: {
+      provider_label: "OpenAI-compatible LLM",
+      api_base: "https://apihub.agnes-ai.com/v1",
+      api_key_env: "CHEAP_MODEL_API_KEY",
+      model: "agnes-2.0-flash",
+      timeout_seconds: 300,
+      request_attempts: 5,
+      retry_delay_seconds: 3.0,
+    },
+    asr: {
+      backend: "mlx_whisper",
+      model: "mlx-community/whisper-large-v3-turbo",
+      language: "zh",
+      api_base: "https://api.openai.com/v1",
+      api_key_env: "ASR_API_KEY",
+      hf_token_env: "HF_TOKEN",
+    },
+    service: { enabled: true, scan_interval_minutes: 30, auto_render_after_selection: true, cleanup_mode: "preview_only" },
+    web: { host: "127.0.0.1", port: 8765 },
+  };
+}
+
+async function validateConfig() {
+  const result = await api("/api/config/validate", { method: "POST", body: JSON.stringify({ config: collectConfigForm() }) });
+  const messages = result.ok
+    ? [{ message: result.warnings?.length ? "配置检查通过，但有提醒：" : "配置检查通过。" }, ...(result.warnings || [])]
+    : result.errors;
+  renderConfigNotice(messages, result.ok ? "success" : "error");
+  return result;
+}
+
+async function saveConfig() {
+  const result = await api("/api/config", { method: "POST", body: JSON.stringify({ config: collectConfigForm() }) });
+  const messages = [
+    { message: result.message || "配置已保存。" },
+    { message: `备份文件：${result.backup_path || "无"}` },
+  ];
+  if (result.requires_web_restart) messages.push({ message: "Web host/port 已变化，需要手动重启 Web 控制台。" });
+  renderConfigNotice(messages, "success");
+  await loadConfig();
+  return result;
 }
 
 function selectedConfirmationIds() {
@@ -328,10 +430,33 @@ document.addEventListener("click", async (event) => {
       await post("/api/confirmations/batch-reject", { ids, reason: "在 Web 控制台批量拒绝" });
       el("logOutput").textContent = `批量拒绝: ${ids.join(", ") || "无"}`;
     }
+    if (event.target.id === "validateConfigBtn") await validateConfig();
+    if (event.target.id === "saveConfigBtn") await saveConfig();
+    if (event.target.id === "reloadConfigBtn") {
+      await loadConfig(true);
+      toast("已重新读取配置文件");
+    }
+    if (event.target.id === "resetConfigBtn") {
+      if (window.confirm("恢复默认只会修改当前表单，保存前不会写入文件。继续吗？")) {
+        state.config = defaultConfig();
+        state.configDirty = true;
+        renderConfig({ config: state.config, config_path: "live-clipper.toml", exists: true, env_status: {}, warnings: [] });
+      }
+    }
+    if (event.target.id === "restartServiceBtn") {
+      const result = await post("/api/config/restart-service");
+      renderConfigNotice([{ message: result.restarted ? "服务已重启。" : "服务未运行，无需重启。" }], "success");
+    }
     if (event.target.id === "clearLogBtn") el("logOutput").textContent = "";
   } catch (error) {
     toast(error.message);
   }
+});
+
+document.addEventListener("input", (event) => {
+  if (!event.target.matches("[data-config-field]")) return;
+  state.configDirty = true;
+  el("configMeta").textContent = `${el("configMeta").textContent.replace(" · 有未保存改动", "")} · 有未保存改动`;
 });
 
 document.addEventListener("click", (event) => {

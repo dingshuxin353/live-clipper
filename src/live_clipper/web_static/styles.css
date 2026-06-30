@@ -31,7 +31,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -344,6 +345,128 @@ h3 {
   padding: 11px 13px;
 }
 
+.config-form {
+  display: grid;
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.config-form fieldset,
+.config-form details {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 12px;
+}
+
+.config-form legend,
+.config-form summary {
+  font-weight: 900;
+}
+
+.config-form fieldset {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(260px, 1fr));
+  gap: 10px 14px;
+}
+
+.config-form label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.config-form input,
+.config-form select {
+  width: 100%;
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 0 10px;
+  background: white;
+  color: var(--text);
+}
+
+.config-form input[readonly] {
+  background: var(--surface-2);
+}
+
+.config-form .check-row {
+  grid-template-columns: 18px 1fr;
+  align-items: center;
+  color: var(--text);
+}
+
+.config-form .check-row input {
+  width: 16px;
+  min-height: 16px;
+  padding: 0;
+}
+
+.config-form.nested {
+  grid-template-columns: repeat(2, minmax(240px, 1fr));
+}
+
+.notice {
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: var(--blue-soft);
+  color: var(--text);
+}
+
+.notice.success {
+  border-color: #8bd7c5;
+  background: var(--green-soft);
+}
+
+.notice.warning {
+  border-color: #efd189;
+  background: var(--amber-soft);
+}
+
+.notice.error {
+  border-color: #f1aaa4;
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.notice.subtle {
+  margin-top: 0;
+  background: var(--surface-2);
+  color: var(--muted);
+}
+
+.env-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(200px, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.env-row {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: var(--surface);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.env-row.ok span {
+  color: var(--green);
+  font-weight: 800;
+}
+
+.env-row.missing span {
+  color: var(--amber);
+  font-weight: 800;
+}
+
 @media (max-width: 760px) {
   body {
     min-width: 0;
@@ -366,7 +489,10 @@ h3 {
 
   .metrics-grid,
   .info-grid,
-  .runs-layout {
+  .runs-layout,
+  .config-form fieldset,
+  .config-form.nested,
+  .env-grid {
     grid-template-columns: 1fr;
   }
 

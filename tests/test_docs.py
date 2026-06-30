@@ -90,11 +90,22 @@ def test_web_static_exposes_v3_console_sections():
     html = Path("src/live_clipper/web_static/index.html").read_text(encoding="utf-8")
     app = Path("src/live_clipper/web_static/app.js").read_text(encoding="utf-8")
 
-    for label in ["服务", "任务", "确认", "日志", "设置"]:
+    for label in ["服务", "任务", "确认", "日志", "配置"]:
         assert label in html
     assert "/api/confirmations/batch-approve" in app
     assert "/api/service/scan-now" in app
     assert "confirmation_required" in app
+
+
+def test_web_static_exposes_v4_config_editor():
+    html = Path("src/live_clipper/web_static/index.html").read_text(encoding="utf-8")
+    app = Path("src/live_clipper/web_static/app.js").read_text(encoding="utf-8")
+
+    for label in ["基础路径", "录播源", "AI 与 ASR", "服务行为", "检查配置", "保存配置", "重启服务"]:
+        assert label in html
+    assert "/api/config" in app
+    assert "/api/config/validate" in app
+    assert "/api/config/restart-service" in app
 
 
 def test_readme_documents_v3_web_console_confirmation_flow():
@@ -105,3 +116,14 @@ def test_readme_documents_v3_web_console_confirmation_flow():
     assert "批量确认/拒绝" in text
     assert "work/service/confirmations.json" in text
     assert "NAS 原始录播不会被 Web 直接删除" in text
+
+
+def test_readme_documents_v4_web_config_editor():
+    text = Path("README.md").read_text(encoding="utf-8")
+
+    assert "V4 Web 配置页" in text
+    assert "`配置`" in text
+    assert "检查配置" in text
+    assert "保存配置" in text
+    assert "work/config_backups/" in text
+    assert "不会显示明文 API key" in text
