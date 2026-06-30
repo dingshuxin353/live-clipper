@@ -461,7 +461,7 @@ Agent 的介入信号是文件状态：
 
 ## Web 控制台
 
-默认只允许本机访问：
+V3 Web 控制台是 Service Core 的统一控制面，默认只允许本机访问：
 
 ```bash
 .venv/bin/live-clipper web
@@ -469,13 +469,21 @@ Agent 的介入信号是文件状态：
 
 打开 `http://127.0.0.1:8765`。
 
+页面包含：
+
+- `Service`：查看服务状态、PID、心跳、下次扫描、录播源摘要，并可 start / stop / scan now。
+- `Runs`：按 `processing`、`needs_review`、`rendering`、`rendered`、`failed` 查看 run 和详情。
+- `Confirmations`：查看 MCP/Web 创建的删除确认请求，支持单条 approve/reject 和批量 approve/reject。
+- `Logs`：查看事件流和 run 日志尾部。
+- `Settings`：只读查看关键配置。
+
 如果确实需要局域网访问：
 
 ```bash
 .venv/bin/live-clipper web --host 0.0.0.0
 ```
 
-不要把 Web 控制台暴露到公网。它包含渲染、清理和删除本地文件的操作。
+不要把 Web 控制台暴露到公网。删除相关动作默认先进入 `work/service/confirmations.json`，approve 时会重新校验路径、run 状态和安全边界；NAS 原始录播不会被 Web 直接删除。
 
 ## 术语表
 
