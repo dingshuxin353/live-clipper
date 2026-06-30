@@ -214,6 +214,49 @@ stable_check_seconds = 60
 - `service stop` 只停止服务主进程，不会主动终止已经启动的 pipeline 子进程。
 - V1 只会在渲染完成后做 cleanup preview，并把状态记录到本地文件。
 
+## MCP 工具面
+
+V2 提供 MCP 工具函数层，供 Agent 或后续 MCP server wrapper 调用。它是本机常驻服务的 thin adapter：不另建状态库，不重新推断 `output/` 状态，所有有意义动作都会复用 Service Core，并写入同一套 `work/service/` 状态与事件。
+
+工具入口在 `live_clipper.mcp_tools`：
+
+```python
+from live_clipper import mcp_tools
+
+status = mcp_tools.call_tool("get_service_status", {})
+runs = mcp_tools.call_tool("list_runs", {"phase": "needs_review"})
+```
+
+Read tools：
+
+- `get_service_status`
+- `list_runs`
+- `get_run_detail`
+- `get_run_log`
+- `get_review_package`
+
+Safe action tools：
+
+- `scan_now`
+- `start_run_for_source`
+- `write_selected_clips`
+- `render_run`
+- `preview_cleanup`
+
+Confirmation-required tools：
+
+- `delete_clip`
+- `cleanup_confirm`
+- `delete_local_source`
+
+删除意图工具不会直接删除任何文件，只会创建：
+
+```text
+work/service/confirmations.json
+```
+
+并返回 `confirmation_required`。真正的 approve/reject 和批量确认留给后续 Web 控制台处理。MCP 工具不得直接删除 NAS 原始录播、本地 `input/` 副本、audio 或 clips。
+
 ## 提示词自定义
 
 导出默认提示词：
