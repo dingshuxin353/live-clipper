@@ -74,6 +74,8 @@ def test_load_editable_config_returns_whitelist_and_secret_status(monkeypatch, t
     assert "sk-secret" not in str(payload)
     assert payload["config"]["web"]["access_token_configured"] is True
     assert "secret-token" not in str(payload)
+    assert payload["config"]["scheduler"]["timezone"] == "Asia/Shanghai"
+    assert payload["config"]["scheduler_jobs"][0]["id"] == "weekly_recording_scan"
 
 
 def test_validate_editable_config_rejects_invalid_values_with_chinese_errors(tmp_path):
@@ -93,6 +95,28 @@ def test_validate_editable_config_rejects_invalid_values_with_chinese_errors(tmp
         "asr": {"backend": "cloud-only", "api_key_env": "bad-name"},
         "service": {"scan_interval_minutes": 0, "cleanup_mode": "delete"},
         "web": {"port": 80},
+        "scheduler": {"timezone": "Mars/Base", "tick_seconds": 2, "missed_policy": "catch_all"},
+        "scheduler_jobs": [
+            {
+                "id": "Bad Job!",
+                "name": "",
+                "enabled": True,
+                "type": "ai_review",
+                "schedule": "weekly",
+                "day_of_week": "funday",
+                "time": "25:61",
+                "skip_if_running": True,
+            },
+            {
+                "id": "fast_interval",
+                "name": "过快间隔",
+                "enabled": True,
+                "type": "maintenance_check",
+                "schedule": "interval_minutes",
+                "interval_minutes": 1,
+                "skip_if_running": True,
+            },
+        ],
     }
 
     result = validate_editable_config(draft, base_dir=tmp_path)
@@ -104,6 +128,13 @@ def test_validate_editable_config_rejects_invalid_values_with_chinese_errors(tmp
     assert "必须在 1 到 720 之间" in messages
     assert "环境变量名只能使用大写字母" in messages
     assert "清理模式目前只允许 preview_only" in messages
+    assert "调度时区无效" in messages
+    assert "missed_policy 只能是 run_once 或 skip" in messages
+    assert "任务 id 只能使用小写字母" in messages
+    assert "V5 不支持 AI 自动审阅任务" in messages
+    assert "星期必须是 mon 到 sun" in messages
+    assert "时间必须使用 HH:MM 格式" in messages
+    assert "间隔分钟数必须在 5 到 1440 之间" in messages
 
 
 def test_save_editable_config_creates_backup_and_writes_loadable_toml(monkeypatch, tmp_path):
@@ -116,6 +147,8 @@ def test_save_editable_config_creates_backup_and_writes_loadable_toml(monkeypatc
     draft["service"]["scan_interval_minutes"] = 15
     draft["recording_source_default"]["min_age_minutes"] = 20
     draft["web"]["port"] = 9876
+    draft["scheduler"]["timezone"] = "Asia/Tokyo"
+    draft["scheduler_jobs"][0]["enabled"] = False
 
     result = save_editable_config(
         draft,
@@ -130,6 +163,8 @@ def test_save_editable_config_creates_backup_and_writes_loadable_toml(monkeypatc
     assert settings.service.scan_interval_minutes == 15
     assert settings.recording_source_default.min_age_minutes == 20
     assert settings.web.port == 9876
+    assert settings.scheduler.timezone == "Asia/Tokyo"
+    assert settings.scheduler.jobs[0].enabled is False
     assert result["requires_service_restart"] is True
     assert result["requires_web_restart"] is True
 

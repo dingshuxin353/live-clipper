@@ -148,6 +148,60 @@
             <label>清理模式<input data-config-field="service.cleanup_mode" readonly /></label>
           </fieldset>
 
+          <fieldset class="scheduler-fieldset">
+            <legend>定时任务</legend>
+            <div class="notice subtle full-span">服务未运行时不会执行定时任务。AI 自动审阅将在后续版本配置；当前任务只负责提醒和标记待审阅。任务支持立即执行、暂停和启用。</div>
+            <label class="check-row"><input type="checkbox" data-config-field="scheduler.enabled" /> 启用内置定时调度</label>
+            <label>调度时区<input data-config-field="scheduler.timezone" /></label>
+            <label>tick 秒数<input type="number" data-config-field="scheduler.tick_seconds" /></label>
+            <label>错过执行策略
+              <select data-config-field="scheduler.missed_policy">
+                <option value="run_once">run_once</option>
+                <option value="skip">skip</option>
+              </select>
+            </label>
+            <div id="schedulerSummary" class="scheduler-summary full-span"></div>
+            <div id="schedulerJobList" class="scheduler-jobs full-span"></div>
+            <div class="scheduler-editor full-span">
+              <h3>创建 / 编辑任务</h3>
+              <div class="notice subtle">默认模板：每周录播扫描（周日 00:00）和每周审阅检查（周日 12:00）。</div>
+              <div class="config-form nested">
+                <label>任务 id<input id="schedulerJobId" placeholder="weekly_recording_scan" /></label>
+                <label>任务名称<input id="schedulerJobName" value="每周录播扫描" /></label>
+                <label class="check-row"><input id="schedulerJobEnabled" type="checkbox" checked /> 启用任务</label>
+                <label>动作类型
+                  <select id="schedulerJobType">
+                    <option value="scan_recordings">扫描录播</option>
+                    <option value="review_due_check">审阅检查</option>
+                    <option value="maintenance_check">维护检查</option>
+                  </select>
+                </label>
+                <label>频率
+                  <select id="schedulerJobSchedule">
+                    <option value="weekly">每周</option>
+                    <option value="daily">每天</option>
+                    <option value="interval_minutes">每隔 N 分钟</option>
+                  </select>
+                </label>
+                <label>星期
+                  <select id="schedulerJobDay">
+                    <option value="mon">周一</option>
+                    <option value="tue">周二</option>
+                    <option value="wed">周三</option>
+                    <option value="thu">周四</option>
+                    <option value="fri">周五</option>
+                    <option value="sat">周六</option>
+                    <option value="sun" selected>周日</option>
+                  </select>
+                </label>
+                <label>时间<input id="schedulerJobTime" value="00:00" placeholder="HH:MM" /></label>
+                <label>间隔分钟数<input id="schedulerJobInterval" type="number" value="60" /></label>
+                <label class="check-row"><input id="schedulerJobSkip" type="checkbox" checked /> 上次还在运行时跳过</label>
+                <button id="saveSchedulerJobBtn" class="secondary-button" type="button">保存定时任务</button>
+              </div>
+            </div>
+          </fieldset>
+
           <details>
             <summary>高级配置</summary>
             <div class="config-form nested">

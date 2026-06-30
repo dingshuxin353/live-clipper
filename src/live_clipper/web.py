@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-from . import config_editor, mcp_tools, service
+from . import config_editor, mcp_tools, scheduler, service
 from .automation import DEFAULT_LOG_DIR, DEFAULT_STATE_DIR, _pid_is_running, check_automation_runs
 from .config import RecordingSourceDefaultConfig, ServiceConfig, Settings, load_settings
 from .pipeline import cleanup_local_artifacts, cleanup_plan
@@ -96,6 +96,7 @@ def _settings_for_paths(paths: WebPaths) -> Settings:
         web=loaded.web,
         review=loaded.review,
         render=loaded.render,
+        scheduler=loaded.scheduler,
     )
 
 
@@ -409,6 +410,20 @@ def handle_api_request(
             return _json_response(payload, status=200 if payload.get("ok") else 400)
         if method == "POST" and parts == ["api", "config", "restart-service"]:
             return _json_response(_restart_service_from_config(paths))
+        if method == "GET" and parts == ["api", "scheduler"]:
+            return _json_response(scheduler.get_scheduler_status(_settings_for_paths(paths), service_dir=paths.service_dir))
+        if method == "GET" and parts == ["api", "scheduler", "events"]:
+            return _json_response({"ok": True, "events": scheduler.read_scheduler_events(paths.service_dir)})
+        if method == "POST" and parts == ["api", "scheduler", "jobs"]:
+            payload = _upsert_scheduler_job(paths, (body or {}).get("job", {}))
+            return _json_response(payload, status=200 if payload.get("ok") else 400)
+        if method == "POST" and len(parts) == 5 and parts[:3] == ["api", "scheduler", "jobs"] and parts[4] == "run-now":
+            payload = _run_scheduler_job_now(paths, parts[3])
+            return _json_response(payload, status=200 if payload.get("ok") else 404)
+        if method == "POST" and len(parts) == 5 and parts[:3] == ["api", "scheduler", "jobs"] and parts[4] == "pause":
+            return _json_response(scheduler.pause_job(parts[3], service_dir=paths.service_dir))
+        if method == "POST" and len(parts) == 5 and parts[:3] == ["api", "scheduler", "jobs"] and parts[4] == "resume":
+            return _json_response(scheduler.resume_job(parts[3], service_dir=paths.service_dir))
         if method == "POST" and parts == ["api", "automation", "check"]:
             return _json_response(check_automation_runs(paths.output_root, state_dir=paths.state_dir))
         if method == "POST" and len(parts) == 4 and parts[:2] == ["api", "runs"] and parts[3] == "render":
@@ -507,6 +522,36 @@ def _restart_service_from_config(paths: WebPaths) -> dict[str, Any]:
         "start": started,
         "status": service.get_service_status(service_dir=paths.service_dir),
     }
+
+
+def _upsert_scheduler_job(paths: WebPaths, job_payload: dict[str, Any]) -> dict[str, Any]:
+    validation = scheduler.validate_scheduler_job(job_payload)
+    if not validation.get("ok"):
+        return validation
+    editable = config_editor.load_editable_config(config_path=paths.config_path)
+    if not editable.get("ok"):
+        return editable
+    config = editable["config"]
+    jobs = [job for job in config.get("scheduler_jobs", []) if job.get("id") != job_payload.get("id")]
+    jobs.append(job_payload)
+    config["scheduler_jobs"] = jobs
+    saved = config_editor.save_editable_config(
+        config,
+        config_path=paths.config_path,
+        backup_root=paths.config_path.parent / "work" / "config_backups",
+        base_dir=paths.config_path.parent,
+    )
+    if not saved.get("ok"):
+        return saved
+    return scheduler.get_scheduler_status(load_settings(paths.config_path), service_dir=paths.service_dir)
+
+
+def _run_scheduler_job_now(paths: WebPaths, job_id: str) -> dict[str, Any]:
+    settings = _settings_for_paths(paths)
+    job = next((job for job in settings.scheduler.jobs if job.id == job_id), None)
+    if job is None:
+        return _structured_error("scheduler_job_not_found", f"定时任务不存在: {job_id}")
+    return scheduler.run_job_now(job, settings, service_dir=paths.service_dir)
 
 
 def _render_run(run_dir: Path) -> dict[str, Any]:

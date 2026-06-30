@@ -10,11 +10,12 @@ from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .config import DEFAULT_CONFIG_PATH, DEFAULT_CONFIG_TEMPLATE, load_settings
 from .utils import ensure_dir
 
-EditableConfig = dict[str, dict[str, Any]]
+EditableConfig = dict[str, Any]
 
 PATH_FIELDS = {
     "paths": {"input_dir", "output_root", "work_dir", "glossary_path"},
@@ -29,6 +30,7 @@ NUMBER_RANGES: dict[tuple[str, str], tuple[float, float]] = {
     ("llm", "retry_delay_seconds"): (0, 60),
     ("service", "scan_interval_minutes"): (1, 1440),
     ("web", "port"): (1024, 65535),
+    ("scheduler", "tick_seconds"): (5, 300),
 }
 INTEGER_FIELDS = {
     ("recording_source_default", "since_hours"),
@@ -38,18 +40,24 @@ INTEGER_FIELDS = {
     ("llm", "request_attempts"),
     ("service", "scan_interval_minutes"),
     ("web", "port"),
+    ("scheduler", "tick_seconds"),
 }
 BOOLEAN_FIELDS = {
     ("service", "enabled"),
     ("service", "auto_render_after_selection"),
+    ("scheduler", "enabled"),
 }
 ENV_VAR_FIELDS = {
     ("llm", "api_key_env"),
     ("asr", "api_key_env"),
     ("asr", "hf_token_env"),
 }
-SERVICE_RESTART_SECTIONS = {"paths", "recording_source_default", "llm", "asr", "service"}
+SERVICE_RESTART_SECTIONS = {"paths", "recording_source_default", "llm", "asr", "service", "scheduler", "scheduler_jobs"}
 ENV_VAR_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+JOB_ID_RE = re.compile(r"^[a-z0-9_-]{1,64}$")
+JOB_TYPES = {"scan_recordings", "review_due_check", "maintenance_check"}
+SCHEDULES = {"weekly", "daily", "interval_minutes"}
+DAYS_OF_WEEK = {"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
 
 
 def load_editable_config(*, config_path: Path = DEFAULT_CONFIG_PATH) -> dict[str, Any]:
@@ -84,6 +92,7 @@ def validate_editable_config(
     _validate_numbers(clean, errors)
     _validate_enums(clean, errors)
     _validate_env_vars(clean, errors)
+    _validate_scheduler(clean, errors)
 
     current_result = _load_raw_config(config_path)
     current = _editable_from_raw(current_result["config"]) if current_result["ok"] else _editable_from_raw({})
@@ -176,9 +185,15 @@ def _load_raw_config(config_path: Path) -> dict[str, Any]:
 
 
 def _editable_from_raw(raw: dict[str, Any]) -> EditableConfig:
+    defaults = tomllib.loads(DEFAULT_CONFIG_TEMPLATE)
     recording_source = raw.get("recording_source", {})
     recording_default = recording_source.get("default", {}) if isinstance(recording_source, dict) else {}
     web = raw.get("web", {}) if isinstance(raw.get("web"), dict) else {}
+    scheduler = raw.get("scheduler", {}) if isinstance(raw.get("scheduler"), dict) else {}
+    default_scheduler = defaults.get("scheduler", {})
+    scheduler_jobs = scheduler.get("jobs")
+    if not isinstance(scheduler_jobs, list) or not scheduler_jobs:
+        scheduler_jobs = default_scheduler.get("jobs", [])
     return {
         "paths": _pick(raw.get("paths", {}), ["input_dir", "output_root", "work_dir", "glossary_path"]),
         "recording_source_default": _pick(
@@ -195,6 +210,11 @@ def _editable_from_raw(raw: dict[str, Any]) -> EditableConfig:
             **_pick(web, ["host", "port"]),
             "access_token_configured": bool(web.get("access_token")),
         },
+        "scheduler": {
+            **_pick(default_scheduler, ["enabled", "timezone", "tick_seconds", "missed_policy", "state_dir"]),
+            **_pick(scheduler, ["enabled", "timezone", "tick_seconds", "missed_policy", "state_dir"]),
+        },
+        "scheduler_jobs": [_clean_job(job) for job in scheduler_jobs if isinstance(job, dict)],
     }
 
 
@@ -212,6 +232,9 @@ def _jsonable(value: Any) -> Any:
 def _clean_editable(draft: dict[str, Any]) -> EditableConfig:
     clean = _editable_from_raw(tomllib.loads(DEFAULT_CONFIG_TEMPLATE))
     for section, fields in draft.items():
+        if section == "scheduler_jobs" and isinstance(fields, list):
+            clean["scheduler_jobs"] = [_clean_job(job) for job in fields if isinstance(job, dict)]
+            continue
         if section not in clean or not isinstance(fields, dict):
             continue
         for key, value in fields.items():
@@ -220,6 +243,21 @@ def _clean_editable(draft: dict[str, Any]) -> EditableConfig:
             if key in clean[section] or (section, key) in NUMBER_RANGES or (section, key) in BOOLEAN_FIELDS:
                 clean[section][key] = value
     return clean
+
+
+def _clean_job(job: dict[str, Any]) -> dict[str, Any]:
+    keys = [
+        "id",
+        "name",
+        "enabled",
+        "type",
+        "schedule",
+        "day_of_week",
+        "time",
+        "interval_minutes",
+        "skip_if_running",
+    ]
+    return {key: _jsonable(job[key]) for key in keys if key in job and job[key] is not None}
 
 
 def _validate_paths(
@@ -285,6 +323,8 @@ def _validate_enums(config: EditableConfig, errors: list[dict[str, str]]) -> Non
         errors.append(_error("service.cleanup_mode", "清理模式目前只允许 preview_only，避免误删文件。"))
     if config["asr"].get("backend") not in {"mlx_whisper", "openai"}:
         errors.append(_error("asr.backend", "ASR 后端只能选择 mlx_whisper 或 openai。"))
+    if config["scheduler"].get("missed_policy") not in {"run_once", "skip"}:
+        errors.append(_error("scheduler.missed_policy", "missed_policy 只能是 run_once 或 skip。"))
 
 
 def _validate_env_vars(config: EditableConfig, errors: list[dict[str, str]]) -> None:
@@ -294,11 +334,59 @@ def _validate_env_vars(config: EditableConfig, errors: list[dict[str, str]]) -> 
             errors.append(_error(f"{section}.{key}", "环境变量名只能使用大写字母、数字和下划线，并且不能以数字开头。"))
 
 
+def _validate_scheduler(config: EditableConfig, errors: list[dict[str, str]]) -> None:
+    timezone = str(config["scheduler"].get("timezone") or "")
+    try:
+        ZoneInfo(timezone)
+    except ZoneInfoNotFoundError:
+        errors.append(_error("scheduler.timezone", "调度时区无效，请填写有效 IANA timezone，例如 Asia/Shanghai。"))
+
+    for index, job in enumerate(config.get("scheduler_jobs", [])):
+        prefix = f"scheduler_jobs.{index}"
+        job_id = str(job.get("id") or "")
+        if not JOB_ID_RE.match(job_id):
+            errors.append(_error(f"{prefix}.id", "任务 id 只能使用小写字母、数字、下划线或短横线，最长 64 个字符。"))
+        name = str(job.get("name") or "")
+        if not (1 <= len(name) <= 40):
+            errors.append(_error(f"{prefix}.name", "任务名称必须填写，且不超过 40 个字符。"))
+        job_type = str(job.get("type") or "")
+        if job_type == "ai_review":
+            errors.append(_error(f"{prefix}.type", "V5 不支持 AI 自动审阅任务；AI 自动审阅将在 V6 实现。"))
+        elif job_type not in JOB_TYPES:
+            errors.append(_error(f"{prefix}.type", "任务类型只能是 scan_recordings、review_due_check 或 maintenance_check。"))
+        schedule = str(job.get("schedule") or "")
+        if schedule not in SCHEDULES:
+            errors.append(_error(f"{prefix}.schedule", "频率只能是 weekly、daily 或 interval_minutes。"))
+        if schedule == "weekly" and job.get("day_of_week") not in DAYS_OF_WEEK:
+            errors.append(_error(f"{prefix}.day_of_week", "星期必须是 mon 到 sun。"))
+        if schedule in {"weekly", "daily"} and not _valid_hhmm(str(job.get("time") or "")):
+            errors.append(_error(f"{prefix}.time", "时间必须使用 HH:MM 格式。"))
+        if schedule == "interval_minutes":
+            try:
+                interval = int(job.get("interval_minutes"))
+            except (TypeError, ValueError):
+                interval = 0
+            if interval < 5 or interval > 1440:
+                errors.append(_error(f"{prefix}.interval_minutes", "间隔分钟数必须在 5 到 1440 之间。"))
+
+
+def _valid_hhmm(value: str) -> bool:
+    raw_hour, sep, raw_minute = value.partition(":")
+    if sep != ":" or len(raw_hour) != 2 or len(raw_minute) != 2:
+        return False
+    if not raw_hour.isdigit() or not raw_minute.isdigit():
+        return False
+    hour = int(raw_hour)
+    minute = int(raw_minute)
+    return 0 <= hour <= 23 and 0 <= minute <= 59
+
+
 def _merge_editable(raw: dict[str, Any], clean: EditableConfig) -> dict[str, Any]:
     merged = deepcopy(raw)
-    for section in ["paths", "llm", "asr", "service"]:
+    for section in ["paths", "llm", "asr", "service", "scheduler"]:
         merged.setdefault(section, {})
         merged[section].update(_coerce_section(section, clean[section]))
+    merged["scheduler"]["jobs"] = [_coerce_job(job) for job in clean.get("scheduler_jobs", [])]
     merged.setdefault("recording_source", {})
     merged["recording_source"].setdefault("default", {})
     merged["recording_source"]["default"].update(_coerce_section("recording_source_default", clean["recording_source_default"]))
@@ -318,16 +406,29 @@ def _coerce_section(section: str, values: dict[str, Any]) -> dict[str, Any]:
             coerced[key] = float(value)
         elif (section, key) in BOOLEAN_FIELDS:
             coerced[key] = bool(value)
-        elif section in PATH_FIELDS and key in PATH_FIELDS[section]:
+        elif section in PATH_FIELDS and key in PATH_FIELDS[section] or (section, key) == ("scheduler", "state_dir"):
             coerced[key] = str(value or "")
         else:
             coerced[key] = value
     return coerced
 
 
+def _coerce_job(job: dict[str, Any]) -> dict[str, Any]:
+    coerced = dict(job)
+    coerced["enabled"] = bool(coerced.get("enabled", True))
+    coerced["skip_if_running"] = bool(coerced.get("skip_if_running", True))
+    if coerced.get("interval_minutes") not in (None, ""):
+        coerced["interval_minutes"] = int(coerced["interval_minutes"])
+    return coerced
+
+
 def _diff_editable(old: EditableConfig, new: EditableConfig) -> list[dict[str, Any]]:
     changes = []
     for section, fields in new.items():
+        if section == "scheduler_jobs":
+            if old.get("scheduler_jobs") != fields:
+                changes.append({"field": "scheduler_jobs", "old": old.get("scheduler_jobs"), "new": fields})
+            continue
         for key, value in fields.items():
             if key == "access_token_configured":
                 continue
@@ -401,6 +502,8 @@ def _toml_value(value: Any) -> str:
         return str(value)
     if isinstance(value, list):
         return "[" + ", ".join(_toml_value(item) for item in value) + "]"
+    if isinstance(value, dict):
+        return "{ " + ", ".join(f"{key} = {_toml_value(item)}" for key, item in value.items()) + " }"
     return json.dumps(str(value), ensure_ascii=False)
 
 

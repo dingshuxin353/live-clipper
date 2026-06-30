@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import pytest
 
 from live_clipper import service
-from live_clipper.config import RecordingSourceDefaultConfig, ServiceConfig, Settings
+from live_clipper.config import RecordingSourceDefaultConfig, SchedulerConfig, SchedulerJobConfig, ServiceConfig, Settings
 from live_clipper.utils import read_json, write_json
 
 
@@ -201,6 +201,40 @@ def test_start_service_once_runs_single_iteration(tmp_path, monkeypatch):
     assert calls[0][1] == tmp_path / "service"
     state = read_json(tmp_path / "service" / "service.json")
     assert state["status"] == "stopped"
+
+
+def test_run_service_tick_reconciles_runs_and_ticks_scheduler(tmp_path, monkeypatch):
+    service_dir = tmp_path / "service"
+    run_dir = tmp_path / "output" / "default" / "recording__abc123"
+    write_json(run_dir / "codex_brief.json", {"candidates": []})
+    write_json(service_dir / "runs.json", {
+        "runs": [
+            {
+                "run_id": "recording__abc123",
+                "run_dir": str(run_dir),
+                "phase": "processing",
+                "pid": None,
+            }
+        ]
+    })
+    job = SchedulerJobConfig(
+        id="maintenance",
+        name="维护",
+        enabled=True,
+        type="maintenance_check",
+        schedule="interval_minutes",
+        interval_minutes=30,
+    )
+    settings = Settings(scheduler=SchedulerConfig(jobs=[job], tick_seconds=5))
+    monkeypatch.setattr(service, "pid_is_running", lambda pid: False)
+
+    report = service.run_service_tick(settings, service_dir=service_dir)
+
+    assert report["ok"] is True
+    assert report["scheduler"]["ok"] is True
+    assert read_json(service_dir / "runs.json")["runs"][0]["phase"] == "needs_review"
+    assert (service_dir / "scheduler.json").exists()
+    assert "scheduler_tick" in (service_dir / "events.jsonl").read_text(encoding="utf-8")
 
 
 def test_stop_service_marks_stopped_without_killing_pipeline_children(tmp_path, monkeypatch):

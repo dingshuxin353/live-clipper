@@ -98,6 +98,33 @@ selection_filename = "selected_clips.json"
 [render]
 ffmpeg_path = "ffmpeg"
 output_format = "mp4"
+
+[scheduler]
+enabled = true
+timezone = "Asia/Shanghai"
+tick_seconds = 30
+missed_policy = "run_once"
+state_dir = "work/service"
+
+[[scheduler.jobs]]
+id = "weekly_recording_scan"
+name = "每周录播扫描"
+enabled = true
+type = "scan_recordings"
+schedule = "weekly"
+day_of_week = "sun"
+time = "00:00"
+skip_if_running = true
+
+[[scheduler.jobs]]
+id = "weekly_review_due"
+name = "每周审阅检查"
+enabled = true
+type = "review_due_check"
+schedule = "weekly"
+day_of_week = "sun"
+time = "12:00"
+skip_if_running = true
 """
 
 
@@ -196,6 +223,54 @@ class RenderConfig:
 
 
 @dataclass(frozen=True)
+class SchedulerJobConfig:
+    id: str
+    name: str
+    enabled: bool
+    type: str
+    schedule: str
+    day_of_week: str | None = None
+    time: str | None = None
+    interval_minutes: int | None = None
+    skip_if_running: bool = True
+
+
+def default_scheduler_jobs() -> list[SchedulerJobConfig]:
+    return [
+        SchedulerJobConfig(
+            id="weekly_recording_scan",
+            name="每周录播扫描",
+            enabled=True,
+            type="scan_recordings",
+            schedule="weekly",
+            day_of_week="sun",
+            time="00:00",
+            skip_if_running=True,
+        ),
+        SchedulerJobConfig(
+            id="weekly_review_due",
+            name="每周审阅检查",
+            enabled=True,
+            type="review_due_check",
+            schedule="weekly",
+            day_of_week="sun",
+            time="12:00",
+            skip_if_running=True,
+        ),
+    ]
+
+
+@dataclass(frozen=True)
+class SchedulerConfig:
+    enabled: bool = True
+    timezone: str = "Asia/Shanghai"
+    tick_seconds: int = 30
+    missed_policy: str = "run_once"
+    state_dir: Path = Path("work") / "service"
+    jobs: list[SchedulerJobConfig] = field(default_factory=default_scheduler_jobs)
+
+
+@dataclass(frozen=True)
 class Settings:
     cheap_model_api_base: str | None = None
     cheap_model_api_key: str | None = None
@@ -217,6 +292,7 @@ class Settings:
     web: WebConfig = field(default_factory=WebConfig)
     review: ReviewConfig = field(default_factory=ReviewConfig)
     render: RenderConfig = field(default_factory=RenderConfig)
+    scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
 
     def __post_init__(self) -> None:
         asr_backend = self.asr_backend or (self.asr.backend if self.asr else DEFAULT_ASR_BACKEND)
@@ -303,6 +379,7 @@ def load_settings(config_path: Path | None = None) -> Settings:
     web_data = config.get("web", {})
     review_data = config.get("review", {})
     render_data = config.get("render", {})
+    scheduler_data = config.get("scheduler", {})
 
     asr_backend = os.getenv("ASR_BACKEND", str(asr_data.get("backend", DEFAULT_ASR_BACKEND)))
     asr_model = os.getenv("ASR_MODEL", str(asr_data.get("model", "")) or None)
@@ -389,6 +466,14 @@ def load_settings(config_path: Path | None = None) -> Settings:
             ffmpeg_path=str(render_data.get("ffmpeg_path", "ffmpeg")),
             output_format=str(render_data.get("output_format", "mp4")),
         ),
+        scheduler=SchedulerConfig(
+            enabled=bool(scheduler_data.get("enabled", True)),
+            timezone=str(scheduler_data.get("timezone", "Asia/Shanghai")),
+            tick_seconds=int(scheduler_data.get("tick_seconds", 30)),
+            missed_policy=str(scheduler_data.get("missed_policy", "run_once")),
+            state_dir=_path_value(scheduler_data, "state_dir", Path("work") / "service"),
+            jobs=_scheduler_jobs(scheduler_data.get("jobs")),
+        ),
     )
 
 
@@ -398,3 +483,26 @@ def write_default_config(path: Path = DEFAULT_CONFIG_PATH, *, overwrite: bool = 
     ensure_dir(path.parent)
     path.write_text(DEFAULT_CONFIG_TEMPLATE, encoding="utf-8")
     return path
+
+
+def _scheduler_jobs(raw_jobs: Any) -> list[SchedulerJobConfig]:
+    if not isinstance(raw_jobs, list) or not raw_jobs:
+        return default_scheduler_jobs()
+    jobs = []
+    for raw_job in raw_jobs:
+        if not isinstance(raw_job, dict):
+            continue
+        jobs.append(
+            SchedulerJobConfig(
+                id=str(raw_job.get("id", "")),
+                name=str(raw_job.get("name", "")),
+                enabled=bool(raw_job.get("enabled", True)),
+                type=str(raw_job.get("type", "")),
+                schedule=str(raw_job.get("schedule", "")),
+                day_of_week=str(raw_job["day_of_week"]) if raw_job.get("day_of_week") is not None else None,
+                time=str(raw_job["time"]) if raw_job.get("time") is not None else None,
+                interval_minutes=int(raw_job["interval_minutes"]) if raw_job.get("interval_minutes") is not None else None,
+                skip_if_running=bool(raw_job.get("skip_if_running", True)),
+            )
+        )
+    return jobs or default_scheduler_jobs()
