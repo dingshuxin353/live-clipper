@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 from collections.abc import Callable
 from datetime import UTC, datetime
 from json import JSONDecodeError
@@ -20,6 +21,12 @@ from .utils import ensure_dir, read_json, write_json
 Runner = Callable[..., dict[str, Any]]
 ClientFactory = Callable[..., Any]
 CommandResolver = Callable[[str], str | None]
+
+
+class ReviewAutomationError(RuntimeError):
+    def __init__(self, error_code: str, message: str) -> None:
+        super().__init__(message)
+        self.error_code = error_code
 
 
 def _summary_path(service_dir: Path) -> Path:
@@ -236,15 +243,21 @@ def _run_local_agent_adapter(
     run_dir: Path,
     local_runner: Runner | None,
 ) -> list[dict[str, Any]]:
+    if settings.review_automation.local_agent.allow_agent_file_writes:
+        raise ReviewAutomationError(
+            "agent_file_writes_disabled",
+            "P0 不允许本地 Agent 直接写文件，请关闭 allow_agent_file_writes。",
+        )
     provider = settings.review_automation.local_agent.provider
-    prompt = _review_prompt(payload)
+    prompt = _review_prompt(_sanitize_payload_for_local_agent(payload, run_dir=run_dir))
     runner = local_runner or _default_local_runner
-    result = runner(
-        prompt,
-        provider=provider,
-        cwd=run_dir,
-        timeout_seconds=settings.review_automation.local_agent.command_timeout_minutes * 60,
-    )
+    with tempfile.TemporaryDirectory(prefix="live-clipper-ai-review-") as isolated_dir:
+        result = runner(
+            prompt,
+            provider=provider,
+            cwd=Path(isolated_dir),
+            timeout_seconds=settings.review_automation.local_agent.command_timeout_minutes * 60,
+        )
     if not result.get("ok"):
         raise RuntimeError(str(result.get("error") or result.get("stderr") or "本地 Agent 执行失败。"))
     return extract_selection_json(str(result.get("stdout") or ""))
@@ -315,7 +328,12 @@ def _handle_failure(run: dict[str, Any], settings: Settings, *, service_dir: Pat
         updated["last_error"] = f"AI 审阅失败: {error}"
         updated["updated_at"] = _now()
         service.replace_run(updated, service_dir)
-    error_code = "selection_validation_failed" if "Unknown clip_id" in str(error) or "clip_id" in str(error) else "ai_review_failed"
+    if isinstance(error, ReviewAutomationError):
+        error_code = error.error_code
+    elif "Unknown clip_id" in str(error) or "clip_id" in str(error):
+        error_code = "selection_validation_failed"
+    else:
+        error_code = "ai_review_failed"
     append_review_event(service_dir, "ai_review_failed", run_id=run.get("run_id"), error=str(error), error_code=error_code)
     return _error(error_code, f"AI 审阅失败，未进入渲染：{error}", run_id=run.get("run_id"))
 
@@ -389,6 +407,24 @@ def _review_prompt(payload: dict[str, Any]) -> str:
         "禁止删除、移动、清理任何文件；禁止 approve/reject confirmation；不要写文件，只返回 JSON 数组。\n\n"
         + json.dumps(payload, ensure_ascii=False)
     )
+
+
+def _sanitize_payload_for_local_agent(payload: dict[str, Any], *, run_dir: Path) -> dict[str, Any]:
+    redacted = _redact_value(payload, str(run_dir))
+    if isinstance(redacted, dict):
+        redacted["run_dir"] = "[isolated-run-dir]"
+        return redacted
+    return {"run_dir": "[isolated-run-dir]", "payload": redacted}
+
+
+def _redact_value(value: Any, needle: str) -> Any:
+    if isinstance(value, dict):
+        return {key: _redact_value(item, needle) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact_value(item, needle) for item in value]
+    if isinstance(value, str):
+        return value.replace(needle, "[isolated-run-dir]")
+    return value
 
 
 def _candidates_path(run_dir: Path) -> Path:

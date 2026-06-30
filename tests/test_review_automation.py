@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from live_clipper.config import (
     ReviewAutomationConfig,
     ReviewAutomationLocalAgentConfig,
@@ -10,6 +12,7 @@ from live_clipper.config import (
     Settings,
 )
 from live_clipper.review_automation import (
+    _run_local_agent_adapter,
     build_review_payload,
     check_environment,
     extract_selection_json,
@@ -139,6 +142,71 @@ def test_local_agent_success_writes_validated_selection_and_events(tmp_path):
     events = [event["type"] for event in read_review_automation_events(service_dir)]
     assert "ai_review_selection_written" in events
     assert "ai_review_completed" in events
+
+
+def test_local_agent_runs_in_isolated_cwd_without_real_run_dir_in_prompt(tmp_path):
+    service_dir = tmp_path / "service"
+    run_dir = tmp_path / "output" / "default" / "run-1"
+    run = _write_run(service_dir, run_dir)
+    payload = build_review_payload(run)
+
+    def fake_runner(prompt: str, **kwargs):
+        cwd = Path(kwargs["cwd"])
+        assert cwd != run_dir
+        assert cwd.exists()
+        assert str(run_dir) not in prompt
+        assert "selected_clips.json" in prompt
+        assert not (run_dir / "selected_clips.json").exists()
+        return {"ok": True, "stdout": json.dumps(_selection()), "stderr": ""}
+
+    selection = _run_local_agent_adapter(_settings(), payload, run_dir=run_dir, local_runner=fake_runner)
+
+    assert selection[0]["clip_id"] == "clip-1"
+    assert not (run_dir / "selected_clips.json").exists()
+
+
+@pytest.mark.parametrize("provider", ["codex_cli", "claude_code"])
+def test_local_agent_isolates_cwd_for_codex_and_claude_providers(provider, tmp_path):
+    service_dir = tmp_path / "service"
+    run_dir = tmp_path / "output" / "default" / "run-1"
+    run = _write_run(service_dir, run_dir)
+    payload = build_review_payload(run)
+    settings = Settings(
+        review_automation=ReviewAutomationConfig(
+            local_agent=ReviewAutomationLocalAgentConfig(provider=provider),
+        )
+    )
+
+    observed = {}
+
+    def fake_runner(_prompt: str, **kwargs):
+        observed["provider"] = kwargs["provider"]
+        observed["cwd"] = Path(kwargs["cwd"])
+        assert observed["cwd"].exists()
+        return {"ok": True, "stdout": json.dumps(_selection()), "stderr": ""}
+
+    selection = _run_local_agent_adapter(settings, payload, run_dir=run_dir, local_runner=fake_runner)
+
+    assert observed["provider"] == provider
+    assert observed["cwd"] != run_dir
+    assert selection[0]["clip_id"] == "clip-1"
+
+
+def test_local_agent_rejects_file_write_mode_even_if_settings_are_constructed_directly(tmp_path):
+    service_dir = tmp_path / "service"
+    run_dir = tmp_path / "output" / "default" / "run-1"
+    _write_run(service_dir, run_dir)
+    settings = Settings(
+        review_automation=ReviewAutomationConfig(
+            local_agent=ReviewAutomationLocalAgentConfig(allow_agent_file_writes=True),
+        )
+    )
+
+    result = run_ai_review_for_run("run-1", settings, service_dir=service_dir, local_runner=lambda *_args, **_kwargs: {"ok": True})
+
+    assert result["ok"] is False
+    assert result["error_code"] == "agent_file_writes_disabled"
+    assert not (run_dir / "selected_clips.json").exists()
 
 
 def test_model_adapter_uses_fake_client_and_candidate_limit(tmp_path):
