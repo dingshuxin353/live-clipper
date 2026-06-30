@@ -283,6 +283,34 @@ def test_next_parser_accepts_output_root(tmp_path):
     assert args.output_root == tmp_path / "output"
 
 
+def test_service_parser_accepts_start_status_and_logs_flags():
+    start = cli.build_parser().parse_args(["service", "start", "--foreground", "--once"])
+    status = cli.build_parser().parse_args(["service", "status", "--json"])
+    logs = cli.build_parser().parse_args(["service", "logs", "--follow"])
+
+    assert start.command == "service"
+    assert start.service_command == "start"
+    assert start.foreground is True
+    assert start.once is True
+    assert status.json is True
+    assert logs.follow is True
+
+
+def test_follow_service_logs_prints_existing_content(tmp_path, monkeypatch, capsys):
+    service_dir = tmp_path / "service"
+    service_dir.mkdir()
+    (service_dir / "service.log").write_text("one\ntwo\n", encoding="utf-8")
+
+    def stop_after_first_poll(poll_seconds):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli.time, "sleep", stop_after_first_poll)
+
+    cli.follow_service_logs(service_dir=service_dir, poll_seconds=0)
+
+    assert capsys.readouterr().out == "one\ntwo\n"
+
+
 def test_run_next_reports_codex_selection_step(tmp_path, capsys):
     run_dir = tmp_path / "output" / "week_023"
     write_json(run_dir / "run_metadata.json", {"source_name": "week_023.mp4"})
@@ -751,6 +779,8 @@ def test_resolve_glossary_path_falls_back_to_example_file(tmp_path):
 
 def test_main_dispatches_scan_brief_and_render(tmp_path, monkeypatch):
     calls = []
+    default_input_dir = cli.Path("input")
+    default_output_root = cli.Path("output")
     video_path = tmp_path / "source.mp4"
     run_dir = tmp_path / "run"
     selection_path = run_dir / "selected_clips.json"
@@ -772,7 +802,7 @@ def test_main_dispatches_scan_brief_and_render(tmp_path, monkeypatch):
     monkeypatch.setattr(
         cli,
         "run_pipeline",
-        lambda source, input_dir=cli.Path("input"), output_dir=None, correct_transcript=False, refine=False, top_n=25: calls.append((
+        lambda source, input_dir=default_input_dir, output_dir=None, correct_transcript=False, refine=False, top_n=25: calls.append((
             "pipeline",
             source,
             input_dir,
@@ -782,14 +812,14 @@ def test_main_dispatches_scan_brief_and_render(tmp_path, monkeypatch):
             top_n,
         )),
     )
-    monkeypatch.setattr(cli, "run_cleanup", lambda path, input_dir=cli.Path("input"), confirm=False, force=False: calls.append(("cleanup", path, input_dir, confirm, force)) or {"deleted": []})
+    monkeypatch.setattr(cli, "run_cleanup", lambda path, input_dir=default_input_dir, confirm=False, force=False: calls.append(("cleanup", path, input_dir, confirm, force)) or {"deleted": []})
     monkeypatch.setattr(cli, "run_doctor", lambda input_dir: calls.append(("doctor", input_dir)) or {"ok": True, "checks": []})
     monkeypatch.setattr(cli, "run_local_smoke", lambda output_dir: calls.append(("smoke", output_dir)) or {"ok": True})
     monkeypatch.setattr(cli, "build_run_status", lambda path: calls.append(("status", path)) or {"ok": True})
     monkeypatch.setattr(
         cli,
         "start_latest_recording_job",
-        lambda source_dir, input_dir=cli.Path("input"), output_root=cli.Path("output"), since_hours=36, min_age_minutes=10, refine=True, top_n=25, correct_transcript=False: calls.append((
+        lambda source_dir, input_dir=default_input_dir, output_root=default_output_root, since_hours=36, min_age_minutes=10, refine=True, top_n=25, correct_transcript=False: calls.append((
             "automation-start",
             source_dir,
             input_dir,

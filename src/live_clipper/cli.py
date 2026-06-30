@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import time
 from pathlib import Path
 
 from .ai_guide import AI_ASSISTANT_GUIDE
@@ -23,6 +24,7 @@ from .prompt_loader import export_prompts
 from .refine_candidates import refine_candidates_file
 from .render_clips import render_selected_clips
 from .scan_windows import scan_windows_file
+from .service import get_service_status, read_service_logs, start_service, stop_service
 from .smoke import run_local_smoke
 from .status import build_run_status
 from .transcribe import transcribe_audio, transcript_sentences_from_raw
@@ -173,6 +175,26 @@ def run_next(output_root: Path = Path("output")) -> dict[str, object]:
     }
 
 
+def follow_service_logs(service_dir: Path = Path("work") / "service", poll_seconds: float = 1.0) -> None:
+    log_path = service_dir / "service.log"
+    offset = 0
+    try:
+        while True:
+            if log_path.exists():
+                size = log_path.stat().st_size
+                if size < offset:
+                    offset = 0
+                with log_path.open(encoding="utf-8", errors="replace") as file:
+                    file.seek(offset)
+                    chunk = file.read()
+                    offset = file.tell()
+                if chunk:
+                    print(chunk, end="", flush=True)
+            time.sleep(poll_seconds)
+    except KeyboardInterrupt:
+        return
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="live-clipper")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -200,6 +222,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     next_step = subparsers.add_parser("next", help="Explain the next action for output runs.")
     next_step.add_argument("--output-root", type=Path, default=Path("output"))
+
+    service = subparsers.add_parser("service", help="Manage the local live-clipper service.")
+    service_subparsers = service.add_subparsers(dest="service_command", required=True)
+    service_start = service_subparsers.add_parser("start", help="Start the local service.")
+    service_start.add_argument("--foreground", action="store_true", help="Run the service in the foreground.")
+    service_start.add_argument("--once", action="store_true", help="Run one service iteration and exit.")
+    service_subparsers.add_parser("stop", help="Stop the local service.")
+    service_status = service_subparsers.add_parser("status", help="Show service health and run state.")
+    service_status.add_argument("--json", action="store_true", help="Output JSON only.")
+    service_logs = service_subparsers.add_parser("logs", help="Print service logs.")
+    service_logs.add_argument("--follow", action="store_true", help="Keep printing log updates.")
 
     doctor = subparsers.add_parser("doctor", help="Check local deployment readiness.")
     doctor.add_argument("--input-dir", type=Path, default=Path("input"))
@@ -596,6 +629,24 @@ def main() -> None:
     elif args.command == "next":
         report = run_next(args.output_root)
         print(json.dumps(report, ensure_ascii=False, indent=2))
+    elif args.command == "service":
+        if args.service_command == "start":
+            report = start_service(load_settings(), foreground=args.foreground, once=args.once)
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+        elif args.service_command == "stop":
+            report = stop_service()
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+        elif args.service_command == "status":
+            report = get_service_status()
+            if args.json:
+                print(json.dumps(report, ensure_ascii=False, indent=2))
+            else:
+                print(json.dumps(report, ensure_ascii=False, indent=2))
+        elif args.service_command == "logs":
+            if args.follow:
+                follow_service_logs()
+            else:
+                print(read_service_logs())
     elif args.command == "doctor":
         report = run_doctor(args.input_dir)
         print(json.dumps(report, ensure_ascii=False, indent=2))

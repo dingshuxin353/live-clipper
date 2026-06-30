@@ -114,6 +114,40 @@ def test_load_settings_reads_grouped_config_and_env_secret(monkeypatch, tmp_path
     assert settings.cheap_model_api_key == "sk-from-env"
 
 
+def test_load_settings_supports_service_and_default_recording_source(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "live-clipper.toml").write_text(
+        "\n".join([
+            "[service]",
+            "enabled = true",
+            "scan_interval_minutes = 15",
+            "auto_render_after_selection = true",
+            "cleanup_mode = 'preview_only'",
+            "",
+            "[recording_source.default]",
+            "source_dir = '/Volumes/recordings'",
+            "input_dir = 'input'",
+            "output_root = 'output'",
+            "since_hours = 168",
+            "min_age_minutes = 20",
+            "stable_check_seconds = 5",
+        ]),
+        encoding="utf-8",
+    )
+
+    settings = load_settings()
+
+    assert settings.service.scan_interval_minutes == 15
+    assert settings.service.cleanup_mode == "preview_only"
+    assert settings.recording_source_default.source_id == "default"
+    assert settings.recording_source_default.source_dir == Path("/Volumes/recordings")
+    assert settings.recording_source_default.input_dir == Path("input")
+    assert settings.recording_source_default.output_root == Path("output")
+    assert settings.recording_source_default.since_hours == 168
+    assert settings.recording_source_default.min_age_minutes == 20
+    assert settings.recording_source_default.stable_check_seconds == 5
+
+
 def test_write_default_config_creates_friendly_template(tmp_path):
     output_path = tmp_path / "live-clipper.toml"
 

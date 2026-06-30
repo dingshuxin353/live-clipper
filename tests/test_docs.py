@@ -60,3 +60,15 @@ def test_readme_guides_local_asr_install_and_first_download():
     assert ".venv/bin/python -m pip install -e '.[dev,mlx]'" in text
     assert "首次运行会下载本地 ASR 模型" in text
     assert "本地 ASR 模型可用" in text
+
+
+def test_readme_documents_service_core_commands_and_safety():
+    text = Path("README.md").read_text(encoding="utf-8")
+
+    assert "## 本机常驻服务" in text
+    assert ".venv/bin/live-clipper service start" in text
+    assert ".venv/bin/live-clipper service status --json" in text
+    assert "work/service/" in text
+    assert "cleanup_mode = \"preview_only\"" in text
+    assert "不会自动删除" in text
+    assert "不会主动终止已经启动的 pipeline 子进程" in text
