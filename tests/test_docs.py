@@ -101,7 +101,7 @@ def test_web_static_exposes_v4_config_editor():
     html = Path("src/live_clipper/web_static/index.html").read_text(encoding="utf-8")
     app = Path("src/live_clipper/web_static/app.js").read_text(encoding="utf-8")
 
-    for label in ["基础路径", "录播源", "AI 与 ASR", "服务行为", "检查配置", "保存配置", "重启服务"]:
+    for label in ["快速开始", "录播源目录", "LLM API 地址", "ASR 后端", "启用服务", "检查配置", "保存配置", "重启服务"]:
         assert label in html
     assert "/api/config" in app
     assert "/api/config/validate" in app
@@ -112,8 +112,10 @@ def test_web_static_exposes_v5_scheduler_config_section():
     html = Path("src/live_clipper/web_static/index.html").read_text(encoding="utf-8")
     app = Path("src/live_clipper/web_static/app.js").read_text(encoding="utf-8")
 
-    for label in ["定时任务", "每周录播扫描", "每周审阅检查", "立即执行", "暂停", "启用"]:
+    for label in ["自动化", "每周录播扫描", "每周审阅检查", "启用内置定时调度"]:
         assert label in html
+    for label in ["立即执行", "暂停", "启用"]:
+        assert label in app
     assert "/api/scheduler" in app
     assert "/api/scheduler/jobs" in app
     assert "/run-now" in app
@@ -165,6 +167,41 @@ def test_web_static_exposes_v6_ai_review_automation_controls():
     assert "/api/review-automation/run-due" in app
     assert "/ai-review" in app
     assert "ai_review" in app
+
+
+def test_web_static_exposes_v7_layered_config_page():
+    html = Path("src/live_clipper/web_static/index.html").read_text(encoding="utf-8")
+
+    for label in ["配置体检", "快速开始", "自动化", "高级设置"]:
+        assert label in html
+
+    quick_start = html.split('data-config-layer="quick-start"', 1)[1].split('data-config-layer="automation"', 1)[0]
+    for advanced_label in ["tick 秒数", "Temperature", "Max tokens"]:
+        assert advanced_label not in quick_start
+
+    automation = html.split('data-config-layer="automation"', 1)[1].split('data-config-layer="advanced"', 1)[0]
+    for label in ["启用内置定时调度", "每周录播扫描", "启用自动 AI 审阅", "测试 AI 审阅环境", "立即处理待审阅"]:
+        assert label in automation
+
+    advanced = html.split('data-config-layer="advanced"', 1)[1]
+    for label in ["路径与文件", "模型请求", "服务与调度", "AI 审阅参数", "Web 控制台"]:
+        assert label in advanced
+    for field in [
+        "scheduler.tick_seconds",
+        "review_automation_model.temperature",
+        "review_automation_model.max_tokens",
+        "web.host",
+    ]:
+        assert field in advanced
+
+
+def test_readme_documents_v7_layered_config_page():
+    text = Path("README.md").read_text(encoding="utf-8")
+
+    assert "V7 配置页分层" in text
+    assert "配置体检" in text
+    assert "快速开始" in text
+    assert "高级设置默认收起" in text
 
 
 def test_readme_documents_v6_ai_review_safety_and_modes():

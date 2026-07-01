@@ -351,12 +351,71 @@ h3 {
   margin-top: 14px;
 }
 
+.config-layer {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.health-layer {
+  padding: 12px;
+}
+
+.layer-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.health-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(180px, 1fr));
+  gap: 8px;
+}
+
+.health-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: var(--surface-2);
+}
+
+.health-card.ok {
+  border-color: #93ddce;
+  background: var(--green-soft);
+}
+
+.health-card.warning {
+  border-color: #edc66c;
+  background: var(--amber-soft);
+}
+
+.health-card span,
+.health-card small {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.health-card strong {
+  display: block;
+  margin: 4px 0;
+  font-size: 16px;
+}
+
 .config-form fieldset,
 .config-form details {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
   padding: 12px;
+}
+
+.config-form .config-layer {
+  border-color: var(--line);
 }
 
 .config-form legend,
@@ -410,6 +469,27 @@ h3 {
 
 .config-form.nested {
   grid-template-columns: repeat(2, minmax(240px, 1fr));
+}
+
+.advanced-layer > summary,
+.scheduler-editor > summary {
+  cursor: pointer;
+}
+
+.advanced-grid {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.advanced-grid fieldset {
+  background: #fbfdff;
+}
+
+.automation-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .notice {
@@ -527,6 +607,7 @@ h3 {
   .metrics-grid,
   .info-grid,
   .runs-layout,
+  .health-grid,
   .config-form fieldset,
   .config-form.nested,
   .env-grid,
