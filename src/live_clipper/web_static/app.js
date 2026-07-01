@@ -7,6 +7,8 @@ const state = {
   confirmations: [],
   events: [],
   config: null,
+  configPayload: null,
+  serviceStatus: null,
   configDirty: false,
   scheduler: null,
   reviewAutomation: null,
@@ -245,7 +247,9 @@ function renderEvents() {
 }
 
 async function loadService() {
-  renderMetrics(await api("/api/service"));
+  state.serviceStatus = await api("/api/service");
+  renderMetrics(state.serviceStatus);
+  renderConfigHealth();
 }
 
 async function loadRuns() {
@@ -303,6 +307,7 @@ async function refreshAll() {
 
 function renderConfig(payload) {
   const config = payload.config || {};
+  state.configPayload = payload;
   el("configMeta").textContent = `${payload.config_path || "live-clipper.toml"} · ${payload.exists ? "已存在" : "尚未创建"} · ${payload.loaded_at || ""}`;
   document.querySelectorAll("[data-config-field]").forEach((field) => {
     const value = getConfigValue(config, field.dataset.configField);
@@ -310,7 +315,9 @@ function renderConfig(payload) {
     else field.value = value ?? "";
   });
   renderEnvStatus(payload.env_status || {});
+  renderWebAccessTokenStatus(config.web?.access_token_configured);
   renderConfigNotice(payload.warnings || [], "warning");
+  renderConfigHealth();
 }
 
 function renderScheduler(payload) {
@@ -338,6 +345,7 @@ function renderScheduler(payload) {
       </div>
     </div>
   `).join("") || '<div class="empty">还没有定时任务。</div>';
+  renderConfigHealth();
 }
 
 function renderReviewAutomation(payload) {
@@ -354,6 +362,80 @@ function renderReviewAutomation(payload) {
     ["最近结果", labelFor(review.last_status)],
     ["最近错误", review.last_error || "-"],
   ].map(([label, value]) => infoRow(label, value)).join("");
+  renderConfigHealth();
+}
+
+function renderConfigHealth() {
+  const node = el("configHealth");
+  if (!node) return;
+  const config = state.config || {};
+  const envStatus = state.configPayload?.env_status || {};
+  const sourceDir = config.recording_source_default?.source_dir;
+  const inputDir = config.recording_source_default?.input_dir || config.paths?.input_dir;
+  const outputRoot = config.recording_source_default?.output_root || config.paths?.output_root;
+  const llmKey = config.llm?.api_key_env;
+  const asrKey = config.asr?.api_key_env;
+  const scheduler = state.scheduler?.scheduler || {};
+  const review = state.reviewAutomation?.review_automation || {};
+  const reviewEnv = state.reviewAutomation?.environment || {};
+  const reviewAvailable = reviewEnv.current_mode_available ?? reviewEnv.ok;
+  const cards = [
+    {
+      label: "录播源",
+      status: sourceDir ? "已配置" : "未配置",
+      detail: sourceDir || "未填写录播源目录",
+      tone: sourceDir ? "ok" : "warning",
+    },
+    {
+      label: "本地项目库",
+      status: inputDir && outputRoot ? "正常" : "待配置",
+      detail: `输入：${inputDir || "-"} · 输出：${outputRoot || "-"}`,
+      tone: inputDir && outputRoot ? "ok" : "warning",
+    },
+    {
+      label: "LLM",
+      status: envStatus[llmKey] ? "已配置" : "未配置",
+      detail: llmKey || "未填写 API key 环境变量名",
+      tone: envStatus[llmKey] ? "ok" : "warning",
+    },
+    {
+      label: "ASR",
+      status: envStatus[asrKey] ? "已配置" : "未配置",
+      detail: `${config.asr?.backend || "-"} · ${asrKey || "未填写 API key 环境变量名"}`,
+      tone: envStatus[asrKey] ? "ok" : "warning",
+    },
+    {
+      label: "服务",
+      status: state.serviceStatus?.running ? "运行中" : "未运行",
+      detail: state.serviceStatus?.service?.pid ? `PID ${state.serviceStatus.service.pid}` : "可在服务页或配置页启动",
+      tone: state.serviceStatus?.running ? "ok" : "neutral",
+    },
+    {
+      label: "定时任务",
+      status: scheduler.enabled ? "已启用" : "未启用",
+      detail: scheduler.next_due_at ? `下次：${scheduler.next_due_at}` : "暂无下一次任务",
+      tone: scheduler.enabled ? "ok" : "neutral",
+    },
+    {
+      label: "AI 审阅",
+      status: review.enabled ? (reviewAvailable ? "可用" : "不可用") : "未启用",
+      detail: `${labelFor(review.mode) || "-"} · ${labelFor(review.provider) || "-"}`,
+      tone: review.enabled ? (reviewAvailable ? "ok" : "warning") : "neutral",
+    },
+  ];
+  node.innerHTML = cards.map((card) => `
+    <div class="health-card ${card.tone}">
+      <span>${escapeHtml(card.label)}</span>
+      <strong>${escapeHtml(card.status)}</strong>
+      <small>${escapeHtml(card.detail)}</small>
+    </div>
+  `).join("");
+}
+
+function renderWebAccessTokenStatus(configured) {
+  const node = el("webAccessTokenStatus");
+  if (!node) return;
+  node.textContent = `Web access token：${configured ? "已配置" : "未配置"}。这里只显示状态，不展示明文。`;
 }
 
 function renderEnvStatus(envStatus) {

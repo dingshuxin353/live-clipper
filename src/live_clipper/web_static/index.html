@@ -12,7 +12,7 @@
         <div class="brand-mark">LC</div>
         <div>
           <h1>Live Clipper</h1>
-          <span class="version">Web 控制台 V4</span>
+          <span class="version">Web 控制台 V7</span>
         </div>
       </div>
       <nav class="tabs" aria-label="控制台页面">
@@ -101,33 +101,25 @@
         </div>
         <div id="configNotice" class="notice" hidden></div>
         <form id="configForm" class="config-form">
-          <fieldset>
-            <legend>基础路径</legend>
-            <label>输入目录<input data-config-field="paths.input_dir" /></label>
-            <label>输出目录<input data-config-field="paths.output_root" /></label>
-            <label>工作目录<input data-config-field="paths.work_dir" /></label>
-            <label>术语表路径<input data-config-field="paths.glossary_path" /></label>
-          </fieldset>
+          <section class="config-layer health-layer" data-config-layer="health">
+            <div class="layer-heading">
+              <div>
+                <h3>配置体检</h3>
+                <p class="muted">先看状态，再决定要改哪里。</p>
+              </div>
+            </div>
+            <div id="configHealth" class="health-grid"></div>
+          </section>
 
-          <fieldset>
-            <legend>录播源</legend>
+          <fieldset class="config-layer" data-config-layer="quick-start">
+            <legend>快速开始</legend>
+            <div class="notice subtle full-span">这里只保留第一次跑通最常用的配置。API key 只填写环境变量名，不会展示或保存明文密钥。</div>
             <label>录播源目录<input data-config-field="recording_source_default.source_dir" placeholder="可以为空；为空时不会自动扫描" /></label>
-            <label>输入目录<input data-config-field="recording_source_default.input_dir" /></label>
-            <label>输出目录<input data-config-field="recording_source_default.output_root" /></label>
-            <label>回看时间窗口（小时）<input type="number" data-config-field="recording_source_default.since_hours" /></label>
-            <label>最小文件年龄（分钟）<input type="number" data-config-field="recording_source_default.min_age_minutes" /></label>
-            <label>稳定性检查秒数<input type="number" data-config-field="recording_source_default.stable_check_seconds" /></label>
-          </fieldset>
-
-          <fieldset>
-            <legend>AI 与 ASR</legend>
-            <label>模型服务名称<input data-config-field="llm.provider_label" /></label>
+            <label>本地输入目录<input data-config-field="recording_source_default.input_dir" /></label>
+            <label>本地输出目录<input data-config-field="recording_source_default.output_root" /></label>
             <label>LLM API 地址<input data-config-field="llm.api_base" /></label>
             <label>LLM API key 环境变量名<input data-config-field="llm.api_key_env" /></label>
             <label>LLM 模型名<input data-config-field="llm.model" /></label>
-            <label>请求超时（秒）<input type="number" data-config-field="llm.timeout_seconds" /></label>
-            <label>重试次数<input type="number" data-config-field="llm.request_attempts" /></label>
-            <label>重试间隔（秒）<input type="number" step="0.1" data-config-field="llm.retry_delay_seconds" /></label>
             <label>ASR 后端
               <select data-config-field="asr.backend">
                 <option value="mlx_whisper">mlx_whisper</option>
@@ -138,34 +130,41 @@
             <label>语言<input data-config-field="asr.language" /></label>
             <label>ASR API 地址<input data-config-field="asr.api_base" /></label>
             <label>ASR API key 环境变量名<input data-config-field="asr.api_key_env" /></label>
-            <label>Hugging Face token 环境变量名<input data-config-field="asr.hf_token_env" /></label>
-          </fieldset>
-
-          <fieldset>
-            <legend>服务行为</legend>
             <label class="check-row"><input type="checkbox" data-config-field="service.enabled" /> 启用服务</label>
-            <label>扫描间隔（分钟）<input type="number" data-config-field="service.scan_interval_minutes" /></label>
             <label class="check-row"><input type="checkbox" data-config-field="service.auto_render_after_selection" /> 选片后自动渲染</label>
             <label>清理模式<input data-config-field="service.cleanup_mode" readonly /></label>
           </fieldset>
 
-          <fieldset class="scheduler-fieldset">
-            <legend>定时任务</legend>
-            <div class="notice subtle full-span">服务未运行时不会执行定时任务。任务支持立即执行、暂停和启用。老用户已有的审阅检查不会自动改成 AI 自动审阅；需要时可把任务动作改为 AI 自动审阅，并在下方明确启用 AI 审阅。</div>
+          <fieldset class="config-layer scheduler-fieldset" data-config-layer="automation">
+            <legend>自动化</legend>
+            <div class="notice subtle full-span">服务未运行时 Scheduler 不会执行。老用户已有的审阅检查不会自动改成 AI 自动审阅；确认后可把任务动作改为 AI 自动审阅，并明确启用 AI 审阅。</div>
             <label class="check-row"><input type="checkbox" data-config-field="scheduler.enabled" /> 启用内置定时调度</label>
-            <label>调度时区<input data-config-field="scheduler.timezone" /></label>
-            <label>tick 秒数<input type="number" data-config-field="scheduler.tick_seconds" /></label>
-            <label>错过执行策略
-              <select data-config-field="scheduler.missed_policy">
-                <option value="run_once">run_once</option>
-                <option value="skip">skip</option>
+            <label class="check-row"><input type="checkbox" data-config-field="review_automation.enabled" /> 启用自动 AI 审阅</label>
+            <label>审阅方式
+              <select data-config-field="review_automation.mode">
+                <option value="local_agent">本地 Agent</option>
+                <option value="model">配置模型直连</option>
               </select>
             </label>
+            <label>本地 Agent
+              <select data-config-field="review_automation_local_agent.provider">
+                <option value="codex_cli">Codex CLI</option>
+                <option value="claude_code">Claude Code</option>
+              </select>
+            </label>
+            <label>模型<input data-config-field="review_automation_model.model" placeholder="为空时复用 LLM 模型" /></label>
+            <label>每次最多处理任务数<input type="number" data-config-field="review_automation.max_runs_per_tick" /></label>
+            <label class="check-row"><input type="checkbox" data-config-field="review_automation.auto_render_after_selection" /> 选片后沿用自动渲染</label>
             <div id="schedulerSummary" class="scheduler-summary full-span"></div>
             <div id="schedulerJobList" class="scheduler-jobs full-span"></div>
-            <div class="scheduler-editor full-span">
-              <h3>创建 / 编辑任务</h3>
-              <div class="notice subtle">默认模板：每周录播扫描（周日 00:00）和每周审阅检查（周日 12:00）。</div>
+            <div class="automation-actions full-span">
+              <button id="checkReviewAutomationBtn" class="secondary-button" type="button">测试 AI 审阅环境</button>
+              <button id="runDueReviewAutomationBtn" class="secondary-button" type="button">立即处理待审阅</button>
+            </div>
+            <div id="reviewAutomationStatus" class="scheduler-summary full-span"></div>
+            <details class="scheduler-editor full-span">
+              <summary>编辑高级定时任务</summary>
+              <div class="notice subtle">默认任务：每周录播扫描（周日 00:00）和每周审阅检查（周日 12:00）。需要自动选片时，把审阅检查的动作类型改为 AI 自动审阅。</div>
               <div class="config-form nested">
                 <label>任务 id<input id="schedulerJobId" placeholder="weekly_recording_scan" /></label>
                 <label>任务名称<input id="schedulerJobName" value="每周录播扫描" /></label>
@@ -201,54 +200,71 @@
                 <label class="check-row"><input id="schedulerJobSkip" type="checkbox" checked /> 上次还在运行时跳过</label>
                 <button id="saveSchedulerJobBtn" class="secondary-button" type="button">保存定时任务</button>
               </div>
-            </div>
+            </details>
           </fieldset>
 
-          <fieldset class="review-automation-fieldset">
-            <legend>AI 审阅</legend>
-            <div class="notice subtle full-span">AI 审阅只会生成选片结果。删除、清理和确认仍需要你在确认页处理。默认不会静默启用，请确认环境可用后再打开。</div>
-            <label class="check-row"><input type="checkbox" data-config-field="review_automation.enabled" /> 启用自动 AI 审阅</label>
-            <label>审阅方式
-              <select data-config-field="review_automation.mode">
-                <option value="local_agent">本地 Agent</option>
-                <option value="model">配置模型直连</option>
-              </select>
-            </label>
-            <label>每次最多处理任务数<input type="number" data-config-field="review_automation.max_runs_per_tick" /></label>
-            <label>单任务超时时间（分钟）<input type="number" data-config-field="review_automation.timeout_minutes" /></label>
-            <label>失败后处理
-              <select data-config-field="review_automation.on_failure">
-                <option value="keep_needs_review">保留待审阅</option>
-                <option value="mark_failed">标记失败</option>
-              </select>
-            </label>
-            <label class="check-row"><input type="checkbox" data-config-field="review_automation.auto_render_after_selection" /> 选片后沿用自动渲染</label>
-            <label>提示词模板<input data-config-field="review_automation.prompt_template" /></label>
-            <label>本地 Agent
-              <select data-config-field="review_automation_local_agent.provider">
-                <option value="codex_cli">Codex CLI</option>
-                <option value="claude_code">Claude Code</option>
-              </select>
-            </label>
-            <label>Agent 超时（分钟）<input type="number" data-config-field="review_automation_local_agent.command_timeout_minutes" /></label>
-            <label class="check-row"><input type="checkbox" data-config-field="review_automation_local_agent.include_review_package_inline" /> 把审阅包放入 prompt</label>
-            <label class="check-row"><input type="checkbox" data-config-field="review_automation_local_agent.allow_agent_file_writes" disabled /> 允许 Agent 直接写文件（P0 固定关闭）</label>
-            <label>模型<input data-config-field="review_automation_model.model" placeholder="为空时复用 LLM 模型" /></label>
-            <label>最多候选数<input type="number" data-config-field="review_automation_model.max_candidates" /></label>
-            <label>Temperature<input type="number" step="0.1" data-config-field="review_automation_model.temperature" /></label>
-            <label>Max tokens<input type="number" data-config-field="review_automation_model.max_tokens" /></label>
-            <label>重试次数<input type="number" data-config-field="review_automation_model.retry_attempts" /></label>
-            <button id="checkReviewAutomationBtn" class="secondary-button" type="button">测试 AI 审阅环境</button>
-            <button id="runDueReviewAutomationBtn" class="secondary-button" type="button">立即处理待审阅</button>
-            <div id="reviewAutomationStatus" class="scheduler-summary full-span"></div>
-          </fieldset>
+          <details class="config-layer advanced-layer" data-config-layer="advanced">
+            <summary>高级设置</summary>
+            <div class="advanced-grid">
+              <fieldset>
+                <legend>路径与文件</legend>
+                <label>全局输入目录<input data-config-field="paths.input_dir" /></label>
+                <label>全局输出目录<input data-config-field="paths.output_root" /></label>
+                <label>工作目录<input data-config-field="paths.work_dir" /></label>
+                <label>术语表路径<input data-config-field="paths.glossary_path" /></label>
+                <label>回看时间窗口（小时）<input type="number" data-config-field="recording_source_default.since_hours" /></label>
+                <label>最小文件年龄（分钟）<input type="number" data-config-field="recording_source_default.min_age_minutes" /></label>
+                <label>稳定性检查秒数<input type="number" data-config-field="recording_source_default.stable_check_seconds" /></label>
+              </fieldset>
 
-          <details>
-            <summary>高级配置</summary>
-            <div class="config-form nested">
-              <label>Web Host<input data-config-field="web.host" /></label>
-              <label>Web Port<input type="number" data-config-field="web.port" /></label>
-              <div class="notice subtle">修改 Web host/port 后，需要手动重启 Web 控制台命令本身才会生效。</div>
+              <fieldset>
+                <legend>模型请求</legend>
+                <label>模型服务名称<input data-config-field="llm.provider_label" /></label>
+                <label>请求超时（秒）<input type="number" data-config-field="llm.timeout_seconds" /></label>
+                <label>重试次数<input type="number" data-config-field="llm.request_attempts" /></label>
+                <label>重试间隔（秒）<input type="number" step="0.1" data-config-field="llm.retry_delay_seconds" /></label>
+                <label>Hugging Face token 环境变量名<input data-config-field="asr.hf_token_env" /></label>
+              </fieldset>
+
+              <fieldset>
+                <legend>服务与调度</legend>
+                <label>扫描间隔（分钟）<input type="number" data-config-field="service.scan_interval_minutes" /></label>
+                <label>调度时区<input data-config-field="scheduler.timezone" /></label>
+                <label>tick 秒数<input type="number" data-config-field="scheduler.tick_seconds" /></label>
+                <label>错过执行策略
+                  <select data-config-field="scheduler.missed_policy">
+                    <option value="run_once">run_once</option>
+                    <option value="skip">skip</option>
+                  </select>
+                </label>
+              </fieldset>
+
+              <fieldset>
+                <legend>AI 审阅参数</legend>
+                <label>单任务超时时间（分钟）<input type="number" data-config-field="review_automation.timeout_minutes" /></label>
+                <label>失败后处理
+                  <select data-config-field="review_automation.on_failure">
+                    <option value="keep_needs_review">保留待审阅</option>
+                    <option value="mark_failed">标记失败</option>
+                  </select>
+                </label>
+                <label>提示词模板<input data-config-field="review_automation.prompt_template" /></label>
+                <label>Agent 超时（分钟）<input type="number" data-config-field="review_automation_local_agent.command_timeout_minutes" /></label>
+                <label class="check-row"><input type="checkbox" data-config-field="review_automation_local_agent.include_review_package_inline" /> 把审阅包放入 prompt</label>
+                <label class="check-row"><input type="checkbox" data-config-field="review_automation_local_agent.allow_agent_file_writes" disabled /> 允许 Agent 直接写文件（安全边界固定关闭）</label>
+                <label>最多候选数<input type="number" data-config-field="review_automation_model.max_candidates" /></label>
+                <label>Temperature<input type="number" step="0.1" data-config-field="review_automation_model.temperature" /></label>
+                <label>Max tokens<input type="number" data-config-field="review_automation_model.max_tokens" /></label>
+                <label>重试次数<input type="number" data-config-field="review_automation_model.retry_attempts" /></label>
+              </fieldset>
+
+              <fieldset>
+                <legend>Web 控制台</legend>
+                <label>Web Host<input data-config-field="web.host" /></label>
+                <label>Web Port<input type="number" data-config-field="web.port" /></label>
+                <div class="notice subtle full-span">修改 Web host/port 后，需要手动重启 Web 控制台命令本身才会生效。</div>
+                <div id="webAccessTokenStatus" class="notice subtle full-span">Web access token：只读状态，不展示明文。</div>
+              </fieldset>
             </div>
           </details>
         </form>
