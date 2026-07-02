@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import re
+from http.server import ThreadingHTTPServer
+from threading import Thread
+from urllib.request import urlopen
+
 from live_clipper.utils import write_json
-from live_clipper.web import WebPaths, build_run_detail, build_runs_index, handle_api_request
+from live_clipper.web import LiveClipperRequestHandler, WebPaths, build_run_detail, build_runs_index, handle_api_request
 
 
 def test_build_runs_index_merges_files_state_and_log(tmp_path, monkeypatch):
@@ -23,7 +28,7 @@ def test_build_runs_index_merges_files_state_and_log(tmp_path, monkeypatch):
     log_path.write_text("first\nsecond\n", encoding="utf-8")
     monkeypatch.setattr("live_clipper.web._pid_is_running", lambda pid: True)
 
-    index = build_runs_index(WebPaths(output_root=output_root, state_dir=state_dir, log_dir=log_dir))
+    index = build_runs_index(WebPaths(output_root=output_root, state_dir=state_dir, log_dir=log_dir, service_dir=tmp_path / "service"))
 
     assert index["ok"] is True
     assert index["runs"][0]["run_id"] == "recording"
@@ -113,13 +118,42 @@ def test_handle_api_request_returns_json_payloads(tmp_path):
     status_code, headers, body = handle_api_request(
         "GET",
         "/api/runs",
-        WebPaths(output_root=output_root, state_dir=tmp_path / "state", log_dir=tmp_path / "logs"),
+        WebPaths(
+            output_root=output_root,
+            state_dir=tmp_path / "state",
+            log_dir=tmp_path / "logs",
+            service_dir=tmp_path / "service",
+        ),
     )
 
     assert status_code == 200
     assert headers["Content-Type"] == "application/json; charset=utf-8"
     assert body["ok"] is True
     assert body["runs"][0]["run_id"] == "recording"
+
+
+def test_static_assets_disable_cache_and_index_versions_app_js(tmp_path):
+    class TestHandler(LiveClipperRequestHandler):
+        paths = WebPaths(output_root=tmp_path / "output", state_dir=tmp_path / "state", log_dir=tmp_path / "logs")
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), TestHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base_url = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        index_response = urlopen(f"{base_url}/", timeout=5)
+        html = index_response.read().decode("utf-8")
+        assert index_response.headers["Cache-Control"] == "no-store"
+        script_match = re.search(r'<script src="([^"]*app\.js\?v=[^"]+)"></script>', html)
+        assert script_match
+
+        app_response = urlopen(f"{base_url}{script_match.group(1)}", timeout=5)
+        assert app_response.headers["Cache-Control"] == "no-store"
+        assert b"/api/review-automation/run-due" in app_response.read()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
 def test_handle_api_request_deletes_single_generated_clip(tmp_path):

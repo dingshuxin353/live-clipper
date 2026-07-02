@@ -1,0 +1,68 @@
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+
+def _html() -> str:
+    return Path("src/live_clipper/web_static/index.html").read_text(encoding="utf-8")
+
+
+def _app() -> str:
+    return Path("src/live_clipper/web_static/app.js").read_text(encoding="utf-8")
+
+
+def test_v8_console_uses_user_task_navigation():
+    html = _html()
+
+    assert "直播切片 · 本地控制台" in html
+    assert 'data-tab="clips"' in html
+    assert 'data-tab="automation"' in html
+    assert 'data-tab="confirmations"' in html
+    assert 'data-tab="settings"' in html
+    assert 'data-tab="service"' not in html
+    assert 'data-tab="runs"' not in html
+    assert 'data-tab="logs"' not in html
+    assert 'data-tab="config"' not in html
+
+
+def test_v8_console_exposes_core_actions_without_prototype_runtime():
+    html = _html()
+    app = _app()
+
+    for label in ["切片结果", "自动化", "确认", "设置", "立即扫描录播", "运行日志", "AI 自动审阅", "没有待确认的操作"]:
+        assert label in html
+    for forbidden in ["sc-if", "sc-for", "DCLogic"]:
+        assert forbidden not in html
+        assert forbidden not in app
+    assert "/api/service/scan-now" in app
+    assert "/api/review-automation/run-due" in app
+    assert "/api/runs/" in app
+    assert "/ai-review" in app
+
+
+def test_v8_config_fields_remain_unique_and_complete():
+    html = _html()
+    fields = re.findall(r'data-config-field="([^"]+)"', html)
+
+    assert len(fields) == 49
+    assert len(fields) == len(set(fields))
+    for field in [
+        "recording_source_default.source_dir",
+        "service.auto_render_after_selection",
+        "scheduler.tick_seconds",
+        "review_automation_model.temperature",
+        "web.host",
+    ]:
+        assert field in fields
+
+
+def test_v8_settings_keep_advanced_fields_collapsed():
+    html = _html()
+
+    advanced_match = re.search(r'<details[^>]+data-config-layer="advanced"[^>]*>', html)
+    assert advanced_match
+    assert " open" not in advanced_match.group(0)
+    quick_start = html.split('data-config-layer="quick-start"', 1)[1].split('data-config-layer="automation"', 1)[0]
+    for advanced_label in ["tick 秒数", "Temperature", "Max tokens"]:
+        assert advanced_label not in quick_start

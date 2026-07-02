@@ -1,5 +1,5 @@
 const state = {
-  activeTab: "service",
+  activeTab: "clips",
   phase: "",
   runs: [],
   selectedRunId: null,
@@ -60,13 +60,13 @@ function formatBytes(bytes) {
 
 const phaseLabels = {
   processing: "处理中",
-  needs_review: "待审阅",
   rendering: "渲染中",
+  needs_review: "待审阅",
   rendered: "已成片",
   failed: "失败",
-  cleanup_ready: "可清理",
+  cleanup_ready: "已成片",
   ready_to_render: "可渲染",
-  needs_codex_selection: "待选片",
+  needs_codex_selection: "待审阅",
   running: "运行中",
   waiting_or_manual: "等待处理",
   missing: "缺失",
@@ -113,142 +113,269 @@ function labelFor(value) {
   return valueLabels[value] || phaseLabels[value] || value || "-";
 }
 
+function canonicalPhase(phase) {
+  if (phase === "rendering" || phase === "running" || phase === "ready_to_render") return "processing";
+  if (phase === "cleanup_ready") return "rendered";
+  if (phase === "needs_codex_selection") return "needs_review";
+  return phase || "unknown";
+}
+
 function switchTab(tab) {
   state.activeTab = tab;
-  document.querySelectorAll(".tab").forEach((button) => {
+  document.querySelectorAll(".nav-item").forEach((button) => {
     button.classList.toggle("active", button.dataset.tab === tab);
   });
-  document.querySelectorAll(".section").forEach((section) => {
+  document.querySelectorAll(".page").forEach((section) => {
     section.classList.toggle("active", section.id === `section-${tab}`);
   });
-}
-
-function renderMetrics(status) {
-  const metrics = [
-    ["状态", labelFor(status.service?.status || "stopped")],
-    ["PID", status.service?.pid || "无"],
-    ["当前任务", status.active_run || "无"],
-    ["待审阅", String(status.pending_review_runs?.length || 0)],
-    ["失败", String(status.failed_runs?.length || 0)],
-    ["待确认", String(status.pending_confirmation_count || 0)],
-  ];
-  el("serviceMetrics").innerHTML = metrics
-    .map(([label, value]) => `<div class="metric"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`)
-    .join("");
-  const source = status.source_summary || {};
-  el("serviceSummary").innerHTML = [
-    ["运行中", status.running ? "是" : "否"],
-    ["最近心跳", status.service?.last_heartbeat_at || "-"],
-    ["下次扫描", status.service?.next_scan_at || "-"],
-    ["录播源", source.source_dir || "-"],
-    ["输入目录", source.input_dir || "-"],
-    ["输出目录", source.output_root || "-"],
-    ["最近错误", status.service?.last_error || "-"],
-  ]
-    .map(([label, value]) => `<div class="info-row"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`)
-    .join("");
-}
-
-function renderRuns() {
-  const list = el("runList");
-  if (!state.runs.length) {
-    list.innerHTML = '<div class="empty">还没有服务任务。</div>';
-    return;
-  }
-  list.innerHTML = state.runs
-    .map((run) => `
-      <button class="run-item ${run.run_id === state.selectedRunId ? "active" : ""}" data-run-id="${escapeHtml(run.run_id)}">
-        <span class="run-title">${escapeHtml(run.source_name || run.run_id)}</span>
-        <span class="status-pill ${escapeHtml(run.phase || "unknown")}">${escapeHtml(labelFor(run.phase || "unknown"))}</span>
-        <small>${escapeHtml(run.run_id)}</small>
-        <small>${escapeHtml(run.updated_at || "-")}</small>
-      </button>
-    `)
-    .join("");
-}
-
-function renderRunDetail() {
-  const detail = state.detail;
-  if (!detail || !detail.ok) {
-    el("runDetail").innerHTML = '<div class="empty">请选择一个任务。</div>';
-    el("renderRunBtn").disabled = true;
-    el("cleanupPreviewBtn").disabled = true;
-    el("aiReviewRunBtn").disabled = true;
-    return;
-  }
-  const run = detail.run;
-  const files = detail.files || {};
-  const cleanup = detail.cleanup || { targets: [] };
-  el("runDetail").innerHTML = `
-    <div class="info-grid">
-      ${infoRow("任务", run.run_id)}
-      ${infoRow("阶段", labelFor(run.phase))}
-      ${infoRow("源文件", run.source_path)}
-      ${infoRow("本地副本", run.local_source_path)}
-      ${infoRow("任务目录", run.run_dir)}
-      ${infoRow("候选数", run.candidate_count || detail.candidates_count || 0)}
-      ${infoRow("已选片段", run.selected_count || detail.selected_count || 0)}
-      ${infoRow("成片数", run.clip_count || detail.rendered_clip_count || 0)}
-    </div>
-    <h3>文件</h3>
-    <div class="file-grid">
-      ${Object.entries(files).map(([name, file]) => `<div class="file-row"><strong>${escapeHtml(name)}</strong><small>${file.exists ? escapeHtml(file.path) : "缺失"}</small></div>`).join("")}
-    </div>
-    <h3>清理预览</h3>
-    <div class="cleanup-list">
-      ${(cleanup.targets || []).map((target) => `
-        <div class="cleanup-row ${target.deletable ? "deletable" : "protected"}">
-          <strong>${target.deletable ? "可删除" : "受保护"} · ${escapeHtml(cleanupKindLabels[target.kind] || target.kind)}</strong>
-          <small>${formatBytes(target.bytes)} · ${escapeHtml(target.path)}</small>
-          <small>${escapeHtml(target.reason)}</small>
-        </div>
-      `).join("") || '<div class="empty">没有清理目标。</div>'}
-    </div>
-  `;
-  el("renderRunBtn").disabled = !detail.actions?.can_render;
-  el("cleanupPreviewBtn").disabled = !detail.actions?.can_cleanup_preview;
-  el("aiReviewRunBtn").disabled = !detail.actions?.can_ai_review;
-  el("logOutput").textContent = detail.log?.log || detail.log?.tail || "暂无任务日志。";
 }
 
 function infoRow(label, value) {
   return `<div class="info-row"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value || "-")}</strong></div>`;
 }
 
-function renderConfirmations() {
-  const pending = state.confirmations.filter((item) => item.status === "pending");
-  if (!pending.length) {
-    el("confirmationList").innerHTML = '<div class="empty">没有待确认请求。</div>';
+function renderServiceStatus(status) {
+  const service = status.service || {};
+  const source = status.source_summary || {};
+  const metrics = [
+    ["状态", labelFor(service.status || "stopped")],
+    ["PID", service.pid || "无"],
+    ["待审阅", String(status.pending_review_runs?.length || 0)],
+    ["失败", String(status.failed_runs?.length || 0)],
+    ["待确认", String(status.pending_confirmation_count || 0)],
+    ["当前任务", status.active_run || "无"],
+  ];
+  el("serviceMetrics").innerHTML = metrics
+    .map(([label, value]) => `<div class="metric"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`)
+    .join("");
+  el("serviceSummary").innerHTML = [
+    ["最近心跳", service.last_heartbeat_at || "-"],
+    ["下次扫描", service.next_scan_at || "-"],
+    ["录播源", source.source_dir || "-"],
+    ["输入目录", source.input_dir || "-"],
+    ["输出目录", source.output_root || "-"],
+    ["最近错误", service.last_error || "-"],
+  ].map(([label, value]) => infoRow(label, value)).join("");
+  renderSidebarServiceCard(status);
+}
+
+function renderSidebarServiceCard(status = {}) {
+  const service = status.service || {};
+  const scheduler = state.scheduler?.scheduler || {};
+  const running = Boolean(status.running);
+  el("sidebarServiceCard").innerHTML = `
+    <small>本机服务</small>
+    <strong>${escapeHtml(running ? "服务运行中" : labelFor(service.status || "已停止"))}</strong>
+    <small>PID：${escapeHtml(service.pid || "无")}</small>
+    <small>下次扫描：${escapeHtml(service.next_scan_at || "-")}</small>
+    <small>下次定时：${escapeHtml(scheduler.next_due_at || "-")}</small>
+    <div class="button-row" style="margin-top: 12px;">
+      <button class="secondary-button small" data-sidebar-scan type="button">立即扫描</button>
+      <button class="secondary-button small" data-sidebar-service-toggle="${running ? "stop" : "start"}" type="button">${running ? "停止" : "启动"}</button>
+    </div>
+  `;
+}
+
+function renderClipsSubtitle() {
+  const runCount = state.runs.length;
+  const clipCount = state.runs.reduce((total, run) => total + Number(run.clip_count || 0), 0);
+  const processingCount = state.runs.filter((run) => ["processing", "rendering", "running", "ready_to_render"].includes(run.phase)).length;
+  const reviewCount = state.runs.filter((run) => canonicalPhase(run.phase) === "needs_review").length;
+  const parts = [];
+  if (clipCount) parts.push(`生成 ${clipCount} 个成片`);
+  if (processingCount) parts.push(`${processingCount} 场正在处理`);
+  if (reviewCount) parts.push(`${reviewCount} 场待审阅`);
+  el("clipsSubtitle").textContent = runCount
+    ? `AI 已从 ${runCount} 场直播中 ${parts.length ? parts.join("，") : "整理处理状态"}`
+    : "查看录播处理、AI 审阅和成片结果";
+}
+
+function runMeta(run) {
+  const bits = [
+    run.updated_at || run.created_at || "-",
+    `${Number(run.clip_count || 0)} 个成片`,
+    `${Number(run.candidate_count || 0)} 个候选`,
+    labelFor(run.phase || "unknown"),
+  ];
+  return bits.filter(Boolean).join(" · ");
+}
+
+function renderRuns() {
+  renderClipsSubtitle();
+  const list = el("runList");
+  if (!state.runs.length) {
+    list.innerHTML = '<div class="empty">还没有录播任务。可以先点击「立即扫描录播」。</div>';
     return;
   }
-  el("confirmationList").innerHTML = pending
-    .map((item) => `
-      <div class="confirmation-row">
-        <input type="checkbox" data-confirmation-check="${escapeHtml(item.id)}" />
-        <div>
-          <strong>${escapeHtml(labelFor(item.action))}</strong>
-          <small>${escapeHtml(item.id)} · 任务 ${escapeHtml(item.run_id)}</small>
-          <small>${escapeHtml(item.target_path)}</small>
-        </div>
-        <span class="risk ${escapeHtml(item.risk_level)}">${escapeHtml(labelFor(item.risk_level))}</span>
-        <div class="button-row">
-          <button class="danger-button small" data-approve="${escapeHtml(item.id)}">确认</button>
-          <button class="secondary-button small" data-reject="${escapeHtml(item.id)}">拒绝</button>
-        </div>
+  list.innerHTML = state.runs.map((run) => {
+    const active = run.run_id === state.selectedRunId;
+    const expanded = active && state.detail?.ok;
+    return `
+      <article class="clip-card ${active ? "active" : ""}">
+        <button class="clip-card-main" data-run-id="${escapeHtml(run.run_id)}" type="button">
+          <span>
+            <span class="run-title">${escapeHtml(run.source_name || run.run_id)}</span>
+            <span class="run-meta">${escapeHtml(runMeta(run))}</span>
+          </span>
+          <span class="status-pill ${escapeHtml(canonicalPhase(run.phase))}">${escapeHtml(labelFor(run.phase || "unknown"))}</span>
+        </button>
+        ${expanded ? renderRunExpandedContent(state.detail) : ""}
+      </article>
+    `;
+  }).join("");
+}
+
+function renderRunExpandedContent(detail) {
+  const run = detail.run || {};
+  const phase = canonicalPhase(run.phase);
+  if (phase === "rendered") return renderRenderedContent(detail);
+  if (phase === "needs_review") return renderReviewContent(detail);
+  if (phase === "failed") return renderFailedContent(detail);
+  return renderProcessingContent(detail);
+}
+
+function renderRenderedContent(detail) {
+  const run = detail.run || {};
+  const clips = detail.clips || [];
+  return `
+    <div class="clip-card-body">
+      <div class="clip-actions">
+        <span class="run-meta">${escapeHtml(run.run_dir || "-")}</span>
+        <button class="secondary-button small" data-copy-text="${escapeHtml(run.run_dir || "")}" type="button">复制目录</button>
+        <button id="cleanupPreviewBtn" class="secondary-button small" type="button" ${detail.actions?.can_cleanup_preview ? "" : "disabled"}>预览清理</button>
       </div>
-    `)
-    .join("");
+      ${clips.length ? clips.map((clip) => renderClipRow(clip)).join("") : '<div class="empty">已进入成片阶段，但还没有检测到 clips/*.mp4。</div>'}
+    </div>
+  `;
+}
+
+function renderClipRow(clip) {
+  const title = clip.title || clip.name || "未命名成片";
+  const description = clip.description || clip.desc || clip.path || "";
+  return `
+    <div class="clip-row">
+      <div class="clip-thumb">▶</div>
+      <div>
+        <div class="clip-title">${escapeHtml(title)}</div>
+        <div class="clip-desc">${escapeHtml(description)}</div>
+      </div>
+      <div class="clip-actions">
+        <button class="secondary-button small" data-copy-text="${escapeHtml(title)}" type="button">复制标题</button>
+        <button class="secondary-button small" data-copy-text="${escapeHtml(description)}" type="button">复制简介</button>
+        <span class="run-meta">${escapeHtml(formatBytes(clip.bytes))}</span>
+      </div>
+    </div>
+  `;
+}
+
+function renderReviewContent(detail) {
+  const run = detail.run || {};
+  const candidates = run.candidate_count || detail.candidates_count || 0;
+  return `
+    <div class="clip-card-body">
+      <div class="clip-actions">
+        <p class="muted" style="flex: 1;">AI 已找到 <strong>${escapeHtml(candidates)}</strong> 个候选片段，审阅后即可渲染成片。</p>
+        <button class="secondary-button small" data-copy-text="${escapeHtml(run.run_dir || "")}" type="button">复制审阅包路径</button>
+        <button id="aiReviewRunBtn" class="primary-button small" type="button" ${detail.actions?.can_ai_review ? "" : "disabled"}>立即 AI 审阅</button>
+        <button id="renderRunBtn" class="secondary-button small" type="button" ${detail.actions?.can_render ? "" : "disabled"}>渲染</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderProcessingContent(detail) {
+  const steps = detail.steps?.length
+    ? detail.steps
+    : [
+        { label: "拉取录像", state: "done" },
+        { label: "语音转写", state: "active" },
+        { label: "AI 选片", state: "waiting" },
+        { label: "渲染", state: "waiting" },
+      ];
+  return `
+    <div class="clip-card-body">
+      <div class="clip-actions">
+        ${steps.map((step) => `<span class="status-pill ${step.done || step.state === "done" ? "rendered" : step.state === "active" ? "processing" : ""}">${escapeHtml(step.label)}</span>`).join("")}
+        <button class="secondary-button small" data-show-log type="button">查看日志</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderFailedContent(detail) {
+  const run = detail.run || {};
+  return `
+    <div class="clip-card-body">
+      <div class="notice error">${escapeHtml(run.last_error || "任务失败，暂无错误详情。")}</div>
+      <div class="button-row" style="margin-top: 12px;">
+        <button class="secondary-button small" data-show-log type="button">查看日志</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderRunDetail() {
+  const detail = state.detail;
+  const hidden = el("runDetail");
+  if (!detail || !detail.ok) {
+    hidden.innerHTML = '<div class="empty">请选择一个任务。</div>';
+    el("logOutput").textContent = "选择一个任务查看日志。";
+    return;
+  }
+  hidden.innerHTML = `
+    <div class="info-grid">
+      ${infoRow("任务", detail.run?.run_id)}
+      ${infoRow("阶段", labelFor(detail.run?.phase))}
+      ${infoRow("源文件", detail.run?.source_path)}
+      ${infoRow("本地副本", detail.run?.local_source_path)}
+      ${infoRow("任务目录", detail.run?.run_dir)}
+      ${infoRow("候选数", detail.run?.candidate_count || detail.candidates_count || 0)}
+      ${infoRow("已选片段", detail.run?.selected_count || detail.selected_count || 0)}
+      ${infoRow("成片数", detail.run?.clip_count || detail.rendered_clip_count || 0)}
+    </div>
+  `;
+  el("logOutput").textContent = detail.log?.log || detail.log?.tail || "暂无任务日志。";
+}
+
+function renderConfirmations() {
+  const pending = state.confirmations.filter((item) => item.status === "pending");
+  const badge = el("confirmationBadge");
+  badge.textContent = String(pending.length);
+  badge.hidden = pending.length === 0;
+  if (!pending.length) {
+    el("confirmationList").innerHTML = '<div class="empty">没有待确认的操作</div>';
+    return;
+  }
+  el("confirmationList").innerHTML = pending.map((item) => `
+    <article class="confirmation-row">
+      <input type="checkbox" data-confirmation-check="${escapeHtml(item.id)}" />
+      <div>
+        <strong>${escapeHtml(labelFor(item.action))}</strong>
+        <small>${escapeHtml(item.id)} · 任务 ${escapeHtml(item.run_id)}</small>
+        <small>${escapeHtml(item.target_path)}</small>
+        <small>${escapeHtml(item.reason || item.message || "")}</small>
+      </div>
+      <span class="risk ${escapeHtml(item.risk_level)}">${escapeHtml(labelFor(item.risk_level))}</span>
+      <div class="button-row">
+        <button class="secondary-button small" data-reject="${escapeHtml(item.id)}" type="button">拒绝</button>
+        <button class="danger-button small" data-approve="${escapeHtml(item.id)}" type="button">确认执行</button>
+      </div>
+    </article>
+  `).join("");
 }
 
 function renderEvents() {
-  el("eventStream").innerHTML = state.events
-    .map((event) => `<div class="event-row"><strong>${escapeHtml(event.type)}</strong><small>${escapeHtml(event.created_at)} · ${escapeHtml(event.run_id || "-")}</small></div>`)
-    .join("") || '<div class="empty">暂无事件。</div>';
+  el("eventStream").innerHTML = state.events.map((event) => `
+    <div class="event-row">
+      <strong>${escapeHtml(event.type)}</strong>
+      <small>${escapeHtml(event.created_at)} · ${escapeHtml(event.run_id || "-")}</small>
+    </div>
+  `).join("") || '<div class="empty">暂无事件。</div>';
 }
 
 async function loadService() {
   state.serviceStatus = await api("/api/service");
-  renderMetrics(state.serviceStatus);
+  renderServiceStatus(state.serviceStatus);
   renderConfigHealth();
 }
 
@@ -259,9 +386,12 @@ async function loadRuns() {
   if (!state.selectedRunId || !state.runs.some((run) => run.run_id === state.selectedRunId)) {
     state.selectedRunId = state.runs[0]?.run_id || null;
   }
-  renderRuns();
   if (state.selectedRunId) await loadRunDetail(state.selectedRunId);
-  else renderRunDetail();
+  else {
+    state.detail = null;
+    renderRuns();
+    renderRunDetail();
+  }
 }
 
 async function loadRunDetail(runId) {
@@ -308,7 +438,7 @@ async function refreshAll() {
 function renderConfig(payload) {
   const config = payload.config || {};
   state.configPayload = payload;
-  el("configMeta").textContent = `${payload.config_path || "live-clipper.toml"} · ${payload.exists ? "已存在" : "尚未创建"} · ${payload.loaded_at || ""}`;
+  el("configMeta").textContent = `${payload.config_path || "live-clipper.toml"} · ${payload.exists ? "已存在" : "尚未创建"} · API Key 只保存环境变量名`;
   document.querySelectorAll("[data-config-field]").forEach((field) => {
     const value = getConfigValue(config, field.dataset.configField);
     if (field.type === "checkbox") field.checked = Boolean(value);
@@ -318,6 +448,7 @@ function renderConfig(payload) {
   renderWebAccessTokenStatus(config.web?.access_token_configured);
   renderConfigNotice(payload.warnings || [], "warning");
   renderConfigHealth();
+  renderDirtyBar();
 }
 
 function renderScheduler(payload) {
@@ -338,13 +469,14 @@ function renderScheduler(payload) {
         <small>下次执行：${escapeHtml(job.next_run_at || "-")} · 上次结果：${escapeHtml(labelFor(job.status) || "-")}</small>
       </div>
       <div class="button-row">
-        <button class="secondary-button small" data-scheduler-edit="${escapeHtml(job.id)}">编辑</button>
-        <button class="primary-button small" data-scheduler-run="${escapeHtml(job.id)}">立即执行</button>
-        <button class="secondary-button small" data-scheduler-pause="${escapeHtml(job.id)}">暂停</button>
-        <button class="secondary-button small" data-scheduler-resume="${escapeHtml(job.id)}">启用</button>
+        <button class="secondary-button small" data-scheduler-edit="${escapeHtml(job.id)}" type="button">编辑</button>
+        <button class="primary-button small" data-scheduler-run="${escapeHtml(job.id)}" type="button">立即执行</button>
+        <button class="secondary-button small" data-scheduler-pause="${escapeHtml(job.id)}" type="button">暂停</button>
+        <button class="secondary-button small" data-scheduler-resume="${escapeHtml(job.id)}" type="button">启用</button>
       </div>
     </div>
   `).join("") || '<div class="empty">还没有定时任务。</div>';
+  renderSidebarServiceCard(state.serviceStatus || {});
   renderConfigHealth();
 }
 
@@ -380,48 +512,13 @@ function renderConfigHealth() {
   const reviewEnv = state.reviewAutomation?.environment || {};
   const reviewAvailable = reviewEnv.current_mode_available ?? reviewEnv.ok;
   const cards = [
-    {
-      label: "录播源",
-      status: sourceDir ? "已配置" : "未配置",
-      detail: sourceDir || "未填写录播源目录",
-      tone: sourceDir ? "ok" : "warning",
-    },
-    {
-      label: "本地项目库",
-      status: inputDir && outputRoot ? "正常" : "待配置",
-      detail: `输入：${inputDir || "-"} · 输出：${outputRoot || "-"}`,
-      tone: inputDir && outputRoot ? "ok" : "warning",
-    },
-    {
-      label: "LLM",
-      status: envStatus[llmKey] ? "已配置" : "未配置",
-      detail: llmKey || "未填写 API key 环境变量名",
-      tone: envStatus[llmKey] ? "ok" : "warning",
-    },
-    {
-      label: "ASR",
-      status: envStatus[asrKey] ? "已配置" : "未配置",
-      detail: `${config.asr?.backend || "-"} · ${asrKey || "未填写 API key 环境变量名"}`,
-      tone: envStatus[asrKey] ? "ok" : "warning",
-    },
-    {
-      label: "服务",
-      status: state.serviceStatus?.running ? "运行中" : "未运行",
-      detail: state.serviceStatus?.service?.pid ? `PID ${state.serviceStatus.service.pid}` : "可在服务页或配置页启动",
-      tone: state.serviceStatus?.running ? "ok" : "neutral",
-    },
-    {
-      label: "定时任务",
-      status: scheduler.enabled ? "已启用" : "未启用",
-      detail: scheduler.next_due_at ? `下次：${scheduler.next_due_at}` : "暂无下一次任务",
-      tone: scheduler.enabled ? "ok" : "neutral",
-    },
-    {
-      label: "AI 审阅",
-      status: review.enabled ? (reviewAvailable ? "可用" : "不可用") : "未启用",
-      detail: `${labelFor(review.mode) || "-"} · ${labelFor(review.provider) || "-"}`,
-      tone: review.enabled ? (reviewAvailable ? "ok" : "warning") : "neutral",
-    },
+    { label: "录播源", status: sourceDir ? "已配置" : "未配置", detail: sourceDir || "未填写录播源目录", tone: sourceDir ? "ok" : "warning" },
+    { label: "本地项目库", status: inputDir && outputRoot ? "正常" : "待配置", detail: `输入：${inputDir || "-"} · 输出：${outputRoot || "-"}`, tone: inputDir && outputRoot ? "ok" : "warning" },
+    { label: "LLM", status: envStatus[llmKey] ? "已配置" : "未配置", detail: llmKey || "未填写 API key 环境变量名", tone: envStatus[llmKey] ? "ok" : "warning" },
+    { label: "ASR", status: envStatus[asrKey] ? "已配置" : "未配置", detail: `${config.asr?.backend || "-"} · ${asrKey || "未填写 API key 环境变量名"}`, tone: envStatus[asrKey] ? "ok" : "warning" },
+    { label: "服务", status: state.serviceStatus?.running ? "运行中" : "未运行", detail: state.serviceStatus?.service?.pid ? `PID ${state.serviceStatus.service.pid}` : "可在自动化页启动", tone: state.serviceStatus?.running ? "ok" : "neutral" },
+    { label: "定时任务", status: scheduler.enabled ? "已启用" : "未启用", detail: scheduler.next_due_at ? `下次：${scheduler.next_due_at}` : "暂无下一次任务", tone: scheduler.enabled ? "ok" : "neutral" },
+    { label: "AI 审阅", status: review.enabled ? (reviewAvailable ? "可用" : "不可用") : "未启用", detail: `${labelFor(review.mode) || "-"} · ${labelFor(review.provider) || "-"}`, tone: review.enabled ? (reviewAvailable ? "ok" : "warning") : "neutral" },
   ];
   node.innerHTML = cards.map((card) => `
     <div class="health-card ${card.tone}">
@@ -463,6 +560,11 @@ function renderConfigNotice(items, type = "info") {
   node.innerHTML = list.map((item) => `<div>${escapeHtml(item.message || item)}</div>`).join("");
 }
 
+function renderDirtyBar() {
+  const bar = el("settingsDirtyBar");
+  if (bar) bar.hidden = !state.configDirty;
+}
+
 function getConfigValue(config, field) {
   const [section, key] = field.split(".");
   return config?.[section]?.[key];
@@ -489,79 +591,18 @@ function collectConfigForm() {
 function defaultConfig() {
   return {
     paths: { input_dir: "input", output_root: "output", work_dir: "work", glossary_path: "glossary/common_terms.json" },
-    recording_source_default: {
-      source_dir: "",
-      input_dir: "input",
-      output_root: "output",
-      since_hours: 168,
-      min_age_minutes: 10,
-      stable_check_seconds: 60,
-    },
-    llm: {
-      provider_label: "OpenAI-compatible LLM",
-      api_base: "https://apihub.agnes-ai.com/v1",
-      api_key_env: "CHEAP_MODEL_API_KEY",
-      model: "agnes-2.0-flash",
-      timeout_seconds: 300,
-      request_attempts: 5,
-      retry_delay_seconds: 3.0,
-    },
-    asr: {
-      backend: "mlx_whisper",
-      model: "mlx-community/whisper-large-v3-turbo",
-      language: "zh",
-      api_base: "https://api.openai.com/v1",
-      api_key_env: "ASR_API_KEY",
-      hf_token_env: "HF_TOKEN",
-    },
+    recording_source_default: { source_dir: "", input_dir: "input", output_root: "output", since_hours: 168, min_age_minutes: 10, stable_check_seconds: 60 },
+    llm: { provider_label: "OpenAI-compatible LLM", api_base: "https://apihub.agnes-ai.com/v1", api_key_env: "CHEAP_MODEL_API_KEY", model: "agnes-2.0-flash", timeout_seconds: 300, request_attempts: 5, retry_delay_seconds: 3.0 },
+    asr: { backend: "mlx_whisper", model: "mlx-community/whisper-large-v3-turbo", language: "zh", api_base: "https://api.openai.com/v1", api_key_env: "ASR_API_KEY", hf_token_env: "HF_TOKEN" },
     service: { enabled: true, scan_interval_minutes: 30, auto_render_after_selection: true, cleanup_mode: "preview_only" },
     scheduler: { enabled: true, timezone: "Asia/Shanghai", tick_seconds: 30, missed_policy: "run_once", state_dir: "work/service" },
     scheduler_jobs: [
-      {
-        id: "weekly_recording_scan",
-        name: "每周录播扫描",
-        enabled: true,
-        type: "scan_recordings",
-        schedule: "weekly",
-        day_of_week: "sun",
-        time: "00:00",
-        skip_if_running: true,
-      },
-      {
-        id: "weekly_review_due",
-        name: "每周审阅检查",
-        enabled: true,
-        type: "review_due_check",
-        schedule: "weekly",
-        day_of_week: "sun",
-        time: "12:00",
-        skip_if_running: true,
-      },
+      { id: "weekly_recording_scan", name: "每周录播扫描", enabled: true, type: "scan_recordings", schedule: "weekly", day_of_week: "sun", time: "00:00", skip_if_running: true },
+      { id: "weekly_review_due", name: "每周审阅检查", enabled: true, type: "review_due_check", schedule: "weekly", day_of_week: "sun", time: "12:00", skip_if_running: true },
     ],
-    review_automation: {
-      enabled: false,
-      mode: "local_agent",
-      max_runs_per_tick: 1,
-      auto_render_after_selection: true,
-      on_failure: "keep_needs_review",
-      timeout_minutes: 60,
-      prompt_template: "default_clip_review",
-    },
-    review_automation_local_agent: {
-      provider: "codex_cli",
-      command_timeout_minutes: 60,
-      include_review_package_inline: true,
-      allow_agent_file_writes: false,
-    },
-    review_automation_model: {
-      provider: "openai_compatible",
-      use_llm_config: true,
-      model: "",
-      max_candidates: 40,
-      temperature: 0.2,
-      max_tokens: 4096,
-      retry_attempts: 2,
-    },
+    review_automation: { enabled: false, mode: "local_agent", max_runs_per_tick: 1, auto_render_after_selection: true, on_failure: "keep_needs_review", timeout_minutes: 60, prompt_template: "default_clip_review" },
+    review_automation_local_agent: { provider: "codex_cli", command_timeout_minutes: 60, include_review_package_inline: true, allow_agent_file_writes: false },
+    review_automation_model: { provider: "openai_compatible", use_llm_config: true, model: "", max_candidates: 40, temperature: 0.2, max_tokens: 4096, retry_attempts: 2 },
     web: { host: "127.0.0.1", port: 8765 },
   };
 }
@@ -610,8 +651,10 @@ async function saveConfig() {
     { message: `备份文件：${result.backup_path || "无"}` },
   ];
   if (result.requires_web_restart) messages.push({ message: "Web host/port 已变化，需要手动重启 Web 控制台。" });
+  state.configDirty = false;
+  renderDirtyBar();
   renderConfigNotice(messages, "success");
-  await loadConfig();
+  await loadConfig(true);
   return result;
 }
 
@@ -630,27 +673,40 @@ async function post(path, payload) {
   return result;
 }
 
+async function copyText(text) {
+  if (!text) return toast("没有可复制的内容");
+  try {
+    await navigator.clipboard.writeText(text);
+    toast("已复制");
+  } catch (_error) {
+    toast(text);
+  }
+}
+
 document.addEventListener("click", async (event) => {
   const tab = event.target.closest("[data-tab]");
   const run = event.target.closest("[data-run-id]");
+  const copy = event.target.closest("[data-copy-text]");
   try {
     if (tab) switchTab(tab.dataset.tab);
     if (run) await loadRunDetail(run.dataset.runId);
+    if (copy) await copyText(copy.dataset.copyText);
     if (event.target.id === "refreshBtn") await refreshAll();
-    if (event.target.id === "startServiceBtn") await post("/api/service/start");
-    if (event.target.id === "stopServiceBtn") await post("/api/service/stop");
-    if (event.target.id === "scanNowBtn") await post("/api/service/scan-now");
-    if (event.target.id === "renderRunBtn" && state.selectedRunId) {
-      await post(`/api/runs/${encodeURIComponent(state.selectedRunId)}/render`);
-    }
+    if (event.target.id === "startServiceBtn" || event.target.dataset.sidebarServiceToggle === "start") await post("/api/service/start");
+    if (event.target.id === "stopServiceBtn" || event.target.dataset.sidebarServiceToggle === "stop") await post("/api/service/stop");
+    if (event.target.id === "scanNowBtn" || event.target.dataset.sidebarScan !== undefined) await post("/api/service/scan-now");
+    if (event.target.id === "renderRunBtn" && state.selectedRunId) await post(`/api/runs/${encodeURIComponent(state.selectedRunId)}/render`);
     if (event.target.id === "cleanupPreviewBtn" && state.selectedRunId) {
       const result = await post(`/api/runs/${encodeURIComponent(state.selectedRunId)}/cleanup-preview`);
       el("logOutput").textContent = JSON.stringify(result, null, 2);
+      switchTab("automation");
     }
     if (event.target.id === "aiReviewRunBtn" && state.selectedRunId) {
       const result = await post(`/api/runs/${encodeURIComponent(state.selectedRunId)}/ai-review`);
       el("logOutput").textContent = JSON.stringify(result, null, 2);
+      toast("AI 审阅已完成或已返回处理结果");
     }
+    if (event.target.dataset.showLog !== undefined) switchTab("automation");
     if (event.target.dataset.approve) await post(`/api/confirmations/${event.target.dataset.approve}/approve`);
     if (event.target.dataset.reject) await post(`/api/confirmations/${event.target.dataset.reject}/reject`, { reason: "在 Web 控制台拒绝" });
     if (event.target.id === "batchApproveBtn") {
@@ -664,8 +720,8 @@ document.addEventListener("click", async (event) => {
       el("logOutput").textContent = `批量拒绝: ${ids.join(", ") || "无"}`;
     }
     if (event.target.id === "validateConfigBtn") await validateConfig();
-    if (event.target.id === "saveConfigBtn") await saveConfig();
-    if (event.target.id === "reloadConfigBtn") {
+    if (event.target.id === "saveConfigBtn" || event.target.id === "saveConfigStickyBtn") await saveConfig();
+    if (event.target.id === "reloadConfigBtn" || event.target.id === "discardConfigBtn") {
       await loadConfig(true);
       toast("已重新读取配置文件");
     }
@@ -683,6 +739,7 @@ document.addEventListener("click", async (event) => {
     if (event.target.id === "checkReviewAutomationBtn") {
       const result = await post("/api/review-automation/check");
       renderConfigNotice([{ message: result.current_mode_available ? "AI 审阅环境可用。" : "当前 AI 审阅环境不可用，请检查 Codex CLI、Claude Code 或 LLM API key。" }], result.current_mode_available ? "success" : "warning");
+      switchTab("settings");
     }
     if (event.target.id === "runDueReviewAutomationBtn") {
       const result = await post("/api/review-automation/run-due");
@@ -706,7 +763,10 @@ document.addEventListener("click", async (event) => {
     }
     if (event.target.dataset.schedulerEdit) {
       const job = (state.scheduler?.jobs || []).find((item) => item.id === event.target.dataset.schedulerEdit);
-      if (job) fillSchedulerJobForm(job);
+      if (job) {
+        fillSchedulerJobForm(job);
+        switchTab("settings");
+      }
     }
     if (event.target.id === "clearLogBtn") el("logOutput").textContent = "";
   } catch (error) {
@@ -717,7 +777,9 @@ document.addEventListener("click", async (event) => {
 document.addEventListener("input", (event) => {
   if (!event.target.matches("[data-config-field]")) return;
   state.configDirty = true;
-  el("configMeta").textContent = `${el("configMeta").textContent.replace(" · 有未保存改动", "")} · 有未保存改动`;
+  const meta = el("configMeta");
+  meta.textContent = `${meta.textContent.replace(" · 有未保存改动", "")} · 有未保存改动`;
+  renderDirtyBar();
 });
 
 document.addEventListener("click", (event) => {
