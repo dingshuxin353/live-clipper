@@ -66,3 +66,15 @@ def test_v8_settings_keep_advanced_fields_collapsed():
     quick_start = html.split('data-config-layer="quick-start"', 1)[1].split('data-config-layer="automation"', 1)[0]
     for advanced_label in ["tick 秒数", "Temperature", "Max tokens"]:
         assert advanced_label not in quick_start
+
+
+def test_v8_mobile_nav_is_contained_inside_viewport():
+    styles = Path("src/live_clipper/web_static/styles.css").read_text(encoding="utf-8")
+    mobile_styles = styles.split("@media (max-width: 920px)", 1)[1]
+
+    assert ".app-shell" in mobile_styles
+    assert "max-width: 100vw" in mobile_styles
+    assert ".nav-list" in mobile_styles
+    assert "overflow-x: auto" in mobile_styles
+    assert ".nav-item" in mobile_styles
+    assert "min-width: max-content" not in mobile_styles
