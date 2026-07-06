@@ -174,8 +174,45 @@ def _source_name(run_dir: Path) -> str:
     return run_dir.name
 
 
+def _run_looks_stuck(run: dict[str, Any], stuck_after_minutes: int) -> bool:
+    """判断某个 run 是否「停在处理中且疑似卡死」，用于前端提示。"""
+    if stuck_after_minutes <= 0:
+        return False
+    if run.get("phase") != "processing":
+        return False
+    updated_at = run.get("updated_at")
+    started = _coerce_timestamp(updated_at) or _coerce_timestamp(run.get("created_at"))
+    if started is None:
+        return False
+    from datetime import UTC, datetime, timedelta
+
+    return datetime.now(UTC) - started >= timedelta(minutes=stuck_after_minutes)
+
+
+def _coerce_timestamp(value: Any):
+    from datetime import UTC, datetime
+
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(value, UTC)
+        except (OverflowError, OSError, ValueError):
+            return None
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed
+    return None
+
+
 def build_runs_index(paths: WebPaths | None = None) -> dict[str, Any]:
     paths = paths or WebPaths()
+    stuck_after_minutes = _settings_for_paths(paths).service.stuck_after_minutes
     if _service_runs_available(paths):
         runs = mcp_tools.list_runs(service_dir=paths.service_dir)["runs"]
         for run in runs:
@@ -185,6 +222,7 @@ def build_runs_index(paths: WebPaths | None = None) -> dict[str, Any]:
             clips_dir = Path(str(run["run_dir"])) / "clips"
             run["clip_count"] = len(sorted(clips_dir.glob("*.mp4"))) if clips_dir.exists() else 0
             run["requires_codex"] = run.get("phase") == "needs_review"
+            run["stuck"] = _run_looks_stuck(run, stuck_after_minutes)
         return {
             "ok": True,
             "runs": runs,
@@ -194,7 +232,9 @@ def build_runs_index(paths: WebPaths | None = None) -> dict[str, Any]:
     if paths.output_root.exists():
         for run_dir in sorted(paths.output_root.iterdir(), key=lambda path: path.stat().st_mtime, reverse=True):
             if run_dir.is_dir():
-                runs.append(_run_summary(run_dir, paths))
+                summary = _run_summary(run_dir, paths)
+                summary["stuck"] = _run_looks_stuck(summary, stuck_after_minutes)
+                runs.append(summary)
     return {
         "ok": True,
         "runs": runs,

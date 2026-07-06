@@ -46,6 +46,8 @@ enabled = true
 scan_interval_minutes = 30
 auto_render_after_selection = true
 cleanup_mode = "preview_only"
+# 任务停在「处理中」超过该分钟数且产物已生成时，服务会判定其卡死并强制推进。设为 0 可关闭此兜底。
+stuck_after_minutes = 180
 
 [recording_source.default]
 source_dir = ""
@@ -176,6 +178,7 @@ class ServiceConfig:
     scan_interval_minutes: int = 30
     auto_render_after_selection: bool = True
     cleanup_mode: str = "preview_only"
+    stuck_after_minutes: int = 180
 
 
 @dataclass(frozen=True)
@@ -499,6 +502,7 @@ def load_settings(config_path: Path | None = None) -> Settings:
             scan_interval_minutes=int(service_data.get("scan_interval_minutes", 30)),
             auto_render_after_selection=bool(service_data.get("auto_render_after_selection", True)),
             cleanup_mode=str(service_data.get("cleanup_mode", "preview_only")),
+            stuck_after_minutes=int(service_data.get("stuck_after_minutes", 180)),
         ),
         recording_source_default=RecordingSourceDefaultConfig(
             source_id="default",

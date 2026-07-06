@@ -278,3 +278,106 @@ def test_read_service_logs_returns_tail(tmp_path):
     (service_dir / "service.log").write_text("one\ntwo\nthree\n", encoding="utf-8")
 
     assert service.read_service_logs(service_dir=service_dir, max_lines=2) == "two\nthree"
+
+
+def test_pid_is_running_reaps_exited_child(monkeypatch):
+    def fake_waitpid(pid, flag):
+        assert pid == 4321
+        assert flag == os.WNOHANG
+        return (4321, 0)  # 子进程已退出并被回收
+
+    monkeypatch.setattr(service.os, "waitpid", fake_waitpid)
+
+    assert service.pid_is_running(4321) is False
+
+
+def test_pid_is_running_reports_live_child(monkeypatch):
+    monkeypatch.setattr(service.os, "waitpid", lambda pid, flag: (0, 0))  # 仍在运行
+
+    assert service.pid_is_running(4321) is True
+
+
+def test_pid_is_running_falls_back_for_non_child(monkeypatch):
+    def fake_waitpid(pid, flag):
+        raise ChildProcessError
+
+    kills = []
+
+    def fake_kill(pid, sig):
+        kills.append((pid, sig))
+        raise ProcessLookupError
+
+    monkeypatch.setattr(service.os, "waitpid", fake_waitpid)
+    monkeypatch.setattr(service.os, "kill", fake_kill)
+
+    assert service.pid_is_running(4321) is False
+    assert kills == [(4321, 0)]
+
+
+def test_reconcile_recovers_stuck_run_when_output_ready(tmp_path, monkeypatch):
+    run_dir = tmp_path / "output" / "default" / "recording__stuck01"
+    write_json(run_dir / "run_metadata.json", {"source_name": "recording.mkv"})
+    write_json(run_dir / "codex_brief.json", {"candidates": []})
+    # pid 仍被误判为存活（模拟僵尸进程），但产物已生成
+    monkeypatch.setattr(service, "pid_is_running", lambda pid: True)
+    run = {
+        "run_id": "recording__stuck01",
+        "source_id": "default",
+        "run_dir": str(run_dir),
+        "phase": "processing",
+        "pid": 4321,
+        "created_at": "2020-01-01T00:00:00+00:00",
+        "updated_at": "2020-01-01T00:00:00+00:00",  # 远超阈值
+    }
+    settings = Settings(service=ServiceConfig(stuck_after_minutes=180))
+
+    changed = service.reconcile_run(run, settings, service_dir=tmp_path / "service")
+
+    assert changed is True
+    assert run["phase"] == "needs_review"
+    assert run["pid"] is None
+    events = (tmp_path / "service" / "events.jsonl").read_text(encoding="utf-8")
+    assert "stuck_run_recovered" in events
+
+
+def test_reconcile_keeps_processing_when_running_and_not_stuck(tmp_path, monkeypatch):
+    run_dir = tmp_path / "output" / "default" / "recording__live01"
+    write_json(run_dir / "codex_brief.json", {"candidates": []})
+    monkeypatch.setattr(service, "pid_is_running", lambda pid: True)
+    run = {
+        "run_id": "recording__live01",
+        "source_id": "default",
+        "run_dir": str(run_dir),
+        "phase": "processing",
+        "pid": 4321,
+        "created_at": service.now_utc(),
+        "updated_at": service.now_utc(),  # 刚刚更新，未超时
+    }
+    settings = Settings(service=ServiceConfig(stuck_after_minutes=180))
+
+    changed = service.reconcile_run(run, settings, service_dir=tmp_path / "service")
+
+    assert changed is False
+    assert run["phase"] == "processing"
+    assert run["pid"] == 4321
+
+
+def test_reconcile_disabled_stuck_guard_when_threshold_zero(tmp_path, monkeypatch):
+    run_dir = tmp_path / "output" / "default" / "recording__live02"
+    write_json(run_dir / "codex_brief.json", {"candidates": []})
+    monkeypatch.setattr(service, "pid_is_running", lambda pid: True)
+    run = {
+        "run_id": "recording__live02",
+        "source_id": "default",
+        "run_dir": str(run_dir),
+        "phase": "processing",
+        "pid": 4321,
+        "created_at": "2020-01-01T00:00:00+00:00",
+        "updated_at": "2020-01-01T00:00:00+00:00",
+    }
+    settings = Settings(service=ServiceConfig(stuck_after_minutes=0))  # 关闭兜底
+
+    changed = service.reconcile_run(run, settings, service_dir=tmp_path / "service")
+
+    assert changed is False
+    assert run["phase"] == "processing"

@@ -355,7 +355,9 @@ def _write_summary(settings: Settings, service_dir: Path, result: dict[str, Any]
 
 def _default_local_runner(prompt: str, *, provider: str, cwd: Path, timeout_seconds: int) -> dict[str, Any]:
     if provider == "codex_cli":
-        command = ["codex", "exec", prompt]
+        # --skip-git-repo-check: 审阅在隔离的临时目录里执行，该目录不是 git 仓库，
+        # 缺少此参数 codex 会以 "Not inside a trusted directory" 拒绝执行。
+        command = ["codex", "exec", "--skip-git-repo-check", prompt]
     elif provider == "claude_code":
         command = ["claude", "-p", prompt]
     else:
@@ -368,6 +370,9 @@ def _default_local_runner(prompt: str, *, provider: str, cwd: Path, timeout_seco
             capture_output=True,
             timeout=timeout_seconds,
             check=False,
+            # stdin 必须关闭：常驻/后台服务的 stdin 是不会收到 EOF 的管道，
+            # codex/claude 会卡在 "Reading additional input from stdin..." 永久阻塞。
+            stdin=subprocess.DEVNULL,
         )
     except FileNotFoundError as exc:
         return {"ok": False, "error": f"命令不存在: {command[0]}", "stderr": str(exc)}

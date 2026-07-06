@@ -39,6 +39,9 @@ def test_v8_console_exposes_core_actions_without_prototype_runtime():
     assert "/api/review-automation/run-due" in app
     assert "/api/runs/" in app
     assert "/ai-review" in app
+    assert "reviewAutomationActionStatus" in html
+    assert "review_automation_disabled" in app
+    assert "自动 AI 审阅还没有启用" in app
 
 
 def test_v8_config_fields_remain_unique_and_complete():

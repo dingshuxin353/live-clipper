@@ -28,6 +28,28 @@ def now_utc() -> str:
 
 
 def pid_is_running(pid: int) -> bool:
+    """判断 pid 是否为存活进程。
+
+    常驻服务会以子进程方式启动流水线（见 _start_pipeline_process）。子进程结束后，
+    在父进程回收（reap）之前会变成僵尸（defunct）进程；此时 os.kill(pid, 0) 仍会
+    报告其「存活」，这正是导致 run 永久卡在 "processing" 的根因。
+
+    因此这里先用非阻塞 waitpid 尝试回收：如果它是本进程的子进程且已退出，waitpid
+    会返回它的 pid 并清除僵尸，从而可以正确报告「未运行」。若它不是本进程的子进程
+    （例如服务重启后），waitpid 抛 ChildProcessError，退回到 os.kill 信号探测。
+    """
+    try:
+        reaped_pid, _status = os.waitpid(pid, os.WNOHANG)
+    except ChildProcessError:
+        # 不是本进程的子进程（如服务已重启），退回信号探测。
+        pass
+    except OSError:
+        # 探测时出现意外错误：视为未运行，避免把 run 永久卡死。
+        return False
+    else:
+        # reaped_pid == pid -> 子进程已退出并被回收；reaped_pid == 0 -> 仍在运行。
+        return reaped_pid != pid
+
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -540,16 +562,60 @@ def _phase_from_files(run_dir: Path) -> str | None:
     return None
 
 
+def _parse_timestamp(value: Any) -> datetime | None:
+    """把 run 里的时间戳（ISO 字符串或 Unix 秒）解析为带时区的 datetime；失败返回 None。"""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(value, UTC)
+        except (OverflowError, OSError, ValueError):
+            return None
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed
+    return None
+
+
+def _run_is_stuck(run: dict[str, Any], settings: Settings) -> bool:
+    """run 是否已在当前阶段停留超过 service.stuck_after_minutes 分钟。"""
+    threshold_minutes = settings.service.stuck_after_minutes
+    if threshold_minutes <= 0:
+        return False
+    started = _parse_timestamp(run.get("updated_at")) or _parse_timestamp(run.get("created_at"))
+    if started is None:
+        return False
+    return datetime.now(UTC) - started >= timedelta(minutes=threshold_minutes)
+
+
 def reconcile_run(run: dict[str, Any], settings: Settings, *, service_dir: Path = DEFAULT_SERVICE_DIR) -> bool:
     old_phase = run.get("phase")
     run_dir = Path(str(run["run_dir"]))
     pid = run.get("pid")
-    if isinstance(pid, int) and pid_is_running(pid):
-        return False
+    inferred = _phase_from_files(run_dir)
+
+    process_running = isinstance(pid, int) and pid_is_running(pid)
+    if process_running:
+        # 防御性兜底：进程疑似仍存活，但只要流水线产物已生成（inferred 非空）且该 run
+        # 停在 processing 已超过阈值，就不再盲信 pid，让卡死/僵尸进程无法再冻结任务。
+        if inferred is None or not _run_is_stuck(run, settings):
+            return False
+        append_event(
+            service_dir,
+            "stuck_run_recovered",
+            run_id=run["run_id"],
+            pid=pid,
+            inferred_phase=inferred,
+        )
+
     if isinstance(pid, int):
         run["pid"] = None
 
-    inferred = _phase_from_files(run_dir)
     if inferred == "rendering" and settings.service.auto_render_after_selection:
         run["phase"] = "rendering"
         append_event(service_dir, "render_started", run_id=run["run_id"], run_dir=str(run_dir))

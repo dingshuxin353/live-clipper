@@ -304,6 +304,10 @@ h4 {
   gap: 12px;
 }
 
+#section-confirmations .confirmation-list {
+  margin-top: 20px;
+}
+
 .clip-card {
   overflow: hidden;
 }
@@ -564,9 +568,17 @@ h4 {
   font-weight: 700;
 }
 
-.settings-group > legend {
-  padding: 0 4px;
+.config-form fieldset > legend {
+  float: left;
+  width: 100%;
+  padding: 0;
+  margin: 0 0 14px;
   font-size: 17px;
+  color: var(--text);
+}
+
+.config-form fieldset > legend + * {
+  clear: both;
 }
 
 .settings-group summary {
@@ -813,4 +825,18 @@ h4 {
   .clip-row {
     gap: 8px;
   }
+}
+
+.clip-card.stuck {
+  border-color: #f0b429;
+}
+
+.run-stuck-notice {
+  margin: 8px 12px 12px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: #fff8e6;
+  color: #8a6d0b;
+  font-size: 13px;
+  line-height: 1.5;
 }

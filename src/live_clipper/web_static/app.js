@@ -210,8 +210,11 @@ function renderRuns() {
   list.innerHTML = state.runs.map((run) => {
     const active = run.run_id === state.selectedRunId;
     const expanded = active && state.detail?.ok;
+    const stuckNotice = run.stuck
+      ? `<div class="run-stuck-notice">⚠️ 已处理较长时间仍未完成，可能已卡住。请点击展开后「查看日志」，或重启本机服务后重试。</div>`
+      : "";
     return `
-      <article class="clip-card ${active ? "active" : ""}">
+      <article class="clip-card ${active ? "active" : ""} ${run.stuck ? "stuck" : ""}">
         <button class="clip-card-main" data-run-id="${escapeHtml(run.run_id)}" type="button">
           <span>
             <span class="run-title">${escapeHtml(run.source_name || run.run_id)}</span>
@@ -219,6 +222,7 @@ function renderRuns() {
           </span>
           <span class="status-pill ${escapeHtml(canonicalPhase(run.phase))}">${escapeHtml(labelFor(run.phase || "unknown"))}</span>
         </button>
+        ${stuckNotice}
         ${expanded ? renderRunExpandedContent(state.detail) : ""}
       </article>
     `;
@@ -560,6 +564,32 @@ function renderConfigNotice(items, type = "info") {
   node.innerHTML = list.map((item) => `<div>${escapeHtml(item.message || item)}</div>`).join("");
 }
 
+function renderReviewAutomationActionStatus(message, type = "info") {
+  const node = el("reviewAutomationActionStatus");
+  if (!node) return;
+  if (!message) {
+    node.hidden = true;
+    node.textContent = "";
+    return;
+  }
+  node.hidden = false;
+  node.className = `notice ${type}`;
+  node.textContent = message;
+}
+
+function reviewAutomationRunDueMessage(result) {
+  if (result.skipped_reason === "review_automation_disabled") {
+    return "自动 AI 审阅还没有启用。请到「设置」页打开「启用自动 AI 审阅」，保存配置后再执行。";
+  }
+  if (Array.isArray(result.processed_runs) && result.processed_runs.length > 0) {
+    return `已处理 ${result.processed_runs.length} 个待审阅任务。`;
+  }
+  if (Array.isArray(result.results) && result.results.length > 0) {
+    return `AI 审阅已返回 ${result.results.length} 条结果，请查看运行日志。`;
+  }
+  return result.message || "当前没有待审阅任务。";
+}
+
 function renderDirtyBar() {
   const bar = el("settingsDirtyBar");
   if (bar) bar.hidden = !state.configDirty;
@@ -743,7 +773,10 @@ document.addEventListener("click", async (event) => {
     }
     if (event.target.id === "runDueReviewAutomationBtn") {
       const result = await post("/api/review-automation/run-due");
+      const message = reviewAutomationRunDueMessage(result);
       el("logOutput").textContent = JSON.stringify(result, null, 2);
+      renderReviewAutomationActionStatus(message, result.skipped_reason ? "warning" : "success");
+      toast(message);
     }
     if (event.target.id === "saveSchedulerJobBtn") {
       await post("/api/scheduler/jobs", { job: schedulerJobFromForm() });
