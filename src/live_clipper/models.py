@@ -101,6 +101,29 @@ class SelectedClip(BaseModel):
     format: str = "horizontal_highlight"
     priority: int = 1
 
+    @field_validator("remove_ranges", mode="before")
+    @classmethod
+    def normalize_remove_ranges(cls, value: object) -> object:
+        """容忍 LLM 常见的对象写法 {"start": s, "end": e}，归一化为 [s, e]。
+
+        同时兼容已有的 [s, e] / (s, e) 写法。无法识别的元素原样返回，交由
+        pydantic 抛出清晰的类型错误。
+        """
+        if not isinstance(value, list):
+            return value
+        normalized: list[object] = []
+        for item in value:
+            if isinstance(item, dict):
+                start = item.get("start", item.get("from"))
+                end = item.get("end", item.get("to"))
+                if start is not None and end is not None:
+                    normalized.append([start, end])
+                else:
+                    normalized.append(item)
+            else:
+                normalized.append(item)
+        return normalized
+
     @field_validator("clip_id")
     @classmethod
     def validate_clip_id(cls, value: str) -> str:

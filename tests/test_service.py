@@ -381,3 +381,33 @@ def test_reconcile_disabled_stuck_guard_when_threshold_zero(tmp_path, monkeypatc
 
     assert changed is False
     assert run["phase"] == "processing"
+
+
+def test_run_service_once_persists_reconcile_when_scan_source_missing(tmp_path, monkeypatch):
+    service_dir = tmp_path / "service"
+    run_dir = tmp_path / "output" / "default" / "recording__abc123"
+    write_json(run_dir / "codex_brief.json", {"candidates": []})
+    write_json(service_dir / "runs.json", {
+        "runs": [
+            {
+                "run_id": "recording__abc123",
+                "run_dir": str(run_dir),
+                "phase": "processing",
+                "pid": None,
+            }
+        ]
+    })
+
+    def fake_scan(config):
+        raise FileNotFoundError("/Volumes/nas/missing")
+
+    monkeypatch.setattr(service, "scan_recording_source", fake_scan)
+
+    report = service.run_service_once(Settings(), service_dir=service_dir)
+
+    assert report["ok"] is True
+    assert report["scan_error"] == "/Volumes/nas/missing"
+    saved = read_json(service_dir / "runs.json")["runs"]
+    assert saved[0]["phase"] == "needs_review"
+    events = (service_dir / "events.jsonl").read_text(encoding="utf-8")
+    assert "recording_source_unavailable" in events

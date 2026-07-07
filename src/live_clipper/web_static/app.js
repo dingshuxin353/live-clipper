@@ -275,8 +275,13 @@ function renderClipRow(clip) {
 function renderReviewContent(detail) {
   const run = detail.run || {};
   const candidates = run.candidate_count || detail.candidates_count || 0;
+  const aiReview = detail.ai_review;
+  const aiError = aiReview && aiReview.status === "failed"
+    ? `<div class="notice error" style="margin-bottom: 12px;">上次 AI 审阅失败：${escapeHtml(aiReview.error || "未知错误")}</div>`
+    : "";
   return `
     <div class="clip-card-body">
+      ${aiError}
       <div class="clip-actions">
         <p class="muted" style="flex: 1;">AI 已找到 <strong>${escapeHtml(candidates)}</strong> 个候选片段，审阅后即可渲染成片。</p>
         <button class="secondary-button small" data-copy-text="${escapeHtml(run.run_dir || "")}" type="button">复制审阅包路径</button>
@@ -732,9 +737,21 @@ document.addEventListener("click", async (event) => {
       switchTab("automation");
     }
     if (event.target.id === "aiReviewRunBtn" && state.selectedRunId) {
-      const result = await post(`/api/runs/${encodeURIComponent(state.selectedRunId)}/ai-review`);
-      el("logOutput").textContent = JSON.stringify(result, null, 2);
-      toast("AI 审阅已完成或已返回处理结果");
+      const button = event.target;
+      const runId = state.selectedRunId;
+      button.disabled = true;
+      button.textContent = "AI 审阅中…（约 1 分钟）";
+      try {
+        const result = await api(`/api/runs/${encodeURIComponent(runId)}/ai-review`, { method: "POST" });
+        el("logOutput").textContent = JSON.stringify(result, null, 2);
+        toast(`AI 审阅完成，已选 ${result.selected_count ?? "?"} 个片段`);
+      } catch (err) {
+        el("logOutput").textContent = String(err && err.message ? err.message : err);
+        toast(`AI 审阅失败：${err && err.message ? err.message : err}`);
+      } finally {
+        await refreshAll();
+        if (state.selectedRunId === runId) await loadRunDetail(runId);
+      }
     }
     if (event.target.dataset.showLog !== undefined) switchTab("automation");
     if (event.target.dataset.approve) await post(`/api/confirmations/${event.target.dataset.approve}/approve`);

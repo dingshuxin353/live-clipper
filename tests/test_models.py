@@ -89,3 +89,29 @@ def test_selected_clip_rejects_unsafe_clip_id():
                 source_end=30,
                 title="bad",
             )
+
+
+def test_selected_clip_accepts_object_remove_ranges():
+    from live_clipper.models import SelectedClip
+
+    clip = SelectedClip(
+        clip_id="w0001-c001",
+        source_start=0.0,
+        source_end=30.0,
+        title="t",
+        remove_ranges=[{"start": 4.0, "end": 6.0}],
+    )
+    assert clip.remove_ranges == [(4.0, 6.0)]
+
+
+def test_selected_clip_accepts_array_remove_ranges():
+    from live_clipper.models import SelectedClip
+
+    clip = SelectedClip(
+        clip_id="w0001-c001",
+        source_start=0.0,
+        source_end=30.0,
+        title="t",
+        remove_ranges=[[4.0, 6.0]],
+    )
+    assert clip.remove_ranges == [(4.0, 6.0)]

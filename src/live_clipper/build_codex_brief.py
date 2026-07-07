@@ -81,6 +81,8 @@ def build_codex_review_markdown(
         "- Keep `clip_id` values filename-safe: letters, numbers, dots, underscores, or hyphens only.\n"
         "- Keep `source_start` and `source_end` inside the candidate context.\n"
         "- Use `remove_ranges` only when an otherwise strong clip has a small removable section.\n"
+        "- `remove_ranges` MUST be an array of [start, end] number pairs in seconds, e.g. [[12.5, 18.0]]. "
+        "Never use objects like {\"start\": ..., \"end\": ...}.\n"
     )
 
 

@@ -65,6 +65,12 @@ def read_review_automation_events(service_dir: Path, *, max_events: int = 50) ->
     return events[-max_events:]
 
 
+def read_last_review_summary(service_dir: Path) -> dict[str, Any]:
+    """读取最近一次 AI 审阅的结果摘要（不存在时返回空字典）。"""
+    path = _summary_path(service_dir)
+    return read_json(path) if path.exists() else {}
+
+
 def get_review_automation_status(settings: Settings, *, service_dir: Path) -> dict[str, Any]:
     summary = read_json(_summary_path(service_dir)) if _summary_path(service_dir).exists() else {}
     return {
@@ -409,7 +415,8 @@ def _settings_for_review_model(settings: Settings) -> Settings:
 def _review_prompt(payload: dict[str, Any]) -> str:
     return (
         "你是 live-clipper 的 AI 审阅助手。请只根据下面的审阅包生成 selected_clips.json 需要的 JSON 数组。\n"
-        "禁止删除、移动、清理任何文件；禁止 approve/reject confirmation；不要写文件，只返回 JSON 数组。\n\n"
+        "禁止删除、移动、清理任何文件；禁止 approve/reject confirmation；不要写文件，只返回 JSON 数组。\n"
+        "字段 remove_ranges 必须是 [开始秒, 结束秒] 的数组，例如 [[12.5, 18.0]]；不要用 {\"start\":...} 这样的对象。\n\n"
         + json.dumps(payload, ensure_ascii=False)
     )
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from live_clipper import review_automation
+from live_clipper import review_automation, web
 from live_clipper.utils import read_json, write_json
 from live_clipper.web import WebPaths, handle_api_request
 
@@ -179,3 +179,30 @@ def test_post_api_review_automation_run_due_delegates(monkeypatch, tmp_path):
     assert status == 200
     assert payload["ok"] is True
     assert payload["processed_runs"] == ["run-1"]
+
+
+def test_build_run_detail_includes_ai_review_failure_for_same_run(tmp_path):
+    paths = _paths(tmp_path)
+    _write_run(paths)
+    write_json(review_automation._summary_path(paths.service_dir), {
+        "last_run_id": "run-1",
+        "last_status": "failed",
+        "last_error": "boom",
+        "last_run_at": "2026-07-06T00:00:00+00:00",
+    })
+
+    detail = web.build_run_detail("run-1", paths)
+
+    assert detail["ai_review"]["status"] == "failed"
+    assert detail["ai_review"]["error"] == "boom"
+
+    write_json(review_automation._summary_path(paths.service_dir), {
+        "last_run_id": "other-run",
+        "last_status": "failed",
+        "last_error": "boom",
+        "last_run_at": "2026-07-06T00:00:00+00:00",
+    })
+
+    detail = web.build_run_detail("run-1", paths)
+
+    assert detail["ai_review"] is None

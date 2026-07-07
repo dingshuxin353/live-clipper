@@ -300,6 +300,18 @@ def _steps_from_status(status: dict[str, Any]) -> list[dict[str, Any]]:
     return steps
 
 
+def _ai_review_for_run(run_id: str, paths: WebPaths) -> dict[str, Any] | None:
+    """若最近一次 AI 审阅针对的是本 run，则返回其状态/错误，供前端展示。"""
+    summary = review_automation.read_last_review_summary(paths.service_dir)
+    if summary.get("last_run_id") != run_id:
+        return None
+    return {
+        "status": summary.get("last_status"),
+        "error": summary.get("last_error"),
+        "at": summary.get("last_run_at"),
+    }
+
+
 def build_run_detail(run_id: str, paths: WebPaths | None = None, *, log_lines: int = 200) -> dict[str, Any]:
     paths = paths or WebPaths()
     service_run = service.find_run(run_id, paths.service_dir)
@@ -324,6 +336,7 @@ def build_run_detail(run_id: str, paths: WebPaths | None = None, *, log_lines: i
             "cleanup": cleanup,
             "state": service_run,
             "events": detail.get("events", []),
+            "ai_review": _ai_review_for_run(run_id, paths),
             "actions": {
                 "can_check": True,
                 "can_render": (run_dir / "selected_clips.json").exists() and not detail.get("rendered_clip_count"),
@@ -355,6 +368,7 @@ def build_run_detail(run_id: str, paths: WebPaths | None = None, *, log_lines: i
         "clips": build_clip_list(run_dir),
         "cleanup": cleanup,
         "state": state,
+        "ai_review": _ai_review_for_run(run_id, paths),
         "actions": {
             "can_check": True,
             "can_render": files["selected_clips.json"]["exists"] and files["clips"].get("count", 0) == 0,

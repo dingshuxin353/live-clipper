@@ -720,10 +720,20 @@ def run_service_once(settings: Settings, *, service_dir: Path = DEFAULT_SERVICE_
     runs = load_runs(service_dir)
     for run in runs:
         reconcile_run(run, settings, service_dir=service_dir)
+    # 先把 reconcile 结果落盘：即使随后扫描录播源失败（如 NAS 未挂载），
+    # 也不能丢掉状态推进。
+    save_runs(runs, service_dir)
 
     started = []
+    scan_error: str | None = None
     known = _known_fingerprints(runs)
-    for source_path in scan_recording_source(settings.recording_source_default):
+    try:
+        sources = scan_recording_source(settings.recording_source_default)
+    except FileNotFoundError as exc:
+        sources = []
+        scan_error = str(exc)
+        append_event(service_dir, "recording_source_unavailable", source_dir=str(exc))
+    for source_path in sources:
         identity = build_run_identity(
             settings.recording_source_default.source_id,
             source_path,
@@ -736,11 +746,13 @@ def run_service_once(settings: Settings, *, service_dir: Path = DEFAULT_SERVICE_
         started.append(run)
         known.add(run["fingerprint"])
 
-    save_runs(runs, service_dir)
+    if started:
+        save_runs(runs, service_dir)
     return {
         "ok": True,
         "known_runs": len(runs),
         "started_runs": len(started),
+        "scan_error": scan_error,
         "service_dir": str(service_dir),
     }
 
