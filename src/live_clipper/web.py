@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-from . import config_editor, mcp_tools, review_automation, scheduler, service
+from . import config_editor, jobs, mcp_tools, review_automation, scheduler, service
 from .automation import DEFAULT_LOG_DIR, DEFAULT_STATE_DIR, _pid_is_running, check_automation_runs
 from .config import RecordingSourceDefaultConfig, ServiceConfig, Settings, load_settings
 from .pipeline import cleanup_local_artifacts, cleanup_plan
@@ -337,6 +337,7 @@ def build_run_detail(run_id: str, paths: WebPaths | None = None, *, log_lines: i
             "state": service_run,
             "events": detail.get("events", []),
             "ai_review": _ai_review_for_run(run_id, paths),
+            "active_job": jobs.active_job_for(paths.service_dir, run_id, "ai_review"),
             "actions": {
                 "can_check": True,
                 "can_render": (run_dir / "selected_clips.json").exists() and not detail.get("rendered_clip_count"),
@@ -369,6 +370,7 @@ def build_run_detail(run_id: str, paths: WebPaths | None = None, *, log_lines: i
         "cleanup": cleanup,
         "state": state,
         "ai_review": _ai_review_for_run(run_id, paths),
+        "active_job": jobs.active_job_for(paths.service_dir, run_id, "ai_review"),
         "actions": {
             "can_check": True,
             "can_render": files["selected_clips.json"]["exists"] and files["clips"].get("count", 0) == 0,
@@ -495,9 +497,23 @@ def handle_api_request(
                 return _json_response(mcp_tools.render_run(parts[2], settings=_settings_for_paths(paths), service_dir=paths.service_dir))
             return _json_response(_render_run(paths.output_root / parts[2]))
         if method == "POST" and len(parts) == 4 and parts[:2] == ["api", "runs"] and parts[3] == "ai-review":
-            payload = review_automation.run_ai_review_for_run(parts[2], _settings_for_paths(paths), service_dir=paths.service_dir)
-            status = 200 if payload.get("ok") else (404 if payload.get("error_code") == "run_not_found" else 400)
-            return _json_response(payload, status=status)
+            run_id = parts[2]
+            if service.find_run(run_id, paths.service_dir) is None:
+                return _json_response(_structured_error("run_not_found", f"任务不存在: {run_id}"), status=404)
+            settings = _settings_for_paths(paths)
+            service_dir = paths.service_dir
+            job = jobs.start_job(
+                service_dir,
+                kind="ai_review",
+                run_id=run_id,
+                fn=lambda: review_automation.run_ai_review_for_run(run_id, settings, service_dir=service_dir),
+            )
+            return _json_response({"ok": True, "job": job}, status=202)
+        if method == "GET" and len(parts) == 3 and parts[:2] == ["api", "jobs"]:
+            job = jobs.read_job(paths.service_dir, parts[2])
+            if job is None:
+                return _json_response(_structured_error("job_not_found", "任务不存在"), status=404)
+            return _json_response({"ok": True, "job": job})
         if method == "POST" and len(parts) == 4 and parts[:2] == ["api", "runs"] and parts[3] == "cleanup-preview":
             if service.find_run(parts[2], paths.service_dir):
                 return _json_response(mcp_tools.preview_cleanup(parts[2], settings=_settings_for_paths(paths), service_dir=paths.service_dir))
@@ -799,6 +815,7 @@ def run_web_server(
     paths: WebPaths | None = None,
 ) -> None:
     paths = paths or WebPaths()
+    jobs.sweep_interrupted(paths.service_dir)
     handler = type("ConfiguredLiveClipperRequestHandler", (LiveClipperRequestHandler,), {"paths": paths})
     server = ThreadingHTTPServer((host, port), handler)
     print(f"[Web] Live Clipper 控制台已启动: http://{host}:{port}", flush=True)

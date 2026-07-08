@@ -12,6 +12,7 @@ const state = {
   configDirty: false,
   scheduler: null,
   reviewAutomation: null,
+  jobPolls: {},
 };
 
 const el = (id) => document.getElementById(id);
@@ -279,13 +280,17 @@ function renderReviewContent(detail) {
   const aiError = aiReview && aiReview.status === "failed"
     ? `<div class="notice error" style="margin-bottom: 12px;">上次 AI 审阅失败：${escapeHtml(aiReview.error || "未知错误")}</div>`
     : "";
+  const reviewing = detail.active_job && detail.active_job.status === "running";
+  const aiButton = reviewing
+    ? `<button id="aiReviewRunBtn" class="primary-button small" type="button" disabled>AI 审阅中…</button>`
+    : `<button id="aiReviewRunBtn" class="primary-button small" type="button" ${detail.actions?.can_ai_review ? "" : "disabled"}>立即 AI 审阅</button>`;
   return `
     <div class="clip-card-body">
       ${aiError}
       <div class="clip-actions">
         <p class="muted" style="flex: 1;">AI 已找到 <strong>${escapeHtml(candidates)}</strong> 个候选片段，审阅后即可渲染成片。</p>
         <button class="secondary-button small" data-copy-text="${escapeHtml(run.run_dir || "")}" type="button">复制审阅包路径</button>
-        <button id="aiReviewRunBtn" class="primary-button small" type="button" ${detail.actions?.can_ai_review ? "" : "disabled"}>立即 AI 审阅</button>
+        ${aiButton}
         <button id="renderRunBtn" class="secondary-button small" type="button" ${detail.actions?.can_render ? "" : "disabled"}>渲染</button>
       </div>
     </div>
@@ -403,11 +408,44 @@ async function loadRuns() {
   }
 }
 
+async function pollAiReviewJob(runId, jobId) {
+  if (!jobId || state.jobPolls[jobId]) return;
+  state.jobPolls[jobId] = true;
+  try {
+    for (let i = 0; i < 200; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      let job;
+      try {
+        const payload = await api(`/api/jobs/${encodeURIComponent(jobId)}`);
+        job = payload.job;
+      } catch (_error) {
+        continue; // 瞬时网络错误，继续轮询
+      }
+      if (!job || job.status === "running") continue;
+      if (job.status === "succeeded") {
+        const count = job.result && job.result.selected_count != null ? job.result.selected_count : "?";
+        toast(`AI 审阅完成，已选 ${count} 个片段`);
+      } else if (job.status === "interrupted") {
+        toast("AI 审阅在服务重启时被中断，请重试。");
+      } else {
+        toast(`AI 审阅失败：${job.error || "未知错误"}`);
+      }
+      break;
+    }
+  } finally {
+    delete state.jobPolls[jobId];
+    await refreshAll();
+    if (state.selectedRunId === runId) await loadRunDetail(runId);
+  }
+}
+
 async function loadRunDetail(runId) {
   state.selectedRunId = runId;
   state.detail = await api(`/api/runs/${encodeURIComponent(runId)}`);
   renderRuns();
   renderRunDetail();
+  const job = state.detail && state.detail.active_job;
+  if (job && job.status === "running") pollAiReviewJob(runId, job.id);
 }
 
 async function loadConfirmations() {
@@ -740,17 +778,15 @@ document.addEventListener("click", async (event) => {
       const button = event.target;
       const runId = state.selectedRunId;
       button.disabled = true;
-      button.textContent = "AI 审阅中…（约 1 分钟）";
+      button.textContent = "AI 审阅中…";
       try {
-        const result = await api(`/api/runs/${encodeURIComponent(runId)}/ai-review`, { method: "POST" });
-        el("logOutput").textContent = JSON.stringify(result, null, 2);
-        toast(`AI 审阅完成，已选 ${result.selected_count ?? "?"} 个片段`);
+        const payload = await api(`/api/runs/${encodeURIComponent(runId)}/ai-review`, { method: "POST" });
+        toast("AI 审阅已开始，正在后台处理…");
+        pollAiReviewJob(runId, payload.job && payload.job.id);
       } catch (err) {
-        el("logOutput").textContent = String(err && err.message ? err.message : err);
-        toast(`AI 审阅失败：${err && err.message ? err.message : err}`);
-      } finally {
-        await refreshAll();
-        if (state.selectedRunId === runId) await loadRunDetail(runId);
+        button.disabled = false;
+        button.textContent = "立即 AI 审阅";
+        toast(`AI 审阅启动失败：${err && err.message ? err.message : err}`);
       }
     }
     if (event.target.dataset.showLog !== undefined) switchTab("automation");

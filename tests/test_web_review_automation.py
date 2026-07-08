@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
-from live_clipper import review_automation, web
+from live_clipper import jobs, review_automation, web
 from live_clipper.utils import read_json, write_json
 from live_clipper.web import WebPaths, handle_api_request
 
@@ -98,6 +99,19 @@ def _write_config(path: Path) -> None:
     )
 
 
+def _wait_job(paths: WebPaths, job_id: str, timeout: float = 2.0) -> dict:
+    deadline = time.time() + timeout
+    final_job = None
+    while time.time() < deadline:
+        status, _headers, payload = handle_api_request("GET", f"/api/jobs/{job_id}", paths)
+        assert status == 200
+        final_job = payload["job"]
+        if final_job["status"] in jobs.TERMINAL_STATUSES:
+            return final_job
+        time.sleep(0.02)
+    raise AssertionError(f"job did not reach terminal status: {final_job}")
+
+
 def test_get_api_review_automation_returns_status(tmp_path):
     paths = _paths(tmp_path)
 
@@ -133,8 +147,10 @@ def test_post_api_run_ai_review_executes_and_writes_selection(monkeypatch, tmp_p
 
     status, _headers, payload = handle_api_request("POST", "/api/runs/run-1/ai-review", paths)
 
-    assert status == 200
+    assert status == 202
     assert payload["ok"] is True
+    final_job = _wait_job(paths, payload["job"]["id"])
+    assert final_job["status"] == "succeeded"
     assert read_json(run_dir / "selected_clips.json")[0]["clip_id"] == "clip-1"
 
 
@@ -145,10 +161,12 @@ def test_post_api_run_ai_review_rejects_invalid_phase_with_chinese_error(tmp_pat
 
     status, _headers, payload = handle_api_request("POST", "/api/runs/run-1/ai-review", paths)
 
-    assert status == 400
-    assert payload["ok"] is False
-    assert payload["error_code"] == "invalid_phase"
-    assert "needs_review" in payload["message"]
+    assert status == 202
+    assert payload["ok"] is True
+    final_job = _wait_job(paths, payload["job"]["id"])
+    assert final_job["status"] == "failed"
+    assert final_job["result"]["error_code"] == "invalid_phase"
+    assert "needs_review" in final_job["result"]["message"]
 
 
 def test_post_api_run_ai_review_rejects_existing_selection(tmp_path):
@@ -159,9 +177,11 @@ def test_post_api_run_ai_review_rejects_existing_selection(tmp_path):
 
     status, _headers, payload = handle_api_request("POST", "/api/runs/run-1/ai-review", paths)
 
-    assert status == 400
-    assert payload["ok"] is False
-    assert payload["error_code"] == "selected_clips_exists"
+    assert status == 202
+    assert payload["ok"] is True
+    final_job = _wait_job(paths, payload["job"]["id"])
+    assert final_job["status"] == "failed"
+    assert final_job["result"]["error_code"] == "selected_clips_exists"
 
 
 def test_post_api_review_automation_run_due_delegates(monkeypatch, tmp_path):
@@ -206,3 +226,39 @@ def test_build_run_detail_includes_ai_review_failure_for_same_run(tmp_path):
     detail = web.build_run_detail("run-1", paths)
 
     assert detail["ai_review"] is None
+
+
+def test_post_api_run_ai_review_starts_job_and_can_poll(monkeypatch, tmp_path):
+    paths = _paths(tmp_path)
+    _write_config(paths.config_path)
+    _write_run(paths)
+
+    def fake_ai_review(run_id, settings, service_dir):
+        assert run_id == "run-1"
+        assert service_dir == paths.service_dir
+        return {"ok": True, "selected_count": 2}
+
+    monkeypatch.setattr(review_automation, "run_ai_review_for_run", fake_ai_review)
+
+    status, _headers, payload = handle_api_request("POST", "/api/runs/run-1/ai-review", paths)
+
+    assert status == 202
+    assert payload["ok"] is True
+    assert payload["job"]["status"] == "running"
+    assert payload["job"]["kind"] == "ai_review"
+    job_id = payload["job"]["id"]
+
+    deadline = time.time() + 2.0
+    final_job = None
+    while time.time() < deadline:
+        poll_status, _poll_headers, poll_payload = handle_api_request("GET", f"/api/jobs/{job_id}", paths)
+        assert poll_status == 200
+        final_job = poll_payload["job"]
+        if final_job["status"] in jobs.TERMINAL_STATUSES:
+            break
+        time.sleep(0.02)
+    assert final_job is not None
+    assert final_job["status"] == "succeeded"
+
+    missing_status, _missing_headers, _missing_payload = handle_api_request("POST", "/api/runs/missing-run/ai-review", paths)
+    assert missing_status == 404
