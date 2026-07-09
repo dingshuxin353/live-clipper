@@ -295,7 +295,7 @@ V4 处理方式：
 {
   "config": {
     "recording_source_default": {
-      "source_dir": "/Volumes/homes/weixiaodan12/录播"
+      "source_dir": "/Volumes/your-nas/recordings"
     }
   }
 }

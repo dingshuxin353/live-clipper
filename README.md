@@ -200,7 +200,7 @@ auto_render_after_selection = true
 cleanup_mode = "preview_only"
 
 [recording_source.default]
-source_dir = "/Volumes/homes/weixiaodan12/录播"
+source_dir = "/Volumes/your-nas/recordings"
 input_dir = "input"
 output_root = "output"
 since_hours = 168

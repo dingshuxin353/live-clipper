@@ -21,8 +21,8 @@ Web 控制台负责给人看：现在服务是否运行、哪些任务待审阅�
 
 ## 你需要先知道的几个词
 
-- 项目目录：本项目所在目录，例如 `/Users/gouzi/dingshuxinRepo/live-clipper`。
-- 录播源目录：你的 NAS 或本地录播目录，例如 `/Volumes/homes/weixiaodan12/录播`。
+- 项目目录：本项目所在目录，例如 `/path/to/live-clipper`。
+- 录播源目录：你的 NAS 或本地录播目录，例如 `/Volumes/your-nas/recordings`。
 - `input/`：本项目本地输入库。服务会把录播复制到这里处理。
 - `output/`：每次处理任务的输出目录。
 - run：一次录播处理任务。
@@ -36,7 +36,7 @@ Web 控制台负责给人看：现在服务是否运行、哪些任务待审阅�
 每次操作前，先打开终端并进入项目目录：
 
 ```bash
-cd /Users/gouzi/dingshuxinRepo/live-clipper
+cd /path/to/live-clipper
 ```
 
 确认当前分支是 MCP 工作台版本：
@@ -94,7 +94,7 @@ auto_render_after_selection = true
 cleanup_mode = "preview_only"
 
 [recording_source.default]
-source_dir = "/Volumes/homes/weixiaodan12/录播"
+source_dir = "/Volumes/your-nas/recordings"
 input_dir = "input"
 output_root = "output"
 since_hours = 168
@@ -453,12 +453,12 @@ ls output/<run_id>/clips
 
 你之前的需求是：
 
-周日零点，从 NAS 的 `/Volumes/homes/weixiaodan12/录播` 读取录播，拷贝到项目库，然后执行切片工作，直到待审阅阶段。这个阶段只需要触发开始，不需要 AI 一直盯着进度。
+周日零点，从 NAS 的 `/Volumes/your-nas/recordings` 读取录播，拷贝到项目库，然后执行切片工作，直到待审阅阶段。这个阶段只需要触发开始，不需要 AI 一直盯着进度。
 
 如果使用当前服务能力，推荐让服务常驻运行，然后定时任务只负责启动或扫描：
 
 ```bash
-cd /Users/gouzi/dingshuxinRepo/live-clipper
+cd /path/to/live-clipper
 .venv/bin/live-clipper service start
 .venv/bin/live-clipper service start --once
 ```
@@ -466,9 +466,9 @@ cd /Users/gouzi/dingshuxinRepo/live-clipper
 如果使用 automation helper，也可以用：
 
 ```bash
-cd /Users/gouzi/dingshuxinRepo/live-clipper
+cd /path/to/live-clipper
 .venv/bin/live-clipper automation start-latest \
-  --source-dir /Volumes/homes/weixiaodan12/录播 \
+  --source-dir /Volumes/your-nas/recordings \
   --input-dir input \
   --output-root output \
   --since-hours 168 \
@@ -481,7 +481,7 @@ cd /Users/gouzi/dingshuxinRepo/live-clipper
 中午 12 点，让 AI 执行：
 
 ```text
-请进入 /Users/gouzi/dingshuxinRepo/live-clipper。
+请进入 /path/to/live-clipper。
 
 请检查 live-clipper 是否有待审阅任务。
 优先通过 MCP 工具或本地文件读取审阅包。
@@ -509,7 +509,7 @@ cd /Users/gouzi/dingshuxinRepo/live-clipper
 ### 1. 启动 Web 控制台
 
 ```bash
-cd /Users/gouzi/dingshuxinRepo/live-clipper
+cd /path/to/live-clipper
 .venv/bin/live-clipper web
 ```
 
@@ -546,7 +546,7 @@ Web 控制台点击 `立即扫描`，或者终端运行：
 ```text
 请帮我处理 live-clipper 的待审阅任务。
 
-项目目录是 /Users/gouzi/dingshuxinRepo/live-clipper。
+项目目录是 /path/to/live-clipper。
 请先查看服务状态和待审阅任务。
 如果有待审阅任务，请读取 run 目录里的 codex_brief.json、codex_review.md、refined_candidates.json。
 请挑选适合发布的短视频片段，并写入 selected_clips.json。
@@ -625,14 +625,14 @@ http://127.0.0.1:8766
 检查：
 
 ```bash
-ls /Volumes/homes/weixiaodan12/录播
+ls /Volumes/your-nas/recordings
 ```
 
 再检查配置：
 
 ```toml
 [recording_source.default]
-source_dir = "/Volumes/homes/weixiaodan12/录播"
+source_dir = "/Volumes/your-nas/recordings"
 since_hours = 168
 min_age_minutes = 10
 ```
@@ -698,7 +698,7 @@ ls output/<run_id>/clips
 你是 live-clipper 的短视频选片助手。
 
 项目目录：
-/Users/gouzi/dingshuxinRepo/live-clipper
+/path/to/live-clipper
 
 目标：
 从当前待审阅任务中选择适合发布的直播切片，并生成 selected_clips.json。

@@ -69,7 +69,7 @@ auto_render_after_selection = true
 cleanup_mode = "preview_only"
 
 [recording_source.default]
-source_dir = "/Volumes/homes/weixiaodan12/录播"
+source_dir = "/Volumes/your-nas/recordings"
 input_dir = "input"
 output_root = "output"
 since_hours = 168
@@ -129,7 +129,7 @@ work/service/
   "next_scan_at": "...",
   "config_snapshot": {
     "source_id": "default",
-    "source_dir": "/Volumes/homes/weixiaodan12/录播",
+    "source_dir": "/Volumes/your-nas/recordings",
     "scan_interval_minutes": 30
   },
   "last_error": null
@@ -144,7 +144,7 @@ work/service/
     {
       "run_id": "2026-06-19-21-07-13__a8f31c",
       "source_id": "default",
-      "source_path": "/Volumes/homes/weixiaodan12/录播/2026-06-19-21-07-13.mkv",
+      "source_path": "/Volumes/your-nas/recordings/2026-06-19-21-07-13.mkv",
       "local_source_path": "input/2026-06-19-21-07-13.mkv",
       "run_dir": "output/default/2026-06-19-21-07-13__a8f31c",
       "fingerprint": "a8f31c",

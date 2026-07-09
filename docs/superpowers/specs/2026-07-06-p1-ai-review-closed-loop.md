@@ -27,7 +27,7 @@
 - **C（校验容错）**：codex 返回 `remove_ranges: [{"start":4911.18,"end":4921.42}]`（对象数组），而 `SelectedClip.remove_ranges` 要求 `list[tuple[float,float]]`（`[[start,end]]`），校验抛错，选片不落盘。LLM 输出天生有波动，必须容错。
 - **B（交互反馈）**：前端点「立即 AI 审阅」后无在途反馈（按钮不置灰、无「审阅中」提示）。一次要跑约 60 秒的正常审阅，与卡死在界面上无法区分。
 - **D（失败可见）**：AI 审阅失败信息只写进 `work/service/review_automation_events.jsonl` 和 summary 文件，任务卡片上看不到，用户无从得知为何没出片。
-- **E（NAS 韧性）**：`run_service_once` 先 reconcile（未落盘）再扫描 NAS，NAS 未挂载时 `scan_recording_source` 抛 `FileNotFoundError`，导致 reconcile 结果丢失。用户 NAS 路径 `/Volumes/homes/weixiaodan12/录播` 经常未挂载。
+- **E（NAS 韧性）**：`run_service_once` 先 reconcile（未落盘）再扫描 NAS，NAS 未挂载时 `scan_recording_source` 抛 `FileNotFoundError`，导致 reconcile 结果丢失。用户 NAS 路径经常未挂载。
 
 ---
 
