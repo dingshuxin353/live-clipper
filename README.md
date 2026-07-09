@@ -4,6 +4,29 @@
 
 English readers can start from [docs/README.en.md](docs/README.en.md). 当前主文档以中文为准。
 
+## 更新记录
+
+完整英文版见 [CHANGELOG.md](CHANGELOG.md)。
+
+### 未发布
+
+**修复**
+
+- 常驻服务启动的 run 有概率永久卡在「处理中」：pipeline 子进程退出后变成僵尸进程，服务把僵尸进程误判为「还在运行」。现在服务会正确回收已退出的子进程，并对已生成产物但卡住超过阈值（`service.stuck_after_minutes`）的 run 强制推进阶段。
+- 手动触发 AI 审阅可能永久无响应：`codex exec` 在隔离的临时目录（非 git 仓库）里执行会被拒绝，且继承了服务进程的 stdin，导致一直阻塞等待不会到来的输入。
+- AI 返回的选片如果把 `remove_ranges` 写成 `{"start": ..., "end": ...}` 对象而不是 `[start, end]` 数组，会校验失败且不会进入渲染；现在两种写法都能正确识别。
+- `run_service_once` 在录播源不可用（例如 NAS 未挂载）时会丢失刚刚完成的状态推进；现在会先保存推进结果，再把源不可用降级为一条 `recording_source_unavailable` 事件，而不是直接抛出异常。
+
+**新增**
+
+- Web 控制台的「立即 AI 审阅」按钮会实时显示审阅中状态，并在卡片上展示上一次审阅失败的原因。
+- 任务卡片会对「处理中」超过阈值仍未完成的 run 显示卡住提示。
+- AI 审阅改为异步执行：`POST /api/runs/{id}/ai-review` 立即返回后台任务 ID（HTTP 202），不再阻塞到审阅跑完（此前实测可达 166 秒）。Web 页面通过 `GET /api/jobs/{id}` 轮询进度，刷新页面也能自动接上正在运行的审阅；同一个 run 的重复请求会被合并为同一个任务，不会重复调用 AI。
+
+**其它**
+
+- 清理了 README 和文档里残留的真实 NAS 路径与本机用户目录，替换为占位符；`.starwork/`、`_系统/`（内部多智能体协作工具的运行状态，与本工具本身无关）不再纳入版本管理；补全了 `.gitignore` 对本地配置和运行时状态目录的忽略规则。
+
 ## 它解决什么问题
 
 `live-clipper` 适合创作者、运营或内容团队在本机处理长视频：
@@ -590,29 +613,6 @@ cp glossary/common_terms.example.json glossary/common_terms.json
   "notes": "OpenAI coding agent product name"
 }
 ```
-
-## 更新记录
-
-完整英文版见 [CHANGELOG.md](CHANGELOG.md)。
-
-### 未发布
-
-**修复**
-
-- 常驻服务启动的 run 有概率永久卡在「处理中」：pipeline 子进程退出后变成僵尸进程，服务把僵尸进程误判为「还在运行」。现在服务会正确回收已退出的子进程，并对已生成产物但卡住超过阈值（`service.stuck_after_minutes`）的 run 强制推进阶段。
-- 手动触发 AI 审阅可能永久无响应：`codex exec` 在隔离的临时目录（非 git 仓库）里执行会被拒绝，且继承了服务进程的 stdin，导致一直阻塞等待不会到来的输入。
-- AI 返回的选片如果把 `remove_ranges` 写成 `{"start": ..., "end": ...}` 对象而不是 `[start, end]` 数组，会校验失败且不会进入渲染；现在两种写法都能正确识别。
-- `run_service_once` 在录播源不可用（例如 NAS 未挂载）时会丢失刚刚完成的状态推进；现在会先保存推进结果，再把源不可用降级为一条 `recording_source_unavailable` 事件，而不是直接抛出异常。
-
-**新增**
-
-- Web 控制台的「立即 AI 审阅」按钮会实时显示审阅中状态，并在卡片上展示上一次审阅失败的原因。
-- 任务卡片会对「处理中」超过阈值仍未完成的 run 显示卡住提示。
-- AI 审阅改为异步执行：`POST /api/runs/{id}/ai-review` 立即返回后台任务 ID（HTTP 202），不再阻塞到审阅跑完（此前实测可达 166 秒）。Web 页面通过 `GET /api/jobs/{id}` 轮询进度，刷新页面也能自动接上正在运行的审阅；同一个 run 的重复请求会被合并为同一个任务，不会重复调用 AI。
-
-**其它**
-
-- 清理了 README 和文档里残留的真实 NAS 路径与本机用户目录，替换为占位符；`.starwork/`、`_系统/`（内部多智能体协作工具的运行状态，与本工具本身无关）不再纳入版本管理；补全了 `.gitignore` 对本地配置和运行时状态目录的忽略规则。
 
 ## 开发与贡献
 
