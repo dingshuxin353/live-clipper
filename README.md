@@ -8,7 +8,7 @@ English readers can start from [docs/README.en.md](docs/README.en.md). 当前主
 
 完整英文版见 [CHANGELOG.md](CHANGELOG.md)。
 
-### 未发布
+### 0.2.0（2026-07-09）
 
 **修复**
 
