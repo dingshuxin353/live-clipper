@@ -7,8 +7,10 @@ import json
 import os
 import signal
 import subprocess
+import threading
 import time
 from collections import Counter
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -20,6 +22,110 @@ from .render_clips import render_selected_clips
 from .utils import ensure_dir, read_json, self_command, write_json
 
 DEFAULT_SERVICE_DIR = Path("work") / "service"
+
+_EMBEDDED_LOCK = threading.Lock()
+_EMBEDDED: dict[str, Any] = {"thread": None, "stop_event": None, "enabled_event": None, "service_dir": None}
+
+
+def embedded_service_active() -> bool:
+    thread = _EMBEDDED.get("thread")
+    return thread is not None and thread.is_alive()
+
+
+def start_embedded_service(
+    settings_loader: Callable[[], Settings],
+    *,
+    service_dir: Path = DEFAULT_SERVICE_DIR,
+) -> dict[str, Any]:
+    """Run the scan/schedule loop as a thread inside this process (app mode).
+
+    Unlike the detached CLI daemon, the embedded service lives and dies with
+    the web backend process, so there is no pid-file self-management and no
+    orphan risk. Settings are re-loaded every tick, so config changes made in
+    the web UI take effect without a restart.
+    """
+    with _EMBEDDED_LOCK:
+        if embedded_service_active():
+            return {"ok": True, "started": False, "reason": "embedded_service_already_running"}
+        stop_event = threading.Event()
+        enabled_event = threading.Event()
+        enabled_event.set()
+        thread = threading.Thread(
+            target=_embedded_service_loop,
+            args=(settings_loader, service_dir, stop_event, enabled_event),
+            daemon=True,
+            name="live-clipper-embedded-service",
+        )
+        _EMBEDDED.update(
+            {"thread": thread, "stop_event": stop_event, "enabled_event": enabled_event, "service_dir": service_dir}
+        )
+        thread.start()
+    return {"ok": True, "started": True, "embedded": True, "pid": os.getpid()}
+
+
+def pause_embedded_service() -> dict[str, Any]:
+    if not embedded_service_active():
+        return {"ok": True, "stopped": False, "reason": "service_not_running"}
+    _EMBEDDED["enabled_event"].clear()
+    service_dir = _EMBEDDED["service_dir"]
+    _write_service_state(service_dir, {"status": "paused", "pid": os.getpid(), "paused_at": now_utc()})
+    append_event(service_dir, "service_paused", pid=os.getpid())
+    return {"ok": True, "stopped": True, "paused": True, "pid": os.getpid()}
+
+
+def resume_embedded_service() -> dict[str, Any]:
+    if not embedded_service_active():
+        return {"ok": False, "error": "embedded_service_not_running"}
+    _EMBEDDED["enabled_event"].set()
+    service_dir = _EMBEDDED["service_dir"]
+    _write_service_state(service_dir, {"status": "running", "pid": os.getpid(), "resumed_at": now_utc()})
+    append_event(service_dir, "service_resumed", pid=os.getpid())
+    return {"ok": True, "started": True, "resumed": True, "pid": os.getpid()}
+
+
+def stop_embedded_service(timeout_seconds: float = 5.0) -> dict[str, Any]:
+    thread = _EMBEDDED.get("thread")
+    if thread is None or not thread.is_alive():
+        return {"ok": True, "stopped": False, "reason": "service_not_running"}
+    _EMBEDDED["stop_event"].set()
+    thread.join(timeout_seconds)
+    return {"ok": True, "stopped": True}
+
+
+def _embedded_service_loop(
+    settings_loader: Callable[[], Settings],
+    service_dir: Path,
+    stop_event: threading.Event,
+    enabled_event: threading.Event,
+) -> None:
+    ensure_dir(service_dir)
+    pid = os.getpid()
+    _pid_path(service_dir).write_text(f"{pid}\n", encoding="utf-8")
+    append_event(service_dir, "service_started", pid=pid, embedded=True)
+    while not stop_event.is_set():
+        try:
+            settings = settings_loader()
+            if not enabled_event.is_set():
+                stop_event.wait(2)
+                continue
+            source_configured = settings.recording_source_default.source_dir or settings.recording_source.source_dir
+            if source_configured is None:
+                state = _service_state("running", pid, settings)
+                state["waiting"] = "recording_source_not_configured"
+                _write_service_state(service_dir, state)
+                stop_event.wait(min(settings.scheduler.tick_seconds, 10))
+                continue
+            validate_service_settings(settings)
+            report = run_service_tick(settings, service_dir=service_dir)
+            state = _service_state("running", pid, settings)
+            state["last_report"] = report
+            _write_service_state(service_dir, state)
+            stop_event.wait(settings.scheduler.tick_seconds)
+        except Exception as exc:  # pragma: no cover - defensive for long-running loop
+            _write_service_state(service_dir, {"status": "running", "pid": pid, "last_error": str(exc)})
+            append_event(service_dir, "service_error", error=str(exc))
+            stop_event.wait(60)
+    _write_service_state(service_dir, {"status": "stopped", "pid": pid, "stopped_at": now_utc()})
 
 
 def now_utc() -> str:

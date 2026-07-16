@@ -401,8 +401,12 @@ def handle_api_request(
         if method == "GET" and parts == ["api", "service"]:
             return _json_response(_build_service_payload(paths))
         if method == "POST" and parts == ["api", "service", "start"]:
+            if service.embedded_service_active():
+                return _json_response(service.resume_embedded_service())
             return _json_response(service.start_service(_settings_for_paths(paths), service_dir=paths.service_dir))
         if method == "POST" and parts == ["api", "service", "stop"]:
+            if service.embedded_service_active():
+                return _json_response(service.pause_embedded_service())
             return _json_response(service.stop_service(service_dir=paths.service_dir))
         if method == "POST" and parts == ["api", "service", "scan-now"]:
             return _json_response(mcp_tools.scan_now(settings=_settings_for_paths(paths), service_dir=paths.service_dir))
@@ -606,6 +610,13 @@ def _build_settings_payload(paths: WebPaths) -> dict[str, Any]:
 
 
 def _restart_service_from_config(paths: WebPaths) -> dict[str, Any]:
+    if service.embedded_service_active():
+        return {
+            "ok": True,
+            "restarted": False,
+            "reason": "embedded_service_reloads_config_automatically",
+            "status": service.get_service_status(service_dir=paths.service_dir),
+        }
     status = service.get_service_status(service_dir=paths.service_dir)
     if not status.get("running"):
         return {
@@ -709,6 +720,24 @@ def _delete_local_source(run_dir: Path, paths: WebPaths) -> dict[str, Any]:
 
 class LiveClipperRequestHandler(BaseHTTPRequestHandler):
     paths = WebPaths()
+    access_token: str | None = None
+
+    def _authorized(self) -> bool:
+        token = self.access_token
+        if not token:
+            return True
+        if self.headers.get("Authorization", "") == f"Bearer {token}":
+            return True
+        cookie = self.headers.get("Cookie", "")
+        return f"lc_token={token}" in cookie
+
+    def _reject_unauthorized(self) -> None:
+        body = json.dumps(_structured_error("unauthorized", "缺少或错误的访问令牌")).encode("utf-8")
+        self.send_response(HTTPStatus.UNAUTHORIZED)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def do_HEAD(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         if self.path == "/" or self.path.startswith("/static/"):
@@ -728,6 +757,9 @@ class LiveClipperRequestHandler(BaseHTTPRequestHandler):
             self._serve_static()
             return
         if self.path.startswith("/media/"):
+            if not self._authorized():
+                self._reject_unauthorized()
+                return
             self._serve_media()
             return
         self._serve_api("GET")
@@ -739,6 +771,9 @@ class LiveClipperRequestHandler(BaseHTTPRequestHandler):
         return
 
     def _serve_api(self, method: str) -> None:
+        if not self._authorized():
+            self._reject_unauthorized()
+            return
         body_payload: dict[str, Any] | None = None
         if method == "POST":
             raw_length = self.headers.get("Content-Length")
@@ -830,10 +865,15 @@ def run_web_server(
     host: str = "127.0.0.1",
     port: int = 8765,
     paths: WebPaths | None = None,
+    access_token: str | None = None,
 ) -> None:
     paths = paths or WebPaths()
     jobs.sweep_interrupted(paths.service_dir)
-    handler = type("ConfiguredLiveClipperRequestHandler", (LiveClipperRequestHandler,), {"paths": paths})
+    handler = type(
+        "ConfiguredLiveClipperRequestHandler",
+        (LiveClipperRequestHandler,),
+        {"paths": paths, "access_token": access_token or None},
+    )
     server = ThreadingHTTPServer((host, port), handler)
     print(f"[Web] Live Clipper 控制台已启动: http://{host}:{port}", flush=True)
     if host not in {"127.0.0.1", "localhost", "::1"}:

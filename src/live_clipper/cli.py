@@ -26,7 +26,7 @@ from .prompt_loader import export_prompts
 from .refine_candidates import refine_candidates_file
 from .render_clips import render_selected_clips
 from .scan_windows import scan_windows_file
-from .service import get_service_status, read_service_logs, start_service, stop_service
+from .service import get_service_status, read_service_logs, start_embedded_service, start_service, stop_service
 from .smoke import run_local_smoke
 from .status import build_run_status
 from .transcribe import transcribe_audio, transcript_sentences_from_raw
@@ -158,6 +158,8 @@ def run_app(*, host: str = "127.0.0.1", port: int = 8765) -> None:
         emit_progress(f"[App] 已写入 .env 模板: {env_path}")
     settings = load_settings()
     emit_progress(f"[App] 数据目录: {home}")
+    start_embedded_service(load_settings, service_dir=home / "work" / "service")
+    emit_progress("[App] 嵌入式服务已启动（扫描与调度随 App 运行）")
     run_web_server(
         host=host,
         port=port,
@@ -167,6 +169,7 @@ def run_app(*, host: str = "127.0.0.1", port: int = 8765) -> None:
             log_dir=Path("work") / "automation_logs",
             input_dir=settings.paths.input_dir,
         ),
+        access_token=os.environ.get("LIVE_CLIPPER_WEB_TOKEN") or None,
     )
 
 
@@ -752,6 +755,7 @@ def main() -> None:
                 log_dir=args.log_dir,
                 input_dir=args.input_dir,
             ),
+            access_token=load_settings().web.access_token,
         )
     elif args.command == "automation":
         if args.automation_command == "start-latest":

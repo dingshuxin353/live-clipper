@@ -33,12 +33,13 @@ def test_run_app_bootstraps_home(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     captured = {}
 
-    def fake_run_web_server(*, host, port, paths):
+    def fake_run_web_server(*, host, port, paths, access_token=None):
         captured["host"] = host
         captured["port"] = port
         captured["paths"] = paths
 
     monkeypatch.setattr(cli, "run_web_server", fake_run_web_server)
+    monkeypatch.setattr(cli, "start_embedded_service", lambda *args, **kwargs: {"ok": True})
     cli.run_app(host="127.0.0.1", port=9999)
 
     config_text = (home / "live-clipper.toml").read_text(encoding="utf-8")

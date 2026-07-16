@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, dialog, ipcMain, shell, nativeImage } = require("electron");
+const { app, BrowserWindow, Tray, Menu, dialog, ipcMain, session, shell, nativeImage } = require("electron");
 const { spawn } = require("child_process");
 const http = require("http");
 const https = require("https");
@@ -14,6 +14,7 @@ let tray = null;
 let backendProcess = null;
 let backendPort = null;
 let quitting = false;
+const backendToken = require("crypto").randomBytes(16).toString("hex");
 
 function findFreePort() {
   return new Promise((resolve, reject) => {
@@ -43,7 +44,7 @@ function backendCommand(port) {
 
 function startBackend(port) {
   const { executable, args } = backendCommand(port);
-  const env = { ...process.env };
+  const env = { ...process.env, LIVE_CLIPPER_WEB_TOKEN: backendToken };
   if (app.isPackaged) {
     env.PATH = `${path.join(process.resourcesPath, "bin")}:${env.PATH || ""}`;
   }
@@ -70,11 +71,20 @@ function waitForBackend(port, timeoutMs = 30000) {
       setTimeout(attempt, 250);
     };
     const attempt = () => {
-      const request = http.get({ host: "127.0.0.1", port, path: "/api/onboarding", timeout: 1000 }, (response) => {
-        response.resume();
-        if (response.statusCode === 200) resolve();
-        else retry();
-      });
+      const request = http.get(
+        {
+          host: "127.0.0.1",
+          port,
+          path: "/api/onboarding",
+          timeout: 1000,
+          headers: { Authorization: `Bearer ${backendToken}` },
+        },
+        (response) => {
+          response.resume();
+          if (response.statusCode === 200) resolve();
+          else retry();
+        }
+      );
       request.on("error", retry);
       request.on("timeout", () => {
         request.destroy();
@@ -88,7 +98,14 @@ function waitForBackend(port, timeoutMs = 30000) {
 function postBackend(apiPath, timeoutMs = 3000) {
   return new Promise((resolve, reject) => {
     const request = http.request(
-      { host: "127.0.0.1", port: backendPort, path: apiPath, method: "POST", timeout: timeoutMs },
+      {
+        host: "127.0.0.1",
+        port: backendPort,
+        path: apiPath,
+        method: "POST",
+        timeout: timeoutMs,
+        headers: { Authorization: `Bearer ${backendToken}` },
+      },
       (response) => {
         response.resume();
         response.on("end", resolve);
@@ -270,6 +287,12 @@ if (!app.requestSingleInstanceLock()) {
       backendPort = await findFreePort();
       startBackend(backendPort);
       await waitForBackend(backendPort);
+      await session.defaultSession.cookies.set({
+        url: `http://127.0.0.1:${backendPort}`,
+        name: "lc_token",
+        value: backendToken,
+        sameSite: "strict",
+      });
       createTray();
       showWindow();
       setTimeout(() => checkForUpdates(false), 5000);
