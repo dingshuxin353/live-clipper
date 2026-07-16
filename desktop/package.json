@@ -1,0 +1,17 @@
+{
+  "name": "live-clipper-desktop",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Desktop shell for the live-clipper local web console.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build:backend": "bash scripts/build-backend.sh",
+    "dist": "npm run build:backend && electron-builder --mac dmg"
+  },
+  "devDependencies": {
+    "electron": "^35.0.0",
+    "electron-builder": "^26.0.0",
+    "ffmpeg-static": "^5.2.0"
+  }
+}

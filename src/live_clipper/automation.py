@@ -6,11 +6,10 @@ from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
 import subprocess
-import sys
 from typing import Any
 
 from .status import build_run_status
-from .utils import ensure_dir, read_json, write_json
+from .utils import ensure_dir, read_json, self_command, write_json
 
 
 DEFAULT_NAS_DIR = Path("recordings")
@@ -124,10 +123,7 @@ def start_latest_recording_job(
             "next_step": status["next_step"],
         }
 
-    command = [
-        sys.executable,
-        "-m",
-        "live_clipper",
+    command = self_command(
         "pipeline",
         str(source_path),
         "--input-dir",
@@ -136,7 +132,7 @@ def start_latest_recording_job(
         str(run_dir),
         "--top-n",
         str(top_n),
-    ]
+    )
     if refine:
         command.append("--refine")
     if correct_transcript:

@@ -28,3 +28,20 @@ def test_read_required_text_reports_missing_file_with_description(tmp_path):
 
     with pytest.raises(FileNotFoundError, match="cheap scan prompt"):
         read_required_text(path, "cheap scan prompt")
+
+
+def test_self_command_normal_environment():
+    import sys
+
+    from live_clipper.utils import self_command
+
+    assert self_command("pipeline", "x") == [sys.executable, "-m", "live_clipper", "pipeline", "x"]
+
+
+def test_self_command_frozen(monkeypatch):
+    import sys
+
+    from live_clipper.utils import self_command
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    assert self_command("service", "start") == [sys.executable, "service", "start"]

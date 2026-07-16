@@ -1,0 +1,21 @@
+appId: com.liveclipper.desktop
+productName: Live Clipper
+directories:
+  output: dist-app
+files:
+  - main.js
+  - package.json
+extraResources:
+  - from: backend-dist/live-clipper-backend
+    to: backend
+  - from: node_modules/ffmpeg-static/ffmpeg
+    to: bin/ffmpeg
+afterPack: ./scripts/after-pack.js
+npmRebuild: false
+mac:
+  target:
+    - target: dmg
+      arch:
+        - arm64
+  category: public.app-category.video
+  identity: null

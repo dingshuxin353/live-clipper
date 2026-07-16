@@ -47,3 +47,9 @@ _系统/
 
 # Internal development specs/plans — process artifacts, not product docs.
 docs/superpowers/
+# Desktop shell build artifacts (V9b).
+desktop/node_modules/
+desktop/backend-dist/
+desktop/backend-build/
+desktop/dist-app/
+desktop/package-lock.json

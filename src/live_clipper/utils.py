@@ -3,9 +3,22 @@
 from __future__ import annotations
 
 import json
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+
+def self_command(*args: str) -> list[str]:
+    """Build a command that re-invokes this program with *args*.
+
+    In a normal environment this is ``python -m live_clipper ...``. In a
+    PyInstaller-frozen binary ``sys.executable`` is the app binary itself,
+    which accepts CLI subcommands directly and does not understand ``-m``.
+    """
+    if getattr(sys, "frozen", False):
+        return [sys.executable, *args]
+    return [sys.executable, "-m", "live_clipper", *args]
 
 
 def ensure_dir(path: Path) -> Path:

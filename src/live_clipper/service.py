@@ -7,7 +7,6 @@ import json
 import os
 import signal
 import subprocess
-import sys
 import time
 from collections import Counter
 from datetime import UTC, datetime, timedelta
@@ -18,7 +17,7 @@ from .automation import SUPPORTED_VIDEO_EXTENSIONS
 from .config import RecordingSourceDefaultConfig, Settings
 from .pipeline import cleanup_local_artifacts, cleanup_plan, stage_source_file
 from .render_clips import render_selected_clips
-from .utils import ensure_dir, read_json, write_json
+from .utils import ensure_dir, read_json, self_command, write_json
 
 DEFAULT_SERVICE_DIR = Path("work") / "service"
 
@@ -528,17 +527,14 @@ def _start_pipeline_process(
     run_dir: Path,
     log_path: Path,
 ) -> int:
-    command = [
-        sys.executable,
-        "-m",
-        "live_clipper",
+    command = self_command(
         "pipeline",
         str(source_path),
         "--input-dir",
         str(input_dir),
         "--output-dir",
         str(run_dir),
-    ]
+    )
     ensure_dir(log_path.parent)
     with log_path.open("ab") as log_file:
         process = subprocess.Popen(
@@ -849,14 +845,7 @@ def start_service(
             "service_dir": str(service_dir),
         }
 
-    command = [
-        sys.executable,
-        "-m",
-        "live_clipper",
-        "service",
-        "start",
-        "--foreground",
-    ]
+    command = self_command("service", "start", "--foreground")
     log_path = _service_log_path(service_dir)
     with log_path.open("ab") as log_file:
         process = subprocess.Popen(
