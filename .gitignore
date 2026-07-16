@@ -39,3 +39,11 @@ live-clipper.toml
 # Internal multi-agent orchestration scaffolding — not part of the published tool.
 .starwork/
 _系统/
+.superpowers/
+.obsidian/
+.agents/
+.claude/
+.pytest_cache/
+
+# Internal development specs/plans — process artifacts, not product docs.
+docs/superpowers/
