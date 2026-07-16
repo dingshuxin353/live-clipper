@@ -114,9 +114,28 @@ function showWindow() {
     minWidth: 980,
     minHeight: 640,
     title: "Live Clipper",
+    titleBarStyle: "hiddenInset",
+    trafficLightPosition: { x: 18, y: 18 },
     webPreferences: { nodeIntegration: false, contextIsolation: true },
   });
   mainWindow.loadURL(`http://127.0.0.1:${backendPort}`);
+  // Native look: no separate title bar. Give the traffic lights breathing room
+  // and make the top strip draggable, only when running inside the shell.
+  mainWindow.webContents.on("dom-ready", () => {
+    mainWindow.webContents.insertCSS(`
+      .sidebar { padding-top: 52px; }
+      body::before {
+        content: "";
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 24px;
+        z-index: 200;
+        -webkit-app-region: drag;
+      }
+    `);
+  });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
     return { action: "deny" };
