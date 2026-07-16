@@ -581,6 +581,15 @@ def write_default_config(path: Path = DEFAULT_CONFIG_PATH, *, overwrite: bool = 
     return path
 
 
+def render_app_config_template(output_root: Path) -> str:
+    """Return the default config template with output paths pointed at *output_root*.
+
+    Replaces both occurrences (``[paths]`` and ``[recording_source.default]``)
+    so app mode keeps clips in a user-visible folder instead of the app home.
+    """
+    return DEFAULT_CONFIG_TEMPLATE.replace('output_root = "output"', f'output_root = "{output_root}"')
+
+
 def _scheduler_jobs(raw_jobs: Any) -> list[SchedulerJobConfig]:
     if not isinstance(raw_jobs, list) or not raw_jobs:
         return default_scheduler_jobs()

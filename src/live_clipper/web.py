@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-from . import config_editor, jobs, mcp_tools, review_automation, scheduler, service
+from . import config_editor, jobs, mcp_tools, onboarding, review_automation, scheduler, service
 from .automation import DEFAULT_LOG_DIR, DEFAULT_STATE_DIR, _pid_is_running, check_automation_runs
 from .config import RecordingSourceDefaultConfig, ServiceConfig, Settings, load_settings
 from .pipeline import cleanup_local_artifacts, cleanup_plan
@@ -469,6 +469,23 @@ def handle_api_request(
             return _json_response(payload, status=200 if payload.get("ok") else 400)
         if method == "POST" and parts == ["api", "config", "restart-service"]:
             return _json_response(_restart_service_from_config(paths))
+        if method == "GET" and parts == ["api", "onboarding"]:
+            return _json_response(onboarding.onboarding_status(_settings_for_paths(paths), paths.service_dir))
+        if method == "POST" and parts == ["api", "onboarding", "test-source"]:
+            return _json_response(onboarding.test_recording_source(str((body or {}).get("source_dir") or "")))
+        if method == "POST" and parts == ["api", "onboarding", "test-llm"]:
+            data = body or {}
+            return _json_response(
+                onboarding.test_llm(
+                    str(data.get("api_base") or ""),
+                    str(data.get("api_key") or ""),
+                    str(data.get("model") or ""),
+                )
+            )
+        if method == "POST" and parts == ["api", "onboarding", "complete"]:
+            return _json_response(
+                onboarding.complete_onboarding(body or {}, config_path=paths.config_path, service_dir=paths.service_dir)
+            )
         if method == "GET" and parts == ["api", "scheduler"]:
             return _json_response(scheduler.get_scheduler_status(_settings_for_paths(paths), service_dir=paths.service_dir))
         if method == "GET" and parts == ["api", "scheduler", "events"]:

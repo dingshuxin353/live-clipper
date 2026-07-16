@@ -340,7 +340,53 @@
       </main>
     </div>
 
+    <div id="onboardingOverlay" class="onboarding-overlay" hidden>
+      <div class="onboarding-card">
+        <div class="onboarding-steps">
+          <span class="onboarding-step-dot active" data-step-dot="1">1 录播文件夹</span>
+          <span class="onboarding-step-dot" data-step-dot="2">2 AI 服务</span>
+          <span class="onboarding-step-dot" data-step-dot="3">3 完成</span>
+        </div>
+        <section class="onboarding-step" data-step="1">
+          <h2>欢迎使用 Live Clipper</h2>
+          <p>先告诉我你的直播录像放在哪个文件夹，以后有新录像会自动切片。</p>
+          <label>录播文件夹路径
+            <input id="onboardingSourceDir" placeholder="例如 /Volumes/your-nas/recordings" />
+          </label>
+          <div id="onboardingSourceResult" class="onboarding-result" hidden></div>
+          <div class="onboarding-actions">
+            <button id="onboardingSkipBtn" class="secondary-button" type="button">稍后再设置</button>
+            <button id="onboardingSourceTestBtn" class="secondary-button" type="button">检查文件夹</button>
+            <button id="onboardingToStep2Btn" class="primary-button" type="button" disabled>下一步</button>
+          </div>
+        </section>
+        <section class="onboarding-step" data-step="2" hidden>
+          <h2>选一个 AI 服务</h2>
+          <p>切片选题由 AI 完成，需要一个 API key（一场直播的费用通常只要几分钱）。</p>
+          <div id="onboardingPresets" class="onboarding-presets"></div>
+          <label>服务地址<input id="onboardingLlmBase" /></label>
+          <label>模型<input id="onboardingLlmModel" /></label>
+          <label>API key<input id="onboardingLlmKey" type="password" placeholder="粘贴你的 API key" /></label>
+          <div id="onboardingLlmResult" class="onboarding-result" hidden></div>
+          <div class="onboarding-actions">
+            <button id="onboardingBackTo1Btn" class="secondary-button" type="button">上一步</button>
+            <button id="onboardingLlmTestBtn" class="secondary-button" type="button">测试连接</button>
+            <button id="onboardingToStep3Btn" class="primary-button" type="button" disabled>下一步</button>
+          </div>
+        </section>
+        <section class="onboarding-step" data-step="3" hidden>
+          <h2>确认设置</h2>
+          <div id="onboardingSummary" class="onboarding-summary"></div>
+          <div id="onboardingCompleteResult" class="onboarding-result" hidden></div>
+          <div class="onboarding-actions">
+            <button id="onboardingBackTo2Btn" class="secondary-button" type="button">上一步</button>
+            <button id="onboardingCompleteBtn" class="primary-button" type="button">完成设置</button>
+          </div>
+        </section>
+      </div>
+    </div>
     <div id="toast" class="toast" hidden></div>
     <script src="/static/app.js?v=20260702-v8"></script>
+    <script src="/static/onboarding.js?v=20260716-v9a"></script>
   </body>
 </html>

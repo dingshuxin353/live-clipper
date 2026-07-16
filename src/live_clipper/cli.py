@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import time
 from pathlib import Path
 
 from .ai_guide import AI_ASSISTANT_GUIDE
+from .app_dirs import default_output_root, prepare_app_home
 from .automation import DEFAULT_NAS_DIR, check_automation_runs, start_latest_recording_job
 from .build_codex_brief import (
     build_codex_brief_file,
@@ -15,7 +17,7 @@ from .build_codex_brief import (
 )
 from .cheap_model_client import CheapModelClient, CheapModelServiceError
 from .codex_selection import validate_selected_clips_file
-from .config import load_settings, write_default_config
+from .config import load_settings, render_app_config_template, write_default_config
 from .correct_transcript import correct_transcript_file
 from .merge_candidates import merge_candidates_file
 from .models import CorrectedTranscript
@@ -138,6 +140,36 @@ def run_setup(
     }
 
 
+def run_app(*, host: str = "127.0.0.1", port: int = 8765) -> None:
+    """Desktop app mode: run out of the per-user data directory.
+
+    Everything in this codebase resolves relative paths against cwd, so app
+    mode chdirs into the app home once and reuses all existing logic.
+    """
+    home = prepare_app_home()
+    os.chdir(home)
+    config_path = home / "live-clipper.toml"
+    if not config_path.exists():
+        config_path.write_text(render_app_config_template(default_output_root(home)), encoding="utf-8")
+        emit_progress(f"[App] 已写入初始配置: {config_path}")
+    env_path = home / ".env"
+    if not env_path.exists():
+        env_path.write_text(ENV_TEMPLATE, encoding="utf-8")
+        emit_progress(f"[App] 已写入 .env 模板: {env_path}")
+    settings = load_settings()
+    emit_progress(f"[App] 数据目录: {home}")
+    run_web_server(
+        host=host,
+        port=port,
+        paths=WebPaths(
+            output_root=settings.paths.output_root,
+            state_dir=settings.paths.state_dir,
+            log_dir=Path("work") / "automation_logs",
+            input_dir=settings.paths.input_dir,
+        ),
+    )
+
+
 def _friendly_next_step(next_step: str) -> str:
     if "selected_clips.json" in next_step and "审阅" in next_step:
         return "等待 Codex 或人工选片：阅读 codex_brief.json，写入 selected_clips.json。"
@@ -219,6 +251,10 @@ def build_parser() -> argparse.ArgumentParser:
     setup = subparsers.add_parser("setup", help="Create beginner-friendly local config, folders, and prompt templates.")
     setup.add_argument("--force-config", action="store_true", help="Overwrite live-clipper.toml.")
     setup.add_argument("--force-prompts", action="store_true", help="Overwrite files in prompts.local.")
+
+    app_mode = subparsers.add_parser("app", help="Run in desktop app mode: per-user data directory + web console.")
+    app_mode.add_argument("--host", default="127.0.0.1")
+    app_mode.add_argument("--port", type=int, default=8765)
 
     next_step = subparsers.add_parser("next", help="Explain the next action for output runs.")
     next_step.add_argument("--output-root", type=Path, default=Path("output"))
@@ -626,6 +662,8 @@ def main() -> None:
     elif args.command == "setup":
         report = run_setup(force_config=args.force_config, force_prompts=args.force_prompts)
         print(json.dumps(report, ensure_ascii=False, indent=2))
+    elif args.command == "app":
+        run_app(host=args.host, port=args.port)
     elif args.command == "next":
         report = run_next(args.output_root)
         print(json.dumps(report, ensure_ascii=False, indent=2))
