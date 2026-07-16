@@ -993,3 +993,23 @@ h4 {
 .onboarding-overlay[hidden] {
   display: none;
 }
+
+/* ===== V9c app-shell adjustments (only active inside the Electron shell) ===== */
+body.in-app-shell .sidebar {
+  padding-top: 56px;
+}
+
+body.in-app-shell::before {
+  content: "";
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 30px;
+  z-index: 40;
+  -webkit-app-region: drag;
+}
+
+.onboarding-browse {
+  margin: -4px 0 12px;
+}

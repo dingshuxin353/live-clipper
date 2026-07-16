@@ -53,3 +53,7 @@ desktop/backend-dist/
 desktop/backend-build/
 desktop/dist-app/
 desktop/package-lock.json
+
+# Local skill tooling state, not part of the product.
+skills-lock.json
+work/venus-reel-logo-exploration/

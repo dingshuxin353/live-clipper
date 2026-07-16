@@ -1,6 +1,7 @@
-const { app, BrowserWindow, Tray, Menu, dialog, shell, nativeImage } = require("electron");
+const { app, BrowserWindow, Tray, Menu, dialog, ipcMain, shell, nativeImage } = require("electron");
 const { spawn } = require("child_process");
 const http = require("http");
+const https = require("https");
 const net = require("net");
 const path = require("path");
 
@@ -102,6 +103,86 @@ function postBackend(apiPath, timeoutMs = 3000) {
   });
 }
 
+ipcMain.handle("lc:select-folder", async (_event, title) => {
+  const options = {
+    title: typeof title === "string" && title ? title : "选择文件夹",
+    properties: ["openDirectory", "createDirectory"],
+  };
+  const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
+  return result.canceled ? null : result.filePaths[0];
+});
+
+const UPDATE_RELEASES_API = "https://api.github.com/repos/dingshuxin353/live-clipper/releases/latest";
+const UPDATE_RELEASES_PAGE = "https://github.com/dingshuxin353/live-clipper/releases/latest";
+
+function fetchLatestVersion() {
+  return new Promise((resolve, reject) => {
+    const request = https.get(
+      UPDATE_RELEASES_API,
+      {
+        headers: { "User-Agent": "live-clipper-desktop", Accept: "application/vnd.github+json" },
+        timeout: 8000,
+      },
+      (response) => {
+        let body = "";
+        response.on("data", (chunk) => {
+          body += chunk;
+        });
+        response.on("end", () => {
+          if (response.statusCode !== 200) {
+            reject(new Error(`HTTP ${response.statusCode}`));
+            return;
+          }
+          try {
+            resolve(String(JSON.parse(body).tag_name || "").replace(/^v/, ""));
+          } catch (error) {
+            reject(error);
+          }
+        });
+      }
+    );
+    request.on("error", reject);
+    request.on("timeout", () => {
+      request.destroy();
+      reject(new Error("timeout"));
+    });
+  });
+}
+
+function isNewerVersion(latest, current) {
+  const parse = (value) => String(value).split(".").map((part) => parseInt(part, 10) || 0);
+  const a = parse(latest);
+  const b = parse(current);
+  for (let i = 0; i < 3; i += 1) {
+    if ((a[i] || 0) > (b[i] || 0)) return true;
+    if ((a[i] || 0) < (b[i] || 0)) return false;
+  }
+  return false;
+}
+
+async function checkForUpdates(interactive) {
+  let latest;
+  try {
+    latest = await fetchLatestVersion();
+  } catch (error) {
+    if (interactive) dialog.showErrorBox("检查更新", `暂时无法检查更新：${error.message}`);
+    return;
+  }
+  if (!latest) return;
+  if (isNewerVersion(latest, app.getVersion())) {
+    const { response } = await dialog.showMessageBox({
+      type: "info",
+      message: `发现新版本 ${latest}`,
+      detail: `当前版本 ${app.getVersion()}。前往下载页获取更新。`,
+      buttons: ["去下载", "以后再说"],
+      defaultId: 0,
+    });
+    if (response === 0) shell.openExternal(UPDATE_RELEASES_PAGE);
+  } else if (interactive) {
+    dialog.showMessageBox({ type: "info", message: "已是最新版本", detail: `当前版本 ${app.getVersion()}。` });
+  }
+}
+
 function showWindow() {
   if (mainWindow) {
     mainWindow.show();
@@ -116,26 +197,13 @@ function showWindow() {
     title: "Live Clipper",
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 18, y: 18 },
-    webPreferences: { nodeIntegration: false, contextIsolation: true },
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, "preload.js"),
+    },
   });
   mainWindow.loadURL(`http://127.0.0.1:${backendPort}`);
-  // Native look: no separate title bar. Give the traffic lights breathing room
-  // and make the top strip draggable, only when running inside the shell.
-  mainWindow.webContents.on("dom-ready", () => {
-    mainWindow.webContents.insertCSS(`
-      .sidebar { padding-top: 52px; }
-      body::before {
-        content: "";
-        position: fixed;
-        top: 0;
-        left: 0;
-        right: 0;
-        height: 24px;
-        z-index: 200;
-        -webkit-app-region: drag;
-      }
-    `);
-  });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
     return { action: "deny" };
@@ -160,6 +228,7 @@ function createTray() {
     Menu.buildFromTemplate([
       { label: "打开主界面", click: () => showWindow() },
       { label: "立即扫描录播", click: () => postBackend("/api/service/scan-now").catch(() => {}) },
+      { label: "检查更新", click: () => checkForUpdates(true) },
       { type: "separator" },
       { label: "退出 Live Clipper", click: () => app.quit() },
     ])
@@ -203,6 +272,7 @@ if (!app.requestSingleInstanceLock()) {
       await waitForBackend(backendPort);
       createTray();
       showWindow();
+      setTimeout(() => checkForUpdates(false), 5000);
     } catch (error) {
       dialog.showErrorBox("Live Clipper", `启动失败：${error.message}`);
       quitting = true;

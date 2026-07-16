@@ -4,6 +4,7 @@ directories:
   output: dist-app
 files:
   - main.js
+  - preload.js
   - package.json
 extraResources:
   - from: backend-dist/live-clipper-backend

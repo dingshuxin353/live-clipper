@@ -1,5 +1,9 @@
 (() => {
   const el = (id) => document.getElementById(id);
+
+  if (window.liveClipperShell) {
+    document.body.classList.add("in-app-shell");
+  }
   const wizard = {
     presets: [],
     presetId: "deepseek",
@@ -160,6 +164,16 @@
     el("onboardingOverlay").hidden = false;
     showStep(1);
 
+    const browseBtn = el("onboardingBrowseBtn");
+    if (window.liveClipperShell) {
+      browseBtn.hidden = false;
+      browseBtn.addEventListener("click", async () => {
+        const folder = await window.liveClipperShell.selectFolder("选择录播文件夹");
+        if (!folder) return;
+        el("onboardingSourceDir").value = folder;
+        testSource().catch(() => {});
+      });
+    }
     el("onboardingSourceTestBtn").addEventListener("click", () => testSource().catch(() => {}));
     el("onboardingLlmTestBtn").addEventListener("click", () => testLlm().catch(() => {}));
     el("onboardingCompleteBtn").addEventListener("click", () => complete().catch(() => {}));
