@@ -5,10 +5,6 @@ const https = require("https");
 const net = require("net");
 const path = require("path");
 
-// 16x16 template tray icon (film frame + play triangle), generated offline.
-const TRAY_ICON_DATA_URL =
-  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAL0lEQVR42mNgGEzgP4kYQzM5FtLWgP/UMOA/NQz4T4wLaWrAwAUifdMBxUl54AAAKlY5x3hhuhcAAAAASUVORK5CYII=";
-
 let mainWindow = null;
 let tray = null;
 let backendProcess = null;
@@ -54,7 +50,7 @@ function startBackend(port) {
   backendProcess.on("exit", (code) => {
     backendProcess = null;
     if (!quitting) {
-      dialog.showErrorBox("Live Clipper", `后台服务意外退出（代码 ${code ?? "未知"}）。请重新打开应用。`);
+      dialog.showErrorBox("Venus", `后台服务意外退出（代码 ${code ?? "未知"}）。请重新打开应用。`);
       app.quit();
     }
   });
@@ -211,7 +207,7 @@ function showWindow() {
     height: 860,
     minWidth: 980,
     minHeight: 640,
-    title: "Live Clipper",
+    title: "Venus",
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 18, y: 18 },
     webPreferences: {
@@ -237,17 +233,17 @@ function showWindow() {
 }
 
 function createTray() {
-  const icon = nativeImage.createFromDataURL(TRAY_ICON_DATA_URL);
+  const icon = nativeImage.createFromPath(path.join(__dirname, "assets", "trayTemplate.png"));
   icon.setTemplateImage(true);
   tray = new Tray(icon);
-  tray.setToolTip("Live Clipper");
+  tray.setToolTip("Venus");
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: "打开主界面", click: () => showWindow() },
       { label: "立即扫描录播", click: () => postBackend("/api/service/scan-now").catch(() => {}) },
       { label: "检查更新", click: () => checkForUpdates(true) },
       { type: "separator" },
-      { label: "退出 Live Clipper", click: () => app.quit() },
+      { label: "退出 Venus", click: () => app.quit() },
     ])
   );
 }
@@ -297,7 +293,7 @@ if (!app.requestSingleInstanceLock()) {
       showWindow();
       setTimeout(() => checkForUpdates(false), 5000);
     } catch (error) {
-      dialog.showErrorBox("Live Clipper", `启动失败：${error.message}`);
+      dialog.showErrorBox("Venus", `启动失败：${error.message}`);
       quitting = true;
       await shutdownBackend();
       app.exit(1);

@@ -875,7 +875,7 @@ def run_web_server(
         {"paths": paths, "access_token": access_token or None},
     )
     server = ThreadingHTTPServer((host, port), handler)
-    print(f"[Web] Live Clipper 控制台已启动: http://{host}:{port}", flush=True)
+    print(f"[Web] Venus 控制台已启动: http://{host}:{port}", flush=True)
     if host not in {"127.0.0.1", "localhost", "::1"}:
         print("[Web] 警告: 当前服务允许局域网访问。请勿暴露到公网。", flush=True)
     print("[Web] 本服务用于本机工作台。按 Ctrl+C 结束。", flush=True)

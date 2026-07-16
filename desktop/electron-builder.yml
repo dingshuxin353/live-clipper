@@ -1,11 +1,12 @@
-appId: com.liveclipper.desktop
-productName: Live Clipper
+appId: com.dingshuxin.venus
+productName: Venus
 directories:
   output: dist-app
 files:
   - main.js
   - preload.js
   - package.json
+  - assets/**
 extraResources:
   - from: backend-dist/live-clipper-backend
     to: backend
@@ -19,4 +20,5 @@ mac:
       arch:
         - arm64
   category: public.app-category.video
+  icon: assets/icon.png
   identity: null

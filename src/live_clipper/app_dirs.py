@@ -11,7 +11,7 @@ import os
 import sys
 from pathlib import Path
 
-APP_DIR_NAME = "LiveClipper"
+APP_DIR_NAME = "Venus"
 HOME_ENV_VAR = "LIVE_CLIPPER_HOME"
 
 WORK_SUBDIRS = [

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "live-clipper"
 version = "0.2.0"
-description = "CLI pipeline for extracting highlight clips from livestream recordings."
+description = "Venus: CLI pipeline for extracting highlight clips from livestream recordings."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
@@ -31,9 +31,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/live-clipper/live-clipper"
-Issues = "https://github.com/live-clipper/live-clipper/issues"
-Documentation = "https://github.com/live-clipper/live-clipper#readme"
+Homepage = "https://github.com/dingshuxin353/live-clipper"
+Issues = "https://github.com/dingshuxin353/live-clipper/issues"
+Documentation = "https://github.com/dingshuxin353/live-clipper#readme"
 
 [project.optional-dependencies]
 mlx = [

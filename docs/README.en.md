@@ -1,4 +1,4 @@
-# live-clipper
+# Venus
 
 English documentation is a secondary entry point for now. The canonical README is the Chinese `README.md`.
 
