@@ -72,16 +72,16 @@
               <p class="muted">定时任务、AI 审阅与运行日志</p>
             </div>
             <div class="button-row">
-              <button id="startServiceBtn" class="secondary-button" type="button">启动服务</button>
-              <button id="stopServiceBtn" class="secondary-button" type="button">停止服务</button>
+              <button id="startServiceBtn" class="secondary-button" type="button">恢复自动化</button>
+              <button id="stopServiceBtn" class="secondary-button" type="button">暂停自动化</button>
             </div>
           </div>
 
           <section class="content-card">
             <div class="card-heading">
               <div>
-                <h3>服务状态</h3>
-                <p class="muted">Scheduler 依赖本机服务主循环运行。</p>
+                <h3>自动化引擎</h3>
+                <p class="muted">随 App 一起运行：App 开着（或缩在菜单栏）就会按时间表自动处理新录播。</p>
               </div>
             </div>
             <div id="serviceMetrics" class="metrics-grid"></div>
@@ -169,46 +169,52 @@
             </section>
 
             <fieldset class="settings-group" data-config-layer="quick-start">
-              <legend>快速开始</legend>
-              <div class="notice subtle full-span">这里只保留第一次跑通最常用的配置。API key 只填写环境变量名，不会展示或保存明文密钥。</div>
+              <legend>基础设置</legend>
+              <div class="notice subtle full-span">配好三件事就能用：录像在哪、成片放哪、AI 用哪家。API key 只填环境变量名，明文密钥保存在本机 .env 文件里。</div>
 
               <div class="settings-section full-span">
-                <h4>存储位置</h4>
-                <label>录播源目录<input data-config-field="recording_source_default.source_dir" placeholder="可以为空；为空时不会自动扫描" /></label>
-                <label>本地输入目录<input data-config-field="recording_source_default.input_dir" /></label>
-                <label>本地输出目录<input data-config-field="recording_source_default.output_root" /></label>
-              </div>
-
-              <div class="settings-section full-span">
-                <h4>模型服务</h4>
-                <label>LLM API 地址<input data-config-field="llm.api_base" /></label>
-                <label>LLM API key 环境变量名<input data-config-field="llm.api_key_env" /></label>
-                <label>LLM 模型名<input data-config-field="llm.model" /></label>
-                <label>ASR 后端
-                  <select data-config-field="asr.backend">
-                    <option value="mlx_whisper">mlx_whisper</option>
-                    <option value="openai">openai</option>
-                  </select>
+                <h4>文件位置</h4>
+                <label>录播文件夹
+                  <input data-config-field="recording_source_default.source_dir" placeholder="例如 /Volumes/your-nas/recordings" />
+                  <span class="field-help">直播录像所在的文件夹（支持 NAS）。出现新录像会自动切片；留空则不自动扫描。</span>
                 </label>
-                <label>ASR 模型<input data-config-field="asr.model" /></label>
-                <label>语言<input data-config-field="asr.language" /></label>
-                <label>ASR API 地址<input data-config-field="asr.api_base" /></label>
-                <label>ASR API key 环境变量名<input data-config-field="asr.api_key_env" /></label>
+                <label>成片保存位置
+                  <input data-config-field="recording_source_default.output_root" />
+                  <span class="field-help">切好的短视频和标题、简介都保存在这里。</span>
+                </label>
               </div>
 
               <div class="settings-section full-span">
-                <h4>服务</h4>
-                <label class="check-row"><input type="checkbox" data-config-field="service.enabled" /> 启用服务</label>
-                <label class="check-row"><input type="checkbox" data-config-field="service.auto_render_after_selection" /> 选片后自动渲染</label>
-                <label>清理模式<input data-config-field="service.cleanup_mode" readonly /></label>
+                <h4>AI 服务</h4>
+                <label>AI 服务地址
+                  <input data-config-field="llm.api_base" />
+                  <span class="field-help">负责选片、写标题的 AI（OpenAI 兼容接口，如 DeepSeek / 通义 / Kimi）。</span>
+                </label>
+                <label>AI 模型名<input data-config-field="llm.model" /></label>
+                <label>API key 环境变量名
+                  <input data-config-field="llm.api_key_env" />
+                  <span class="field-help">只保存变量名；真正的密钥写在本机 .env 文件里，永远不展示明文。</span>
+                </label>
+                <label>语音识别方式
+                  <select data-config-field="asr.backend">
+                    <option value="mlx_whisper">本机识别（免费，推荐）</option>
+                    <option value="openai">云端识别（OpenAI 兼容接口）</option>
+                  </select>
+                  <span class="field-help">把直播声音转成文字。本机识别首次使用需下载模型；云端更快但按量计费，需在高级设置里填接口信息。</span>
+                </label>
+              </div>
+
+              <div class="settings-section full-span">
+                <h4>出片</h4>
+                <label class="check-row"><input type="checkbox" data-config-field="service.auto_render_after_selection" /> AI 选完片后自动生成成片</label>
               </div>
             </fieldset>
 
             <fieldset class="settings-group scheduler-fieldset" data-config-layer="automation">
               <legend>自动化</legend>
-              <div class="notice subtle full-span">服务未运行时 Scheduler 不会执行。老用户已有的审阅检查不会自动改成 AI 自动审阅；确认后可把任务动作改为 AI 自动审阅，并明确启用 AI 审阅。可在「自动化」页使用测试 AI 审阅环境和立即处理待审阅。</div>
-              <label class="check-row"><input type="checkbox" data-config-field="scheduler.enabled" /> 启用内置定时调度</label>
-              <label class="check-row"><input type="checkbox" data-config-field="review_automation.enabled" /> 启用自动 AI 审阅</label>
+              <div class="notice subtle full-span">自动化引擎随 App 运行。AI 自动选片默认关闭，勾选下方开关并在「自动化」页点「测试 AI 审阅环境」确认可用后即可全自动出片。</div>
+              <label class="check-row"><input type="checkbox" data-config-field="scheduler.enabled" /> 按时间表自动扫描和检查（默认每周日）</label>
+              <label class="check-row"><input type="checkbox" data-config-field="review_automation.enabled" /> 让 AI 自动选片（不用人工挑）</label>
               <label>审阅方式
                 <select data-config-field="review_automation.mode">
                   <option value="local_agent">本地 Agent</option>
@@ -266,43 +272,59 @@
             </fieldset>
 
             <details class="settings-group advanced-layer" data-config-layer="advanced">
-              <summary>高级设置</summary>
+              <summary>高级设置（一般不需要改）</summary>
               <div class="advanced-grid">
                 <fieldset>
-                  <legend>路径与文件</legend>
+                  <legend>存储与扫描</legend>
+                  <p class="muted field-note">工作目录与扫描节奏，默认值适合绝大多数情况。</p>
+                  <label>本地输入目录<input data-config-field="recording_source_default.input_dir" /></label>
                   <label>全局输入目录<input data-config-field="paths.input_dir" /></label>
                   <label>全局输出目录<input data-config-field="paths.output_root" /></label>
                   <label>工作目录<input data-config-field="paths.work_dir" /></label>
                   <label>术语表路径<input data-config-field="paths.glossary_path" /></label>
-                  <label>回看时间窗口（小时）<input type="number" data-config-field="recording_source_default.since_hours" /></label>
-                  <label>最小文件年龄（分钟）<input type="number" data-config-field="recording_source_default.min_age_minutes" /></label>
+                  <label>只处理最近多少小时的录像<input type="number" data-config-field="recording_source_default.since_hours" /></label>
+                  <label>录像多少分钟没变化才开始处理<input type="number" data-config-field="recording_source_default.min_age_minutes" /></label>
                   <label>稳定性检查秒数<input type="number" data-config-field="recording_source_default.stable_check_seconds" /></label>
+                  <label class="check-row"><input type="checkbox" data-config-field="service.enabled" /> 启用自动处理引擎</label>
+                  <label>清理模式<input data-config-field="service.cleanup_mode" readonly /></label>
                 </fieldset>
 
                 <fieldset>
-                  <legend>模型请求</legend>
-                  <label>模型服务名称<input data-config-field="llm.provider_label" /></label>
-                  <label>请求超时（秒）<input type="number" data-config-field="llm.timeout_seconds" /></label>
-                  <label>重试次数<input type="number" data-config-field="llm.request_attempts" /></label>
-                  <label>重试间隔（秒）<input type="number" step="0.1" data-config-field="llm.retry_delay_seconds" /></label>
+                  <legend>语音识别（ASR）</legend>
+                  <p class="muted field-note">识别模型与语言。只有选了云端识别才需要填接口地址和 key。</p>
+                  <label>识别模型<input data-config-field="asr.model" /></label>
+                  <label>识别语言<input data-config-field="asr.language" /></label>
+                  <label>云端识别 API 地址<input data-config-field="asr.api_base" /></label>
+                  <label>云端识别 key 环境变量名<input data-config-field="asr.api_key_env" /></label>
                   <label>Hugging Face token 环境变量名<input data-config-field="asr.hf_token_env" /></label>
                 </fieldset>
 
                 <fieldset>
+                  <legend>模型请求</legend>
+                  <p class="muted field-note">AI 请求的超时与重试策略。</p>
+                  <label>模型服务名称<input data-config-field="llm.provider_label" /></label>
+                  <label>请求超时（秒）<input type="number" data-config-field="llm.timeout_seconds" /></label>
+                  <label>重试次数<input type="number" data-config-field="llm.request_attempts" /></label>
+                  <label>重试间隔（秒）<input type="number" step="0.1" data-config-field="llm.retry_delay_seconds" /></label>
+                </fieldset>
+
+                <fieldset>
                   <legend>服务与调度</legend>
+                  <p class="muted field-note">自动化引擎的心跳与时区。</p>
                   <label>扫描间隔（分钟）<input type="number" data-config-field="service.scan_interval_minutes" /></label>
                   <label>调度时区<input data-config-field="scheduler.timezone" /></label>
                   <label>tick 秒数<input type="number" data-config-field="scheduler.tick_seconds" /></label>
                   <label>错过执行策略
                     <select data-config-field="scheduler.missed_policy">
-                      <option value="run_once">run_once</option>
-                      <option value="skip">skip</option>
+                      <option value="run_once">补跑一次</option>
+                      <option value="skip">跳过</option>
                     </select>
                   </label>
                 </fieldset>
 
                 <fieldset>
                   <legend>AI 审阅参数</legend>
+                  <p class="muted field-note">AI 自动选片的细节参数。</p>
                   <label>单任务超时时间（分钟）<input type="number" data-config-field="review_automation.timeout_minutes" /></label>
                   <label>失败后处理
                     <select data-config-field="review_automation.on_failure">
@@ -322,6 +344,7 @@
 
                 <fieldset>
                   <legend>Web 控制台</legend>
+                  <p class="muted field-note">本地控制台的监听地址。</p>
                   <label>Web Host<input data-config-field="web.host" /></label>
                   <label>Web Port<input type="number" data-config-field="web.port" /></label>
                   <div class="notice subtle full-span">修改 Web host/port 后，需要手动重启 Web 控制台命令本身才会生效。</div>

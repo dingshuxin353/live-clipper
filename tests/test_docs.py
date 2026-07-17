@@ -101,7 +101,7 @@ def test_web_static_exposes_v4_config_editor():
     html = Path("src/live_clipper/web_static/index.html").read_text(encoding="utf-8")
     app = Path("src/live_clipper/web_static/app.js").read_text(encoding="utf-8")
 
-    for label in ["快速开始", "录播源目录", "LLM API 地址", "ASR 后端", "启用服务", "检查配置", "保存配置", "重启服务"]:
+    for label in ["基础设置", "录播文件夹", "AI 服务地址", "语音识别方式", "启用自动处理引擎", "检查配置", "保存配置", "重启服务"]:
         assert label in html
     assert "/api/config" in app
     assert "/api/config/validate" in app
@@ -112,14 +112,14 @@ def test_web_static_exposes_v5_scheduler_config_section():
     html = Path("src/live_clipper/web_static/index.html").read_text(encoding="utf-8")
     app = Path("src/live_clipper/web_static/app.js").read_text(encoding="utf-8")
 
-    for label in ["自动化", "每周录播扫描", "每周审阅检查", "启用内置定时调度"]:
+    for label in ["自动化", "每周录播扫描", "每周审阅检查", "按时间表自动扫描和检查（默认每周日）"]:
         assert label in html
     for label in ["立即执行", "暂停", "启用"]:
         assert label in app
     assert "/api/scheduler" in app
     assert "/api/scheduler/jobs" in app
     assert "/run-now" in app
-    assert "老用户已有的审阅检查不会自动改成 AI 自动审阅" in html
+    assert "自动化引擎随 App 运行" in html
 
 
 def test_readme_documents_v3_web_console_confirmation_flow():
@@ -159,7 +159,7 @@ def test_web_static_exposes_v6_ai_review_automation_controls():
     app = Path("src/live_clipper/web_static/app.js").read_text(encoding="utf-8")
 
     assert "AI 审阅" in html
-    assert "启用自动 AI 审阅" in html
+    assert "让 AI 自动选片（不用人工挑）" in html
     assert "测试 AI 审阅环境" in html
     assert "立即 AI 审阅" in html
     assert "/api/review-automation" in app
@@ -172,7 +172,7 @@ def test_web_static_exposes_v6_ai_review_automation_controls():
 def test_web_static_exposes_v7_layered_config_page():
     html = Path("src/live_clipper/web_static/index.html").read_text(encoding="utf-8")
 
-    for label in ["配置体检", "快速开始", "自动化", "高级设置"]:
+    for label in ["配置体检", "基础设置", "自动化", "高级设置"]:
         assert label in html
 
     quick_start = html.split('data-config-layer="quick-start"', 1)[1].split('data-config-layer="automation"', 1)[0]
@@ -180,11 +180,11 @@ def test_web_static_exposes_v7_layered_config_page():
         assert advanced_label not in quick_start
 
     automation = html.split('data-config-layer="automation"', 1)[1].split('data-config-layer="advanced"', 1)[0]
-    for label in ["启用内置定时调度", "每周录播扫描", "启用自动 AI 审阅", "测试 AI 审阅环境", "立即处理待审阅"]:
+    for label in ["按时间表自动扫描和检查（默认每周日）", "每周录播扫描", "让 AI 自动选片（不用人工挑）", "测试 AI 审阅环境", "全自动出片"]:
         assert label in automation
 
     advanced = html.split('data-config-layer="advanced"', 1)[1]
-    for label in ["路径与文件", "模型请求", "服务与调度", "AI 审阅参数", "Web 控制台"]:
+    for label in ["存储与扫描", "模型请求", "服务与调度", "AI 审阅参数", "Web 控制台"]:
         assert label in advanced
     for field in [
         "scheduler.tick_seconds",

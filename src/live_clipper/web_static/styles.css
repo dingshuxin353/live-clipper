@@ -1011,3 +1011,19 @@ body.in-app-shell::before {
 .onboarding-browse {
   margin: -4px 0 12px;
 }
+
+/* ===== V10-UI settings copy helpers ===== */
+.field-help {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted-2);
+  line-height: 1.5;
+}
+
+.field-note {
+  grid-column: 1 / -1;
+  margin: 0 0 4px;
+  font-size: 12px;
+}
