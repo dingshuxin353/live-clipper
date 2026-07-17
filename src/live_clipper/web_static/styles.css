@@ -7,8 +7,8 @@
   --text: #1d1d1f;
   --muted: #6e6e73;
   --muted-2: #a5a5aa;
-  --blue: #0071e3;
-  --blue-soft: rgba(0, 113, 227, 0.1);
+  --blue: #4a3a72; /* Venus planet purple (brand accent) */
+  --blue-soft: rgba(74, 58, 114, 0.1);
   --green: #217a45;
   --green-soft: #e8f6ee;
   --amber: #b25c00;
@@ -108,12 +108,9 @@ h4 {
   width: 34px;
   height: 34px;
   border-radius: 9px;
-  display: grid;
-  place-items: center;
-  background: var(--blue);
-  color: white;
-  font-weight: 800;
-  font-size: 13px;
+  display: block;
+  object-fit: cover;
+  box-shadow: 0 1px 3px rgba(23, 16, 48, 0.28);
 }
 
 .nav-list {
@@ -560,6 +557,7 @@ h4 {
 
 .settings-group {
   border: 1px solid var(--line);
+  border-radius: 14px;
   padding: 18px 20px;
 }
 
@@ -628,8 +626,8 @@ h4 {
 
 .config-form input:focus,
 .config-form select:focus {
-  outline: 2px solid rgba(0, 113, 227, 0.18);
-  border-color: rgba(0, 113, 227, 0.45);
+  outline: 2px solid rgba(74, 58, 114, 0.18);
+  border-color: rgba(74, 58, 114, 0.45);
 }
 
 .config-form input[readonly],
@@ -879,7 +877,7 @@ h4 {
 
 .onboarding-step-dot.active {
   color: #ffffff;
-  background: #0071e3;
+  background: var(--blue);
 }
 
 .onboarding-step h2 {
@@ -933,13 +931,13 @@ h4 {
 }
 
 .onboarding-preset.active {
-  border-color: #0071e3;
-  box-shadow: 0 0 0 1px #0071e3 inset;
+  border-color: var(--blue);
+  box-shadow: 0 0 0 1px var(--blue) inset;
 }
 
 .onboarding-preset a {
   font-size: 12px;
-  color: #0071e3;
+  color: var(--blue);
   text-decoration: none;
 }
 
