@@ -5,12 +5,14 @@
 
 ## 车道开工模板
 
+项目根：`/Users/gouzi/dingshuxinRepo/venus/`（主仓 `venus-master/` 跟踪 GitHub 远端；`lanes/` 放车道 worktree；`specs/` 放设计文档；`assets/` 放非代码素材）。
+
 ```bash
-# 1. 建车道（在主仓执行；<lane> 换成车道名）
-git -C /Users/gouzi/dingshuxinRepo/live-clipper worktree add ../venus-lanes/<lane> -b lane/<lane> master
+# 1. 建车道（<lane> 换成车道名）
+git -C /Users/gouzi/dingshuxinRepo/venus/venus-master worktree add ../lanes/<lane> -b lane/<lane> master
 # 2. 车道内建独立环境（必须，否则测试会测到主仓代码）
-cd /Users/gouzi/dingshuxinRepo/venus-lanes/<lane> && python3.11 -m venv .venv && .venv/bin/pip install -e ".[dev,mlx]"
-# 3. 在该目录开 Codex 会话，丢对应 Spec
+cd /Users/gouzi/dingshuxinRepo/venus/lanes/<lane> && python3.11 -m venv .venv && .venv/bin/pip install -e ".[dev,mlx]"
+# 3. 在该目录开 Codex 会话，丢对应 Spec（specs/ 目录下）
 ```
 
 ## 当前车道
