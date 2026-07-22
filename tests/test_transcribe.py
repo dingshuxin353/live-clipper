@@ -23,7 +23,11 @@ def test_transcribe_audio_writes_mlx_whisper_raw_json(tmp_path, monkeypatch):
             ],
         }
 
-    monkeypatch.setattr("live_clipper.transcribe.mlx_whisper.transcribe", fake_transcribe)
+    from types import SimpleNamespace
+
+    from live_clipper import transcribe as transcribe_module
+
+    monkeypatch.setattr(transcribe_module, "mlx_whisper", SimpleNamespace(transcribe=fake_transcribe))
 
     result = transcribe_audio(
         audio,
@@ -46,7 +50,11 @@ def test_transcribe_audio_uses_configured_auto_language(tmp_path, monkeypatch):
         calls.append((path, path_or_hf_repo, language))
         return {"segments": []}
 
-    monkeypatch.setattr("live_clipper.transcribe.mlx_whisper.transcribe", fake_transcribe)
+    from types import SimpleNamespace
+
+    from live_clipper import transcribe as transcribe_module
+
+    monkeypatch.setattr(transcribe_module, "mlx_whisper", SimpleNamespace(transcribe=fake_transcribe))
 
     transcribe_audio(
         audio,
