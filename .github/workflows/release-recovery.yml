@@ -1,0 +1,173 @@
+name: Release Recovery
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_ref:
+        description: "Existing immutable tag to rebuild and publish, for example v0.3.0"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-recovery-${{ inputs.release_ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-mac:
+    runs-on: macos-14
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_ref }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Validate immutable release ref
+        env:
+          RELEASE_REF: ${{ inputs.release_ref }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          import tomllib
+          from pathlib import Path
+
+          release_ref = os.environ["RELEASE_REF"]
+          if re.fullmatch(r"v\d+\.\d+\.\d+", release_ref) is None:
+              raise SystemExit(f"release_ref must be an exact semver tag: {release_ref!r}")
+
+          exact_tag = subprocess.check_output(
+              ["git", "describe", "--tags", "--exact-match"],
+              text=True,
+          ).strip()
+          if exact_tag != release_ref:
+              raise SystemExit(
+                  f"checked-out tag {exact_tag!r} does not match {release_ref!r}"
+              )
+
+          python_version = tomllib.loads(
+              Path("pyproject.toml").read_text(encoding="utf-8")
+          )["project"]["version"]
+          desktop_version = json.loads(
+              Path("desktop/package.json").read_text(encoding="utf-8")
+          )["version"]
+          expected_version = release_ref.removeprefix("v")
+          if python_version != expected_version or desktop_version != expected_version:
+              raise SystemExit(
+                  "release_ref, pyproject.toml and desktop/package.json versions differ: "
+                  f"{release_ref}, {python_version}, {desktop_version}"
+              )
+          PY
+
+      - name: Block duplicate Apple submissions
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          xcrun notarytool history \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --output-format json > "$RUNNER_TEMP/notary-history.json"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          history_path = Path(os.environ["RUNNER_TEMP"]) / "notary-history.json"
+          history = json.loads(history_path.read_text(encoding="utf-8"))
+          active = []
+          for item in history.get("history", []):
+              if item.get("name") != "Venus.zip":
+                  continue
+              safe_item = {
+                  "id": item.get("id"),
+                  "name": item.get("name"),
+                  "status": item.get("status"),
+                  "createdDate": item.get("createdDate"),
+              }
+              print(json.dumps(safe_item, ensure_ascii=True, sort_keys=True))
+              if item.get("status") == "In Progress":
+                  active.append(str(item.get("id")))
+
+          if active:
+              raise SystemExit(
+                  "Apple still has in-progress Venus.zip submissions; "
+                  "do not create a duplicate: " + ", ".join(active)
+              )
+          PY
+
+      - name: Set up Python backend
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install "." "pyinstaller>=6.10"
+
+      - name: Install desktop dependencies
+        run: cd desktop && npm ci
+
+      - name: Build, sign, notarize, publish
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEBUG: electron-notarize:*
+        run: cd desktop && npm run build:backend && npx electron-builder --mac --publish always
+
+      - name: Verify published release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_REF: ${{ inputs.release_ref }}
+        run: |
+          gh release view "$RELEASE_REF" --json tagName,assets > "$RUNNER_TEMP/release.json"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          payload = json.loads(
+              (Path(os.environ["RUNNER_TEMP"]) / "release.json").read_text(
+                  encoding="utf-8"
+              )
+          )
+          expected_tag = os.environ["RELEASE_REF"]
+          if payload.get("tagName") != expected_tag:
+              raise SystemExit(
+                  f"published tag {payload.get('tagName')!r} != {expected_tag!r}"
+              )
+
+          names = {asset["name"] for asset in payload.get("assets", [])}
+          required_suffixes = (
+              "-arm64.dmg",
+              "-arm64-mac.zip",
+              "-arm64-mac.zip.blockmap",
+              "latest-mac.yml",
+          )
+          missing = [
+              suffix
+              for suffix in required_suffixes
+              if not any(name.endswith(suffix) for name in names)
+          ]
+          if missing:
+              raise SystemExit(
+                  f"release assets missing required suffixes {missing}; got {sorted(names)}"
+              )
+          print(f"verified {expected_tag} assets: {sorted(names)}")
+          PY
