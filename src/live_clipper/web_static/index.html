@@ -205,6 +205,12 @@
               </div>
 
               <div class="settings-section full-span">
+                <h4>本地语音模型</h4>
+                <p class="muted field-note">选「本机识别」时使用。模型下载一次即可离线转写，存放在本机应用数据目录。</p>
+                <div id="asrModelList" class="asr-model-list"><p class="muted">加载中…</p></div>
+              </div>
+
+              <div class="settings-section full-span">
                 <h4>出片</h4>
                 <label class="check-row"><input type="checkbox" data-config-field="service.auto_render_after_selection" /> AI 选完片后自动生成成片</label>
               </div>
@@ -297,6 +303,12 @@
                   <label>云端识别 API 地址<input data-config-field="asr.api_base" /></label>
                   <label>云端识别 key 环境变量名<input data-config-field="asr.api_key_env" /></label>
                   <label>Hugging Face token 环境变量名<input data-config-field="asr.hf_token_env" /></label>
+                  <label>模型下载源
+                    <select data-config-field="asr.model_source">
+                      <option value="huggingface">Hugging Face 官方</option>
+                      <option value="hf-mirror">国内镜像（hf-mirror.com）</option>
+                    </select>
+                  </label>
                 </fieldset>
 
                 <fieldset>

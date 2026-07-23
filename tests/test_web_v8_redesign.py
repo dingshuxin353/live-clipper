@@ -48,7 +48,7 @@ def test_v8_config_fields_remain_unique_and_complete():
     html = _html()
     fields = re.findall(r'data-config-field="([^"]+)"', html)
 
-    assert len(fields) == 49
+    assert len(fields) == 50
     assert len(fields) == len(set(fields))
     for field in [
         "recording_source_default.source_dir",

@@ -466,6 +466,7 @@ async function loadConfig(force = false) {
   state.config = payload.config || {};
   state.configDirty = false;
   renderConfig(payload);
+  refreshAsrModels();
 }
 
 async function loadScheduler() {
@@ -661,12 +662,84 @@ function collectConfigForm() {
   return draft;
 }
 
+let asrModelTimer = null;
+
+function formatModelBytes(bytes) {
+  if (!bytes) return "0 MB";
+  const mb = bytes / (1024 * 1024);
+  return mb >= 1024 ? `${(mb / 1024).toFixed(2)} GB` : `${Math.round(mb)} MB`;
+}
+
+async function refreshAsrModels() {
+  const container = el("asrModelList");
+  if (!container) return;
+  let payload;
+  try {
+    payload = await api("/api/asr/models");
+  } catch (err) {
+    container.innerHTML = `<p class="muted">模型列表加载失败：${err.message}</p>`;
+    return;
+  }
+  container.innerHTML = "";
+  let anyDownloading = false;
+  (payload.models || []).forEach((model) => {
+    if (model.downloading) anyDownloading = true;
+    const row = document.createElement("div");
+    row.className = "asr-model-row";
+    const meta = [model.size_note, model.ram_note, model.speed_note, model.accuracy_note].filter(Boolean).join(" · ");
+    let statusHtml;
+    if (model.installed) {
+      statusHtml = `<span class="asr-model-status ok">已安装 · ${formatModelBytes(model.installed_bytes)}</span><button type="button" data-action="delete">删除</button>`;
+    } else if (model.downloading) {
+      const percent = model.bytes_total ? Math.min(99, Math.round((model.bytes_downloaded / model.bytes_total) * 100)) : 0;
+      statusHtml = `<span class="asr-model-status">下载中 ${percent}% · ${formatModelBytes(model.bytes_downloaded)}</span>`;
+    } else {
+      statusHtml = `<button type="button" data-action="download">下载</button>`;
+    }
+    row.innerHTML = `
+      <div class="asr-model-info">
+        <strong>${model.display_name}${model.recommended ? " · 推荐" : ""}</strong>
+        <span class="muted">${meta}</span>
+      </div>
+      <div class="asr-model-actions">${statusHtml}</div>
+    `;
+    const downloadBtn = row.querySelector('[data-action="download"]');
+    if (downloadBtn) downloadBtn.addEventListener("click", () => startAsrModelDownload(model.id));
+    const deleteBtn = row.querySelector('[data-action="delete"]');
+    if (deleteBtn) deleteBtn.addEventListener("click", () => deleteAsrModel(model.id));
+    container.appendChild(row);
+  });
+  clearTimeout(asrModelTimer);
+  if (anyDownloading) asrModelTimer = setTimeout(refreshAsrModels, 2000);
+}
+
+async function startAsrModelDownload(modelId) {
+  try {
+    await api("/api/asr/models/download", { method: "POST", body: JSON.stringify({ model: modelId }) });
+    toast("已开始下载模型，下载会在后台继续");
+  } catch (err) {
+    toast(`下载启动失败：${err.message}`);
+  }
+  refreshAsrModels();
+}
+
+async function deleteAsrModel(modelId) {
+  if (!window.confirm("确定删除该本地模型？删除后需要重新下载才能本机识别。")) return;
+  try {
+    await api("/api/asr/models/delete", { method: "POST", body: JSON.stringify({ model: modelId }) });
+    toast("模型已删除");
+  } catch (err) {
+    toast(`删除失败：${err.message}`);
+  }
+  refreshAsrModels();
+}
+
 function defaultConfig() {
   return {
     paths: { input_dir: "input", output_root: "output", work_dir: "work", glossary_path: "glossary/common_terms.json" },
     recording_source_default: { source_dir: "", input_dir: "input", output_root: "output", since_hours: 168, min_age_minutes: 10, stable_check_seconds: 60 },
     llm: { provider_label: "OpenAI-compatible LLM", api_base: "https://apihub.agnes-ai.com/v1", api_key_env: "CHEAP_MODEL_API_KEY", model: "agnes-2.0-flash", timeout_seconds: 300, request_attempts: 5, retry_delay_seconds: 3.0 },
-    asr: { backend: "mlx_whisper", model: "mlx-community/whisper-large-v3-turbo", language: "zh", api_base: "https://api.openai.com/v1", api_key_env: "ASR_API_KEY", hf_token_env: "HF_TOKEN" },
+    asr: { backend: "mlx_whisper", model: "mlx-community/whisper-large-v3-turbo", language: "zh", api_base: "https://api.openai.com/v1", api_key_env: "ASR_API_KEY", hf_token_env: "HF_TOKEN", model_source: "huggingface" },
     service: { enabled: true, scan_interval_minutes: 30, auto_render_after_selection: true, cleanup_mode: "preview_only" },
     scheduler: { enabled: true, timezone: "Asia/Shanghai", tick_seconds: 30, missed_policy: "run_once", state_dir: "work/service" },
     scheduler_jobs: [
