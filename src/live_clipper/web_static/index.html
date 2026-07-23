@@ -197,8 +197,8 @@
                 </label>
                 <label>语音识别方式
                   <select data-config-field="asr.backend">
-                    <option value="mlx_whisper">本机识别（免费，推荐）</option>
-                    <option value="openai">云端识别（OpenAI 兼容接口）</option>
+                    <option value="mlx_whisper">本机识别（需另行安装本地模型）</option>
+                    <option value="openai">云端识别（桌面版默认）</option>
                   </select>
                   <span class="field-help">把直播声音转成文字。本机识别首次使用需下载模型；云端更快但按量计费，需在高级设置里填接口信息。</span>
                 </label>
@@ -392,6 +392,12 @@
           <label>模型<input id="onboardingLlmModel" /></label>
           <label>API key<input id="onboardingLlmKey" type="password" placeholder="粘贴你的 API key" /></label>
           <div id="onboardingLlmResult" class="onboarding-result" hidden></div>
+          <h3>语音识别服务</h3>
+          <p>桌面版首发包默认使用云端识别，不包含本机大模型。这里需要单独的 OpenAI-compatible 音频转写服务；它和上面的选片 AI 可以不是同一家。</p>
+          <label>识别服务地址<input id="onboardingAsrBase" placeholder="https://api.openai.com/v1" /></label>
+          <label>识别模型<input id="onboardingAsrModel" placeholder="whisper-1" /></label>
+          <label>识别 API key<input id="onboardingAsrKey" type="password" placeholder="只保存在本机 .env" /></label>
+          <div id="onboardingAsrResult" class="onboarding-result" hidden></div>
           <div class="onboarding-actions">
             <button id="onboardingBackTo1Btn" class="secondary-button" type="button">上一步</button>
             <button id="onboardingLlmTestBtn" class="secondary-button" type="button">测试连接</button>

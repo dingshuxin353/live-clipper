@@ -79,7 +79,22 @@
       `<div><span>AI 服务</span><strong>${el("onboardingLlmBase").value}</strong></div>`,
       `<div><span>模型</span><strong>${el("onboardingLlmModel").value}</strong></div>`,
       `<div><span>API key</span><strong>${el("onboardingLlmKey").value ? "已填写（只保存在本机 .env）" : "未填写"}</strong></div>`,
+      `<div><span>识别服务</span><strong>${el("onboardingAsrBase").value}</strong></div>`,
+      `<div><span>识别模型</span><strong>${el("onboardingAsrModel").value}</strong></div>`,
+      `<div><span>ASR key</span><strong>${el("onboardingAsrKey").value ? "已填写（只保存在本机 .env）" : "未填写"}</strong></div>`,
     ].join("");
+  }
+
+  function validateAsrConfig() {
+    const complete = ["onboardingAsrBase", "onboardingAsrModel", "onboardingAsrKey"].every(
+      (id) => el(id).value.trim() !== ""
+    );
+    if (complete) {
+      showResult("onboardingAsrResult", true, "语音识别配置已填写，将在首次转写时验证。");
+    } else {
+      showResult("onboardingAsrResult", false, "请填写语音识别服务地址、模型和 API key。");
+    }
+    return complete;
   }
 
   async function testSource() {
@@ -137,6 +152,9 @@
           llm_api_base: el("onboardingLlmBase").value,
           llm_model: el("onboardingLlmModel").value,
           llm_api_key: el("onboardingLlmKey").value,
+          asr_api_base: el("onboardingAsrBase").value,
+          asr_model: el("onboardingAsrModel").value,
+          asr_api_key: el("onboardingAsrKey").value,
         }),
       });
       if (payload.ok !== true) {
@@ -161,6 +179,8 @@
     if (!status || status.needs_onboarding !== true) return;
     wizard.presets = status.presets || [];
     renderPresets();
+    el("onboardingAsrBase").value = status.asr_api_base || "https://api.openai.com/v1";
+    el("onboardingAsrModel").value = status.asr_model || "whisper-1";
     el("onboardingOverlay").hidden = false;
     showStep(1);
 
@@ -179,6 +199,7 @@
     el("onboardingCompleteBtn").addEventListener("click", () => complete().catch(() => {}));
     el("onboardingToStep2Btn").addEventListener("click", () => showStep(2));
     el("onboardingToStep3Btn").addEventListener("click", () => {
+      if (wizard.llmOk !== true || !validateAsrConfig()) return;
       renderSummary();
       showStep(3);
     });

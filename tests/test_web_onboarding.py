@@ -47,7 +47,10 @@ def test_post_onboarding_complete_round_trip(tmp_path, monkeypatch):
             "source_dir": str(source),
             "llm_api_base": "https://example.test/v1",
             "llm_model": "test-model",
-            "llm_api_key": "sk-test",
+            "llm_api_key": "sk-llm-test",
+            "asr_api_base": "https://asr.example.test/v1",
+            "asr_model": "whisper-1",
+            "asr_api_key": "sk-asr-test",
         },
     )
     assert status == 200
@@ -57,3 +60,6 @@ def test_post_onboarding_complete_round_trip(tmp_path, monkeypatch):
     assert status == 200
     assert payload["needs_onboarding"] is False
     assert payload["completed"] is True
+    assert payload["asr_api_base"] == "https://asr.example.test/v1"
+    assert payload["asr_model"] == "whisper-1"
+    assert payload["asr_key_present"] is True

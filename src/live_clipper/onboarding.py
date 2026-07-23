@@ -66,6 +66,9 @@ def onboarding_status(settings: Settings, service_dir: Path) -> dict[str, Any]:
         "source_dir": str(source_dir) if source_dir else "",
         "output_root": str(settings.paths.output_root),
         "llm_key_present": bool(settings.cheap_model_api_key),
+        "asr_api_base": str(settings.asr.api_base or ""),
+        "asr_model": settings.asr.model,
+        "asr_key_present": bool(settings.asr.api_key),
         "presets": PROVIDER_PRESETS,
     }
 
@@ -149,12 +152,21 @@ def complete_onboarding(
     api_base = str(payload.get("llm_api_base") or "").strip().rstrip("/")
     model = str(payload.get("llm_model") or "").strip()
     api_key = str(payload.get("llm_api_key") or "").strip()
+    asr_api_base = str(payload.get("asr_api_base") or "").strip().rstrip("/")
+    asr_model = str(payload.get("asr_model") or "").strip()
+    asr_api_key = str(payload.get("asr_api_key") or "").strip()
 
     source_check = test_recording_source(source_dir)
     if not source_check["ok"]:
         return source_check
     if not api_base or not model:
         return {"ok": False, "error_code": "llm_fields_missing", "message": "请先填写 AI 服务地址和模型"}
+    if not asr_api_base or not asr_model or not asr_api_key:
+        return {
+            "ok": False,
+            "error_code": "asr_fields_missing",
+            "message": "请填写语音识别服务地址、模型和 API key",
+        }
 
     loaded = config_editor.load_editable_config(config_path=config_path)
     if not loaded["ok"]:
@@ -164,6 +176,11 @@ def complete_onboarding(
     llm_section = draft.setdefault("llm", {})
     llm_section["api_base"] = api_base
     llm_section["model"] = model
+    asr_section = draft.setdefault("asr", {})
+    asr_section["backend"] = "openai"
+    asr_section["api_base"] = asr_api_base
+    asr_section["model"] = asr_model
+    asr_section["api_key_env"] = "ASR_API_KEY"
 
     saved = config_editor.save_editable_config(draft, config_path=config_path)
     if not saved["ok"]:
@@ -171,6 +188,7 @@ def complete_onboarding(
 
     if api_key:
         _write_env_key(env_path, "CHEAP_MODEL_API_KEY", api_key)
+    _write_env_key(env_path, "ASR_API_KEY", asr_api_key)
 
     service_dir.mkdir(parents=True, exist_ok=True)
     _marker_path(service_dir).write_text(
