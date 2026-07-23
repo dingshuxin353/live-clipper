@@ -20,7 +20,12 @@ cd /Users/gouzi/dingshuxinRepo/live-clipper/lanes/<lane> && python3.11 -m venv .
 | 车道 | Spec | 文件集合 | 依赖 | 状态 |
 |---|---|---|---|---|
 
+## 当前发布操作
+
+- **v9f2-local-async-notarization**：从不可变 `v0.3.0` 标签在本机完成一次正式构建与 Developer ID 签名，持久化 Apple 提交原包后使用不带 `--wait` 的异步公证；Accepted 后从同一原包装订、制包并发布。操作 Spec：`specs/2026-07-23-v9f2-local-async-notarization.md`。不修改仓库文件，不运行 GitHub Release 工作流。状态：阶段 A 待执行。
+
 ## 已合入
 
+- v9f1-notary-recovery（Apple 公证恢复工作流，005fa90；因 GitHub 托管 job 的 6 小时硬上限，v0.3.0 实际恢复改走本地 V9f.2 操作）
 - v9f-release（签名公证发版流水线 + 包内自动更新，d62accf）
 - v10ui-settings（设置页信息架构简化，1fc1623 + c001c6b，看板制之前在主仓完成）
