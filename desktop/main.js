@@ -125,6 +125,35 @@ ipcMain.handle("lc:select-folder", async (_event, title) => {
   return result.canceled ? null : result.filePaths[0];
 });
 
+let updater = null;
+let updateDownloaded = false;
+
+function setupAutoUpdater() {
+  ({ autoUpdater: updater } = require("electron-updater"));
+  updater.autoDownload = true;
+  updater.autoInstallOnAppQuit = false;
+  updater.on("update-downloaded", async (info) => {
+    updateDownloaded = true;
+    const { response } = await dialog.showMessageBox({
+      type: "info",
+      message: `新版本 ${info.version} 已下载完成`,
+      detail: "重启 Venus 即可完成更新。",
+      buttons: ["立即重启更新", "以后再说"],
+      defaultId: 0,
+    });
+    if (response === 0) installDownloadedUpdate();
+  });
+  updater.on("error", () => {
+    // Silent: update failures must never disturb normal usage.
+  });
+}
+
+async function installDownloadedUpdate() {
+  quitting = true;
+  await shutdownBackend();
+  updater.quitAndInstall();
+}
+
 const UPDATE_RELEASES_API = "https://api.github.com/repos/dingshuxin353/live-clipper/releases/latest";
 const UPDATE_RELEASES_PAGE = "https://github.com/dingshuxin353/live-clipper/releases/latest";
 
@@ -174,6 +203,23 @@ function isNewerVersion(latest, current) {
 }
 
 async function checkForUpdates(interactive) {
+  if (app.isPackaged) {
+    if (!updater) setupAutoUpdater();
+    if (updateDownloaded) {
+      installDownloadedUpdate();
+      return;
+    }
+    try {
+      const result = await updater.checkForUpdates();
+      const latestVersion = result?.updateInfo?.version;
+      if (interactive && latestVersion && !isNewerVersion(latestVersion, app.getVersion())) {
+        dialog.showMessageBox({ type: "info", message: "已是最新版本", detail: `当前版本 ${app.getVersion()}。` });
+      }
+    } catch (error) {
+      if (interactive) dialog.showErrorBox("检查更新", `暂时无法检查更新：${error.message}`);
+    }
+    return;
+  }
   let latest;
   try {
     latest = await fetchLatestVersion();

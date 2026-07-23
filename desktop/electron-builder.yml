@@ -19,6 +19,17 @@ mac:
     - target: dmg
       arch:
         - arm64
+    - target: zip
+      arch:
+        - arm64
   category: public.app-category.video
   icon: assets/icon.png
-  identity: null
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  notarize: true
+publish:
+  provider: github
+  owner: dingshuxin353
+  repo: live-clipper

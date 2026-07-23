@@ -44,10 +44,20 @@ def test_run_app_bootstraps_home(monkeypatch, tmp_path):
 
     config_text = (home / "live-clipper.toml").read_text(encoding="utf-8")
     assert f'output_root = "{home / "output"}"' in config_text
+    assert 'backend = "openai"' in config_text
+    assert 'model = "whisper-1"' in config_text
     assert (home / ".env").exists()
     assert Path.cwd() == home
     assert captured["port"] == 9999
     assert captured["paths"].output_root == home / "output"
+
+
+def test_write_default_config_keeps_cli_mlx_default(tmp_path):
+    from live_clipper.config import write_default_config
+
+    config_path = write_default_config(tmp_path / "live-clipper.toml")
+    config_text = config_path.read_text(encoding="utf-8")
+    assert 'backend = "mlx_whisper"' in config_text
 
 
 def test_app_subcommand_registered():

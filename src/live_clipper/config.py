@@ -582,12 +582,18 @@ def write_default_config(path: Path = DEFAULT_CONFIG_PATH, *, overwrite: bool = 
 
 
 def render_app_config_template(output_root: Path) -> str:
-    """Return the default config template with output paths pointed at *output_root*.
+    """Return the cloud-first config used only for a new desktop App home.
 
-    Replaces both occurrences (``[paths]`` and ``[recording_source.default]``)
-    so app mode keeps clips in a user-visible folder instead of the app home.
+    CLI/source installs keep DEFAULT_CONFIG_TEMPLATE unchanged and therefore
+    remain local-MLX-first. The slim desktop release does not bundle MLX, so a
+    newly created App config must start on the OpenAI-compatible ASR backend.
     """
-    return DEFAULT_CONFIG_TEMPLATE.replace('output_root = "output"', f'output_root = "{output_root}"')
+    template = DEFAULT_CONFIG_TEMPLATE.replace('output_root = "output"', f'output_root = "{output_root}"')
+    return template.replace(
+        'backend = "mlx_whisper"\nmodel = "mlx-community/whisper-large-v3-turbo"',
+        'backend = "openai"\nmodel = "whisper-1"',
+        1,
+    )
 
 
 def _scheduler_jobs(raw_jobs: Any) -> list[SchedulerJobConfig]:

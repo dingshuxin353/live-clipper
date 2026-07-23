@@ -81,7 +81,7 @@ python -m venv .venv
 
 ## 本地 ASR 安装
 
-当前版本默认使用本地 ASR，把直播音频转成带时间戳的文字稿。本地 ASR 不使用你的 LLM API key；LLM 只负责后续文字校对、候选片段判断和复评。
+源码/CLI 模式默认使用 MLX 本地 ASR。Venus 0.3 桌面包为控制体积不内置 MLX，新建 App 配置默认使用 OpenAI-compatible 云端 ASR，首次向导会分别收集 LLM 与 ASR 的服务地址、模型和 API key；两个 key 用途独立且只保存在本机 `.env`，已有配置不会被自动覆写。
 
 Apple Silicon 推荐安装 MLX extra：
 

@@ -19,8 +19,11 @@ cd /Users/gouzi/dingshuxinRepo/live-clipper/lanes/<lane> && python3.11 -m venv .
 
 | 车道 | Spec | 文件集合 | 依赖 | 状态 |
 |---|---|---|---|---|
-| v9f-release | specs/2026-07-17-v9f-release-pipeline.md | desktop/**、.github/workflows/、pyproject.toml(version)、tests/test_project_metadata.py | 无 | Spec 就绪，待指派 |
-| v10a-volcano-asr | specs/2026-07-22-v10a-volcano-asr.md | src/live_clipper/{volcano_asr(新),transcribe,config}.py、tests/test_volcano_asr.py(新) | 无 | Spec 就绪，待指派 |
+| v9f-release | specs/2026-07-17-v9f-release-pipeline.md | desktop/**、.github/workflows/、pyproject.toml(version)、tests/test_project_metadata.py | 无 | 实施中：v1.1 扩展后继续，待开发自检与独立验收 |
+
+## 退回规划
+
+- V10a 原 TOS URL 方案已 rejected；缺少可执行正式 Spec；首发后依据真实 ASR 数据重新规划，不得派发 rejected 文件。
 
 ## 已合入
 

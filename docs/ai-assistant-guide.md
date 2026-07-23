@@ -54,7 +54,7 @@ Get-Location
 3. 你是否希望使用当前 Agent 软件的定时任务能力自动处理录制？
 4. 如果要配置定时任务，你希望多久检查一次新录制，多久检查一次待选片任务？
 
-当前只支持本机 ASR，不要询问用户是否使用云端 ASR。默认使用 `mlx_whisper` 和 `mlx-community/whisper-large-v3-turbo`。请提醒用户首次运行本机模型可能需要下载模型，耗时较长。
+先判断用户使用 Venus 桌面 App 还是源码/CLI：桌面 App 默认云端 ASR，源码/CLI 默认本地 MLX。LLM 与 ASR 服务的 key 用途不同，都不得发到聊天窗口。源码/CLI 用户首次运行本机模型可能需要下载模型，耗时较长。
 
 ## 解释用户需要提供的模型服务
 
@@ -135,7 +135,7 @@ model = "agnes-2.0-flash"
 
 - `.env` 只写变量名和占位说明，不要让用户把真实密钥发到聊天窗口。
 - `live-clipper.toml` 优先使用 README 推荐默认值。
-- 当前只支持本机 ASR，不要询问用户是否使用云端 ASR。
+- 先判断用户使用桌面 App 还是源码/CLI；桌面 App 默认云端 ASR，源码/CLI 默认本地 MLX。LLM 与 ASR 的 key 用途不同，都不得发到聊天窗口。
 - 如果用户要局域网访问 Web 控制台，必须额外提醒防火墙和本机隐私风险。
 
 配置写在哪里：
@@ -168,7 +168,7 @@ Windows 用户请把 `.venv/bin/live-clipper` 替换为 `.venv\Scripts\live-clip
 
 ## 本地 ASR 模型下载
 
-当前只支持本机 ASR。默认模型是 `mlx-community/whisper-large-v3-turbo`。
+本节适用于默认使用本地 MLX 的源码/CLI 模式。桌面 App 默认使用云端 ASR；两种模式已有配置都不会被自动覆写。源码/CLI 的默认模型是 `mlx-community/whisper-large-v3-turbo`。
 
 AI 需要帮用户完成本地 ASR 模型下载或首次预热。先说明下载目的：live-clipper 需要本地 ASR 模型把直播音频转成文字稿，首次下载可能较慢，并会占用本机磁盘空间。说明后必须征得用户同意，再继续。
 

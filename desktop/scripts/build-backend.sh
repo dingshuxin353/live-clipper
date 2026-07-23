@@ -28,7 +28,7 @@ rm -rf desktop/backend-dist desktop/backend-build
   --exclude-module torch \
   --exclude-module torchvision \
   --exclude-module torchaudio \
-  "${MLX_FLAGS[@]}" \
+  ${MLX_FLAGS[@]+"${MLX_FLAGS[@]}"} \
   desktop/backend_entry.py
 
 echo "[build-backend] done -> desktop/backend-dist/live-clipper-backend/"

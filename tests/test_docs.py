@@ -23,8 +23,8 @@ def test_ai_assistant_guide_tells_ai_to_detect_environment_before_questions():
     assert "不要询问用户是否安装了 Python" in text
     assert "安装前必须先说明目的" in text
     assert "征得用户同意" in text
-    assert "当前只支持本机 ASR" in text
-    assert "不要询问用户是否使用云端 ASR" in text
+    assert "桌面 App 默认云端 ASR" in text
+    assert "源码/CLI 默认本地 MLX" in text
     assert "`.env` 写模型服务密钥" in text
     assert "`live-clipper.toml` 写非敏感配置" in text
 
