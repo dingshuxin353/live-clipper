@@ -19,12 +19,8 @@ cd /Users/gouzi/dingshuxinRepo/live-clipper/lanes/<lane> && python3.11 -m venv .
 
 | 车道 | Spec | 文件集合 | 依赖 | 状态 |
 |---|---|---|---|---|
-| v9f-release | specs/2026-07-17-v9f-release-pipeline.md | desktop/**、.github/workflows/、pyproject.toml(version)、tests/test_project_metadata.py | 无 | 实施中：v1.1 扩展后继续，待开发自检与独立验收 |
-
-## 退回规划
-
-- V10a 原 TOS URL 方案已 rejected；缺少可执行正式 Spec；首发后依据真实 ASR 数据重新规划，不得派发 rejected 文件。
 
 ## 已合入
 
+- v9f-release（签名公证发版流水线 + 包内自动更新，d62accf）
 - v10ui-settings（设置页信息架构简化，1fc1623 + c001c6b，看板制之前在主仓完成）

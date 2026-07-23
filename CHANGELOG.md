@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.0 - 2026-07-23
+
+### Added
+
+- Shipped the first signed and notarized formal macOS installer as a `.dmg`.
+- Added a GitHub Actions pipeline for automatic release builds and publishing.
+- Added in-app automatic updates powered by `electron-updater`.
+
+### Changed
+
+- Simplified the information architecture of the settings page.
+
 ## 0.2.0 - 2026-07-09
 
 ### Fixed

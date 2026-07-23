@@ -5,6 +5,14 @@
 
 English readers can start from [docs/README.en.md](docs/README.en.md). 当前主文档以中文为准。
 
+## 安装
+
+前往 [GitHub Releases](https://github.com/dingshuxin353/live-clipper/releases) 下载最新的 `.dmg` 安装包，打开后将 Venus 拖入「应用程序」（Applications）文件夹即可。
+
+Venus 已完成 Apple 签名与公证，首次打开无需右键选择「打开」来绕过系统安全提示。系统要求为 Apple Silicon Mac 和 macOS 14 或更高版本。
+
+应用内置自动更新；有新版本时，Venus 会提示你下载并升级。
+
 ## 更新记录
 
 完整英文版见 [CHANGELOG.md](CHANGELOG.md)。
