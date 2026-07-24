@@ -19,10 +19,12 @@ cd /Users/gouzi/dingshuxinRepo/live-clipper/lanes/<lane> && python3.11 -m venv .
 
 | 车道 | Spec | 文件集合 | 依赖 | 状态 |
 |---|---|---|---|---|
+| v10a-local-asr-models | `specs/2026-07-23-v10a-local-asr-models.md` | ASR 模型管理器、设置 UI、相关测试与发版依赖 | v9f-release | 实施完成（a136c35），待独立验收与合入 |
+| readme-product-home | `specs/2026-07-24-readme-product-home-v2.md` | README、中英文/高级文档、3 张真实截图、文档测试 | V10a 先合入；不得并行 | V2 规划完成，等待前置 |
 
 ## 当前发布操作
 
-- **v9f2-local-async-notarization**：从不可变 `v0.3.0` 标签在本机完成一次正式构建与 Developer ID 签名，持久化 Apple 提交原包后使用不带 `--wait` 的异步公证；Accepted 后从同一原包装订、制包并发布。操作 Spec：`specs/2026-07-23-v9f2-local-async-notarization.md`。不修改仓库文件，不运行 GitHub Release 工作流。状态：阶段 A 待执行。
+- **v9f2-local-async-notarization**：已完成。从不可变 `v0.3.0` 标签在本机完成正式构建、Developer ID 签名、异步公证、票据装订、制包和 GitHub Release 发布；原始 Apple 提交包与发布证据保存在 `release-work/v0.3.0/`，等待 v0.3.1 自动更新真机演练完成后再申请清理。
 
 ## 已合入
 
