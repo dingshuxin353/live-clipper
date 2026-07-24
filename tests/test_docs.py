@@ -223,7 +223,13 @@ def test_web_static_exposes_local_asr_model_manager():
     html = Path("src/live_clipper/web_static/index.html").read_text(encoding="utf-8")
     app = Path("src/live_clipper/web_static/app.js").read_text(encoding="utf-8")
 
-    for label in ["本地语音模型", "模型下载源", "国内镜像（hf-mirror.com）"]:
+    for label in [
+        "本地语音模型",
+        "模型下载源",
+        "ModelScope（中国大陆推荐）",
+        "HF Mirror（国内备用）",
+        "Hugging Face（国际官方）",
+    ]:
         assert label in html
     assert "/api/asr/models" in app
 

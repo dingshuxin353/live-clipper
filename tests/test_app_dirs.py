@@ -46,6 +46,7 @@ def test_run_app_bootstraps_home(monkeypatch, tmp_path):
     assert f'output_root = "{home / "output"}"' in config_text
     assert 'backend = "openai"' in config_text
     assert 'model = "whisper-1"' in config_text
+    assert 'model_source = "modelscope"' in config_text
     assert (home / ".env").exists()
     assert Path.cwd() == home
     assert captured["port"] == 9999

@@ -70,8 +70,10 @@ def test_transcribe_prefers_installed_local_model(tmp_path, monkeypatch):
     monkeypatch.setenv("LIVE_CLIPPER_HOME", str(tmp_path / "home"))
     audio = tmp_path / "audio.wav"
     output = tmp_path / "transcript_raw.json"
+    local_model = tmp_path / "verified-model"
     audio.write_bytes(b"wav")
-    asr_models.install_dir("mlx-community/whisper-large-v3-turbo").mkdir(parents=True)
+    local_model.mkdir()
+    monkeypatch.setattr(asr_models, "local_path_for", lambda model_id: local_model)
     calls = []
 
     def fake_transcribe(path, path_or_hf_repo, language):
@@ -90,7 +92,7 @@ def test_transcribe_prefers_installed_local_model(tmp_path, monkeypatch):
         Settings(asr_backend="mlx_whisper"),
     )
 
-    assert calls == [str(asr_models.install_dir("mlx-community/whisper-large-v3-turbo"))]
+    assert calls == [str(local_model)]
 
 
 def test_transcribe_audio_writes_openai_compatible_verbose_json(tmp_path, monkeypatch):

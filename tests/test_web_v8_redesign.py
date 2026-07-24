@@ -71,6 +71,24 @@ def test_v8_settings_keep_advanced_fields_collapsed():
         assert advanced_label not in quick_start
 
 
+def test_v8_model_download_sources_and_states():
+    html = _html()
+    app = _app()
+
+    source_block = html.split('data-config-field="asr.model_source"', 1)[1].split("</select>", 1)[0]
+    expected = [
+        'value="modelscope">ModelScope（中国大陆推荐）',
+        'value="hf-mirror">HF Mirror（国内备用）',
+        'value="huggingface">Hugging Face（国际官方）',
+    ]
+    assert all(label in source_block for label in expected)
+    assert [source_block.index(label) for label in expected] == sorted(source_block.index(label) for label in expected)
+    assert 'model_source: "modelscope"' in app
+    for label in ["继续下载", "损坏需修复", "修复", "将使用：", "last_error", "partial_bytes"]:
+        assert label in app
+    assert "设为当前模型" not in app
+
+
 def test_v8_mobile_nav_is_contained_inside_viewport():
     styles = Path("src/live_clipper/web_static/styles.css").read_text(encoding="utf-8")
     mobile_styles = styles.split("@media (max-width: 920px)", 1)[1]

@@ -76,6 +76,7 @@ def test_get_api_config_redacts_secrets_and_returns_env_status(monkeypatch, tmp_
     assert payload["env_status"]["SECRET_LLM_KEY"] is True
     assert "sk-secret" not in str(payload)
     assert "secret-token" not in str(payload)
+    assert payload["config"]["asr"]["model_source"] == "modelscope"
 
 
 def test_post_api_config_validate_returns_chinese_errors(tmp_path):
@@ -107,6 +108,7 @@ def test_post_api_config_saves_backup_and_loadable_file(tmp_path):
     _write_config(config_path, source_dir)
     draft = load_editable_config(config_path=config_path)["config"]
     draft["service"]["scan_interval_minutes"] = 15
+    draft["asr"]["model_source"] = "hf-mirror"
 
     status, _headers, payload = handle_api_request(
         "POST",
@@ -120,6 +122,7 @@ def test_post_api_config_saves_backup_and_loadable_file(tmp_path):
     assert Path(payload["backup_path"]).exists()
     assert "scan_interval_minutes = 15" in config_path.read_text(encoding="utf-8")
     assert payload["requires_service_restart"] is True
+    assert load_editable_config(config_path=config_path)["config"]["asr"]["model_source"] == "hf-mirror"
 
 
 def test_post_api_config_refuses_parse_error_without_overwrite(tmp_path):

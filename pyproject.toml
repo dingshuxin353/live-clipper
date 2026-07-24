@@ -24,6 +24,8 @@ classifiers = [
   "Topic :: Utilities",
 ]
 dependencies = [
+  "huggingface-hub==1.24.0",
+  "modelscope-hub==0.1.8",
   "python-dotenv>=1.0.1",
   "pydantic>=2.8.0",
   "requests>=2.32.0",
