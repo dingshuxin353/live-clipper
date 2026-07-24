@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import os
 import posixpath
 from dataclasses import dataclass
 from http import HTTPStatus
@@ -454,11 +455,20 @@ def handle_api_request(
         if method == "GET" and parts == ["api", "asr", "models"]:
             settings = _settings_for_paths(paths)
             source = getattr(settings.asr, "model_source", asr_models.DEFAULT_MODEL_SOURCE) if settings.asr else asr_models.DEFAULT_MODEL_SOURCE
+            current_backend = settings.asr.backend if settings.asr else None
+            current_model = settings.asr.model if settings.asr else None
             return _json_response(
                 {
                     "ok": True,
-                    "models": asr_models.list_models(paths.service_dir, download_source=source),
+                    "models": asr_models.list_models(
+                        paths.service_dir,
+                        download_source=source,
+                        current_backend=current_backend,
+                        current_model=current_model,
+                    ),
                     "download_source": source,
+                    "current_backend": current_backend,
+                    "current_model": current_model,
                     "models_root": str(asr_models.models_root()),
                 }
             )
@@ -486,6 +496,65 @@ def handle_api_request(
                 fn=lambda: asr_models.download_model(model_id, source),
             )
             return _json_response({"ok": True, "job": job}, status=202)
+        if method == "POST" and parts == ["api", "asr", "models", "select"]:
+            model_id = str((body or {}).get("model") or "")
+            if model_id not in asr_models.registry_ids():
+                return _json_response(_structured_error("unknown_model", f"未知模型: {model_id}"), status=400)
+            entry = asr_models.model_entry(model_id)
+            settings = _settings_for_paths(paths)
+            current_backend = settings.asr.backend if settings.asr else None
+            current_model = settings.asr.model if settings.asr else None
+            if asr_models.local_path_for(model_id) is None:
+                return _json_response(
+                    _structured_error("model_not_ready", "模型尚未完整安装或已损坏"),
+                    status=409,
+                )
+            if os.getenv("ASR_MODEL") is not None or os.getenv("ASR_BACKEND") is not None:
+                return _json_response(
+                    _structured_error(
+                        "asr_overridden_by_environment",
+                        "ASR 配置正被环境变量覆盖，请先移除 ASR_MODEL / ASR_BACKEND",
+                    ),
+                    status=409,
+                )
+            saved = config_editor.save_asr_model_selection(
+                entry["backend"],
+                model_id,
+                config_path=paths.config_path,
+                backup_root=paths.config_path.parent / "work" / "config_backups",
+            )
+            if not saved.get("ok"):
+                return _json_response(
+                    {
+                        **_structured_error("config_save_failed", str(saved.get("message") or "配置保存失败")),
+                        "saved": False,
+                        "current_backend": current_backend,
+                        "current_model": current_model,
+                    },
+                    status=400,
+                )
+            try:
+                reload_result = _restart_service_from_config(paths)
+            except Exception as exc:  # noqa: BLE001 - selection is saved even when service reload raises.
+                reload_result = {"ok": False, "error": str(exc)}
+            response = {
+                "ok": bool(reload_result.get("ok")),
+                "saved": True,
+                "current_backend": entry["backend"],
+                "current_model": model_id,
+                "reload": reload_result,
+            }
+            if not reload_result.get("ok"):
+                return _json_response(
+                    {
+                        **response,
+                        "error_code": "service_reload_failed",
+                        "message": "模型已保存，但服务重载失败",
+                        "error": "模型已保存，但服务重载失败",
+                    },
+                    status=500,
+                )
+            return _json_response(response)
         if method == "POST" and parts == ["api", "asr", "models", "delete"]:
             model_id = str((body or {}).get("model") or "")
             if model_id not in asr_models.registry_ids():
@@ -493,6 +562,16 @@ def handle_api_request(
             if jobs.active_job_for(paths.service_dir, model_id, asr_models.DOWNLOAD_JOB_KIND):
                 return _json_response(
                     _structured_error("model_download_active", "模型正在下载，不能删除"),
+                    status=409,
+                )
+            settings = _settings_for_paths(paths)
+            if (
+                settings.asr
+                and settings.asr.backend == asr_models.model_entry(model_id)["backend"]
+                and settings.asr.model == model_id
+            ):
+                return _json_response(
+                    _structured_error("current_model_in_use", "请先切换到另一款已安装模型"),
                     status=409,
                 )
             return _json_response({"ok": True, **asr_models.delete_model(model_id, service_dir=paths.service_dir)})

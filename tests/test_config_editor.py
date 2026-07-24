@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 import pytest
 
+from live_clipper import config_editor
 from live_clipper.config import load_settings
 from live_clipper.config_editor import (
     load_editable_config,
+    save_asr_model_selection,
     save_editable_config,
     validate_editable_config,
 )
@@ -277,3 +280,130 @@ def test_model_source_rejects_unknown_value(tmp_path):
 
     assert result["ok"] is False
     assert any(error["field"] == "asr.model_source" for error in result["errors"])
+
+
+def test_save_asr_selection_is_narrow_and_ignores_unrelated_invalid_config(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    config_path = tmp_path / "live-clipper.toml"
+    config_path.write_text(
+        "\n".join([
+            "[recording_source.default]",
+            'source_dir = "/offline/nas"',
+            "",
+            "[asr]",
+            'backend = "openai"',
+            'model = "whisper-1"',
+            'model_source = "modelscope"',
+            'unknown_asr_field = "keep-me"',
+            "",
+            "[custom_section]",
+            'unknown_value = "preserved"',
+        ]),
+        encoding="utf-8",
+    )
+
+    result = save_asr_model_selection(
+        "mlx_whisper",
+        "mlx-community/whisper-small-mlx-q4",
+        config_path=config_path,
+        backup_root=tmp_path / "work" / "config_backups",
+    )
+
+    assert result["ok"] is True
+    assert result["saved"] is True
+    assert Path(result["backup_path"]).is_file()
+    raw = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert raw["asr"] == {
+        "backend": "mlx_whisper",
+        "model": "mlx-community/whisper-small-mlx-q4",
+        "model_source": "modelscope",
+        "unknown_asr_field": "keep-me",
+    }
+    assert raw["recording_source"]["default"]["source_dir"] == "/offline/nas"
+    assert raw["custom_section"]["unknown_value"] == "preserved"
+
+
+def test_save_asr_selection_rejects_empty_values_without_writing(tmp_path):
+    config_path = tmp_path / "live-clipper.toml"
+    original = '[asr]\nbackend = "openai"\nmodel = "whisper-1"\n'
+    config_path.write_text(original, encoding="utf-8")
+
+    for backend, model in [("", "model"), ("mlx_whisper", "")]:
+        result = save_asr_model_selection(
+            backend,
+            model,
+            config_path=config_path,
+            backup_root=tmp_path / "backups",
+        )
+        assert result["ok"] is False
+        assert result["saved"] is False
+        assert config_path.read_text(encoding="utf-8") == original
+
+
+def test_save_asr_selection_preserves_unparseable_config(tmp_path):
+    config_path = tmp_path / "live-clipper.toml"
+    original = "[asr\nbroken = true"
+    config_path.write_text(original, encoding="utf-8")
+
+    result = save_asr_model_selection(
+        "mlx_whisper",
+        "mlx-community/whisper-small-mlx-q4",
+        config_path=config_path,
+        backup_root=tmp_path / "backups",
+    )
+
+    assert result["ok"] is False
+    assert result["saved"] is False
+    assert config_path.read_text(encoding="utf-8") == original
+
+
+def test_save_asr_selection_replace_failure_keeps_original_and_no_temp(monkeypatch, tmp_path):
+    config_path = tmp_path / "live-clipper.toml"
+    original = '[asr]\nbackend = "openai"\nmodel = "whisper-1"\n'
+    config_path.write_text(original, encoding="utf-8")
+
+    def fail_replace(self, target):
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(Path, "replace", fail_replace)
+    result = save_asr_model_selection(
+        "mlx_whisper",
+        "mlx-community/whisper-small-mlx-q4",
+        config_path=config_path,
+        backup_root=tmp_path / "backups",
+    )
+
+    assert result["ok"] is False
+    assert config_path.read_text(encoding="utf-8") == original
+    assert list(tmp_path.glob(".live-clipper.toml.*.tmp")) == []
+
+
+def test_save_asr_selection_readback_failure_restores_or_removes_config(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        config_editor,
+        "load_settings",
+        lambda path: (_ for _ in ()).throw(RuntimeError("readback failed")),
+    )
+    existing_path = tmp_path / "existing.toml"
+    original = '[asr]\nbackend = "openai"\nmodel = "whisper-1"\n'
+    existing_path.write_text(original, encoding="utf-8")
+
+    existing_result = save_asr_model_selection(
+        "mlx_whisper",
+        "mlx-community/whisper-small-mlx-q4",
+        config_path=existing_path,
+        backup_root=tmp_path / "backups",
+    )
+    missing_path = tmp_path / "missing.toml"
+    missing_result = save_asr_model_selection(
+        "mlx_whisper",
+        "mlx-community/whisper-small-mlx-q4",
+        config_path=missing_path,
+        backup_root=tmp_path / "backups",
+    )
+
+    assert existing_result["ok"] is False
+    assert existing_path.read_text(encoding="utf-8") == original
+    assert missing_result["ok"] is False
+    assert not missing_path.exists()
+    assert list(tmp_path.glob(".*.tmp")) == []

@@ -199,6 +199,78 @@ def save_editable_config(
     }
 
 
+def save_asr_model_selection(
+    backend: str,
+    model: str,
+    *,
+    config_path: Path = DEFAULT_CONFIG_PATH,
+    backup_root: Path = Path("work") / "config_backups",
+) -> dict[str, Any]:
+    if not isinstance(backend, str) or not backend.strip():
+        return {"ok": False, "saved": False, "message": "ASR backend 不能为空"}
+    if not isinstance(model, str) or not model.strip():
+        return {"ok": False, "saved": False, "message": "ASR model 不能为空"}
+
+    raw_result = _load_raw_config(config_path)
+    if not raw_result["ok"]:
+        return {"saved": False, **raw_result}
+
+    merged = deepcopy(raw_result["config"])
+    if not isinstance(merged.get("asr"), dict):
+        merged["asr"] = {}
+    merged["asr"]["backend"] = backend
+    merged["asr"]["model"] = model
+    rendered = _dump_toml(merged)
+    existed = config_path.exists()
+    original_text = config_path.read_text(encoding="utf-8") if existed else None
+    backup_path: Path | None = None
+    temp_name: str | None = None
+    replaced = False
+
+    try:
+        if existed:
+            backup_path = _backup_config(config_path, backup_root)
+        ensure_dir(config_path.parent)
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            delete=False,
+            dir=str(config_path.parent),
+            prefix=f".{config_path.name}.",
+            suffix=".tmp",
+        ) as temp_file:
+            temp_name = temp_file.name
+            temp_file.write(rendered)
+        Path(temp_name).replace(config_path)
+        replaced = True
+        settings = load_settings(config_path)
+        if settings.asr.backend != backend or settings.asr.model != model:
+            raise ValueError("ASR 模型配置回读不一致")
+    except Exception as exc:  # noqa: BLE001 - restore the exact previous config on any write/readback failure.
+        if replaced:
+            if original_text is None:
+                config_path.unlink(missing_ok=True)
+            else:
+                config_path.write_text(original_text, encoding="utf-8")
+        if temp_name and Path(temp_name).exists():
+            Path(temp_name).unlink(missing_ok=True)
+        return {
+            "ok": False,
+            "saved": False,
+            "message": f"ASR 模型配置保存失败，已保留旧配置：{exc}",
+            "error": str(exc),
+        }
+
+    return {
+        "ok": True,
+        "saved": True,
+        "config_path": str(config_path),
+        "backup_path": str(backup_path) if backup_path else None,
+        "backend": backend,
+        "model": model,
+    }
+
+
 def _load_raw_config(config_path: Path) -> dict[str, Any]:
     if not config_path.exists():
         return {"ok": True, "config": tomllib.loads(DEFAULT_CONFIG_TEMPLATE)}
