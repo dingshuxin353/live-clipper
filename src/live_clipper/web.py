@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-from . import config_editor, jobs, mcp_tools, onboarding, review_automation, scheduler, service
+from . import asr_models, config_editor, jobs, mcp_tools, onboarding, review_automation, scheduler, service
 from .automation import DEFAULT_LOG_DIR, DEFAULT_STATE_DIR, _pid_is_running, check_automation_runs
 from .config import RecordingSourceDefaultConfig, ServiceConfig, Settings, load_settings
 from .pipeline import cleanup_local_artifacts, cleanup_plan
@@ -451,6 +451,35 @@ def handle_api_request(
             return _json_response(payload)
         if method == "GET" and parts == ["api", "events"]:
             return _json_response({"ok": True, "events": service.read_event_tail(paths.service_dir, max_events=200)})
+        if method == "GET" and parts == ["api", "asr", "models"]:
+            settings = _settings_for_paths(paths)
+            source = getattr(settings.asr, "model_source", "huggingface") if settings.asr else "huggingface"
+            return _json_response(
+                {
+                    "ok": True,
+                    "models": asr_models.list_models(paths.service_dir),
+                    "download_source": source,
+                    "models_root": str(asr_models.models_root()),
+                }
+            )
+        if method == "POST" and parts == ["api", "asr", "models", "download"]:
+            model_id = str((body or {}).get("model") or "")
+            if model_id not in asr_models.registry_ids():
+                return _json_response(_structured_error("unknown_model", f"未知模型: {model_id}"), status=400)
+            settings = _settings_for_paths(paths)
+            source = getattr(settings.asr, "model_source", "huggingface") if settings.asr else "huggingface"
+            job = jobs.start_job(
+                paths.service_dir,
+                kind=asr_models.DOWNLOAD_JOB_KIND,
+                run_id=model_id,
+                fn=lambda: asr_models.download_model(model_id, source),
+            )
+            return _json_response({"ok": True, "job": job}, status=202)
+        if method == "POST" and parts == ["api", "asr", "models", "delete"]:
+            model_id = str((body or {}).get("model") or "")
+            if model_id not in asr_models.registry_ids():
+                return _json_response(_structured_error("unknown_model", f"未知模型: {model_id}"), status=400)
+            return _json_response({"ok": True, **asr_models.delete_model(model_id)})
         if method == "GET" and parts == ["api", "settings"]:
             return _json_response(_build_settings_payload(paths))
         if method == "GET" and parts == ["api", "config"]:

@@ -64,6 +64,7 @@ language = "zh"
 api_base = "https://api.openai.com/v1"
 api_key_env = "ASR_API_KEY"
 hf_token_env = "HF_TOKEN"
+model_source = "huggingface"
 
 [llm]
 provider_label = "OpenAI-compatible LLM"
@@ -202,6 +203,7 @@ class ASRConfig:
     api_key: str | None = None
     hf_token_env: str = "HF_TOKEN"
     hf_token: str | None = None
+    model_source: str = "huggingface"
 
 
 @dataclass(frozen=True)
@@ -379,6 +381,7 @@ class Settings:
             api_key=asr_api_key,
             hf_token_env=self.asr.hf_token_env if self.asr else "HF_TOKEN",
             hf_token=hf_token,
+            model_source=self.asr.model_source if self.asr else "huggingface",
         )
         llm = LLMConfig(
             provider_label=self.llm.provider_label if self.llm else "OpenAI-compatible LLM",
@@ -468,6 +471,7 @@ def load_settings(config_path: Path | None = None) -> Settings:
         api_key=os.getenv(asr_api_key_env) or os.getenv("ASR_API_KEY"),
         hf_token_env=hf_token_env,
         hf_token=os.getenv(hf_token_env) or os.getenv("HF_TOKEN"),
+        model_source=str(asr_data.get("model_source", "huggingface")),
     )
 
     llm_api_key_env = str(llm_data.get("api_key_env", "CHEAP_MODEL_API_KEY"))

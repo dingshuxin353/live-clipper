@@ -1031,3 +1031,9 @@ body.in-app-shell::before {
   margin: 0 0 4px;
   font-size: 12px;
 }
+
+.asr-model-list { display: flex; flex-direction: column; gap: 8px; }
+.asr-model-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--border, #e2e2e6); border-radius: 10px; }
+.asr-model-info { display: flex; flex-direction: column; gap: 2px; }
+.asr-model-actions { display: flex; align-items: center; gap: 8px; }
+.asr-model-status.ok { color: var(--ok, #2c8a4b); }

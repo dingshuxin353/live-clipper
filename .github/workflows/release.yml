@@ -27,7 +27,7 @@ jobs:
         run: |
           python -m venv .venv
           .venv/bin/pip install --upgrade pip
-          .venv/bin/pip install "." "pyinstaller>=6.10"
+          .venv/bin/pip install ".[mlx]" "pyinstaller>=6.10"
 
       - name: Install desktop dependencies
         run: cd desktop && npm ci

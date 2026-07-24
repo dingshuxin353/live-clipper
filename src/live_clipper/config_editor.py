@@ -216,6 +216,7 @@ def _load_raw_config(config_path: Path) -> dict[str, Any]:
 
 def _editable_from_raw(raw: dict[str, Any]) -> EditableConfig:
     defaults = tomllib.loads(DEFAULT_CONFIG_TEMPLATE)
+    default_asr = defaults.get("asr", {})
     recording_source = raw.get("recording_source", {})
     recording_default = recording_source.get("default", {}) if isinstance(recording_source, dict) else {}
     web = raw.get("web", {}) if isinstance(raw.get("web"), dict) else {}
@@ -244,7 +245,13 @@ def _editable_from_raw(raw: dict[str, Any]) -> EditableConfig:
             raw.get("llm", {}),
             ["provider_label", "api_base", "api_key_env", "model", "timeout_seconds", "request_attempts", "retry_delay_seconds"],
         ),
-        "asr": _pick(raw.get("asr", {}), ["backend", "model", "language", "api_base", "api_key_env", "hf_token_env"]),
+        "asr": {
+            **_pick(default_asr, ["backend", "model", "language", "api_base", "api_key_env", "hf_token_env", "model_source"]),
+            **_pick(
+                raw.get("asr", {}),
+                ["backend", "model", "language", "api_base", "api_key_env", "hf_token_env", "model_source"],
+            ),
+        },
         "service": _pick(raw.get("service", {}), ["enabled", "scan_interval_minutes", "auto_render_after_selection", "cleanup_mode"]),
         "web": {
             **_pick(web, ["host", "port"]),
@@ -393,6 +400,8 @@ def _validate_enums(config: EditableConfig, errors: list[dict[str, str]]) -> Non
         errors.append(_error("service.cleanup_mode", "清理模式目前只允许 preview_only，避免误删文件。"))
     if config["asr"].get("backend") not in {"mlx_whisper", "openai"}:
         errors.append(_error("asr.backend", "ASR 后端只能选择 mlx_whisper 或 openai。"))
+    if config["asr"].get("model_source", "huggingface") not in {"huggingface", "hf-mirror"}:
+        errors.append(_error("asr.model_source", "模型下载源只能选择 huggingface 或 hf-mirror。"))
     if config["scheduler"].get("missed_policy") not in {"run_once", "skip"}:
         errors.append(_error("scheduler.missed_policy", "missed_policy 只能是 run_once 或 skip。"))
 

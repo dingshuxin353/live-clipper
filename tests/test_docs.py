@@ -216,3 +216,19 @@ def test_readme_documents_v6_ai_review_safety_and_modes():
     assert "AI 不会直接删除文件" in text
     assert "不会执行 cleanup confirm" in text
     assert "不会 approve/reject confirmation" in text
+
+
+def test_web_static_exposes_local_asr_model_manager():
+    html = Path("src/live_clipper/web_static/index.html").read_text(encoding="utf-8")
+    app = Path("src/live_clipper/web_static/app.js").read_text(encoding="utf-8")
+
+    for label in ["本地语音模型", "模型下载源", "国内镜像（hf-mirror.com）"]:
+        assert label in html
+    assert "/api/asr/models" in app
+
+
+def test_readme_mentions_in_app_model_download():
+    text = Path("README.md").read_text(encoding="utf-8")
+
+    assert "设置页可直接下载本地语音模型" in text
+    assert "hf-mirror" in text

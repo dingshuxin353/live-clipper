@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from live_clipper import asr_models
 from live_clipper.config import Settings
 from live_clipper.models import TranscriptSentence
 from live_clipper.transcribe import transcribe_audio, transcript_sentences_from_raw
@@ -63,6 +64,33 @@ def test_transcribe_audio_uses_configured_auto_language(tmp_path, monkeypatch):
     )
 
     assert calls == [(str(audio), "mlx-community/whisper-large-v3-turbo", None)]
+
+
+def test_transcribe_prefers_installed_local_model(tmp_path, monkeypatch):
+    monkeypatch.setenv("LIVE_CLIPPER_HOME", str(tmp_path / "home"))
+    audio = tmp_path / "audio.wav"
+    output = tmp_path / "transcript_raw.json"
+    audio.write_bytes(b"wav")
+    asr_models.install_dir("mlx-community/whisper-large-v3-turbo").mkdir(parents=True)
+    calls = []
+
+    def fake_transcribe(path, path_or_hf_repo, language):
+        calls.append(path_or_hf_repo)
+        return {"segments": []}
+
+    from types import SimpleNamespace
+
+    from live_clipper import transcribe as transcribe_module
+
+    monkeypatch.setattr(transcribe_module, "mlx_whisper", SimpleNamespace(transcribe=fake_transcribe))
+
+    transcribe_audio(
+        audio,
+        output,
+        Settings(asr_backend="mlx_whisper"),
+    )
+
+    assert calls == [str(asr_models.install_dir("mlx-community/whisper-large-v3-turbo"))]
 
 
 def test_transcribe_audio_writes_openai_compatible_verbose_json(tmp_path, monkeypatch):

@@ -7,6 +7,7 @@ from typing import Any
 
 import requests
 
+from . import asr_models
 from .config import Settings
 from .models import TranscriptSentence
 from .utils import write_json
@@ -27,6 +28,9 @@ def transcribe_audio(audio_path: Path, output_json_path: Path, settings: Setting
         if mlx_whisper is None:
             raise RuntimeError("Install the mlx extra to use ASR_BACKEND=mlx_whisper: pip install 'live-clipper[mlx]'")
         model = settings.asr_model or DEFAULT_ASR_MODEL
+        local_model = asr_models.local_path_for(model)
+        if local_model is not None:
+            model = str(local_model)
         language = None if (settings.asr_language or "zh") == "auto" else (settings.asr_language or "zh")
         result = mlx_whisper.transcribe(
             str(audio_path),
