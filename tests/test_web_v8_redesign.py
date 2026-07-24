@@ -100,3 +100,17 @@ def test_v8_mobile_nav_is_contained_inside_viewport():
     assert "overflow-x: auto" in mobile_styles
     assert ".nav-item" in mobile_styles
     assert "min-width: max-content" not in mobile_styles
+
+
+def test_v8_uses_misans_default_font_and_inherited_form_controls():
+    styles = Path("src/live_clipper/web_static/styles.css").read_text(encoding="utf-8")
+    root_match = re.search(r":root\s*\{([^}]+)\}", styles, flags=re.DOTALL)
+    form_match = re.search(r"button,\s*input,\s*select\s*\{([^}]+)\}", styles, flags=re.DOTALL)
+
+    assert root_match
+    assert (
+        'font-family: "MiSans", "SF Pro Text", "PingFang SC", "Microsoft YaHei", '
+        "system-ui, -apple-system, BlinkMacSystemFont, sans-serif;"
+    ) in root_match.group(1)
+    assert form_match
+    assert "font: inherit;" in form_match.group(1)

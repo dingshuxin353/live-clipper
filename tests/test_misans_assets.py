@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import re
+import tomllib
 from pathlib import Path
+
+from live_clipper.web import _static_path
 
 ROOT = Path(__file__).resolve().parents[1]
 FONT_DIR = ROOT / "src" / "live_clipper" / "web_static" / "fonts"
+STYLES_PATH = ROOT / "src" / "live_clipper" / "web_static" / "styles.css"
+PYPROJECT_PATH = ROOT / "pyproject.toml"
 LICENSE_URL = (
     "https://hyperos.mi.com/font-download/"
     "MiSans%E5%AD%97%E4%BD%93%E7%9F%A5%E8%AF%86%E4%BA%A7%E6%9D%83"
@@ -33,6 +38,16 @@ EXPECTED_ASSET_NAMES = set(EXPECTED_FONTS) | {
     "MiSans-Font-License.pdf",
     "NOTICE.txt",
 }
+EXPECTED_WEIGHTS = {
+    "MiSans-Regular.woff2": "400",
+    "MiSans-Semibold.woff2": "600",
+    "MiSans-Bold.woff2": "700",
+    "MiSans-Heavy.woff2": "800",
+}
+EXPECTED_FONT_STACK = (
+    '"MiSans", "SF Pro Text", "PingFang SC", "Microsoft YaHei", '
+    "system-ui, -apple-system, BlinkMacSystemFont, sans-serif"
+)
 
 
 def _sha256(path: Path) -> str:
@@ -94,3 +109,72 @@ def test_third_party_notice_contract() -> None:
     assert "不适用 Venus 的 MIT License" in notice
     for name in EXPECTED_FONTS:
         assert name in notice
+
+
+def test_styles_define_exact_misans_font_faces() -> None:
+    styles = STYLES_PATH.read_text(encoding="utf-8")
+    blocks = re.findall(r"@font-face\s*\{([^}]+)\}", styles, flags=re.DOTALL)
+
+    assert len(blocks) == 4
+    declarations_by_source: dict[str, dict[str, str]] = {}
+    for block in blocks:
+        declarations = {
+            key.strip(): value.strip()
+            for item in block.split(";")
+            if ":" in item
+            for key, value in [item.split(":", 1)]
+        }
+        declarations_by_source[declarations["src"]] = declarations
+
+    expected_sources = {
+        f'url("/static/fonts/{name}") format("woff2")'
+        for name in EXPECTED_FONTS
+    }
+    assert set(declarations_by_source) == expected_sources
+
+    for name, weight in EXPECTED_WEIGHTS.items():
+        source = f'url("/static/fonts/{name}") format("woff2")'
+        assert declarations_by_source[source] == {
+            "font-family": '"MiSans"',
+            "font-style": "normal",
+            "font-weight": weight,
+            "font-display": "swap",
+            "src": source,
+        }
+
+
+def test_styles_use_misans_default_stack_without_forbidden_sources() -> None:
+    styles = STYLES_PATH.read_text(encoding="utf-8")
+    root_match = re.search(r":root\s*\{([^}]+)\}", styles, flags=re.DOTALL)
+
+    assert root_match
+    font_family_match = re.search(r"font-family:\s*([^;]+);", root_match.group(1))
+    assert font_family_match
+    assert " ".join(font_family_match.group(1).split()) == EXPECTED_FONT_STACK
+
+    font_faces = "\n".join(re.findall(r"@font-face\s*\{([^}]+)\}", styles, flags=re.DOTALL))
+    assert "base64" not in styles.lower()
+    assert "unicode-range" not in styles.lower()
+    assert not re.search(r"https?://", font_faces, flags=re.IGNORECASE)
+    assert not re.search(r"""local\(\s*["']MiSans["']""", styles, flags=re.IGNORECASE)
+    assert not re.search(r"\.(?:ttf|otf|woff)(?:[\"')?#\s]|$)", styles, flags=re.IGNORECASE)
+    assert not re.search(r"url\([^)]*(?:variable|[-_]vf)", styles, flags=re.IGNORECASE)
+
+
+def test_package_data_includes_misans_assets() -> None:
+    pyproject = tomllib.loads(PYPROJECT_PATH.read_text(encoding="utf-8"))
+    package_data = pyproject["tool"]["setuptools"]["package-data"]["live_clipper"]
+
+    assert {
+        "web_static/fonts/*.woff2",
+        "web_static/fonts/*.pdf",
+        "web_static/fonts/*.txt",
+    }.issubset(package_data)
+
+
+def test_static_font_paths_resolve_to_assets() -> None:
+    for name in EXPECTED_FONTS:
+        resolved = _static_path(f"/static/fonts/{name}")
+        assert resolved is not None
+        assert resolved.resolve() == (FONT_DIR / name).resolve()
+        assert resolved.is_file()
