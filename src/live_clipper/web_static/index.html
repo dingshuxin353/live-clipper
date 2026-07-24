@@ -379,8 +379,9 @@
       <div class="onboarding-card">
         <div class="onboarding-steps">
           <span class="onboarding-step-dot active" data-step-dot="1">1 录播文件夹</span>
-          <span class="onboarding-step-dot" data-step-dot="2">2 AI 服务</span>
-          <span class="onboarding-step-dot" data-step-dot="3">3 完成</span>
+          <span class="onboarding-step-dot" data-step-dot="2">2 语音识别</span>
+          <span class="onboarding-step-dot" data-step-dot="3">3 AI 服务</span>
+          <span class="onboarding-step-dot" data-step-dot="4">4 完成</span>
         </div>
         <section class="onboarding-step" data-step="1">
           <h2>欢迎使用 Venus</h2>
@@ -397,6 +398,35 @@
           </div>
         </section>
         <section class="onboarding-step" data-step="2" hidden>
+          <h2>选择语音识别方式</h2>
+          <p>默认在本机完成识别。模型只会在你明确点击下载后安装。</p>
+          <div class="onboarding-asr-modes">
+            <label><input id="onboardingAsrLocal" name="onboardingAsrMode" type="radio" value="local" checked /> 本机识别（默认）</label>
+            <label><input id="onboardingAsrCloud" name="onboardingAsrMode" type="radio" value="cloud" /> 云端识别（需要 API Key）</label>
+          </div>
+          <div id="onboardingAsrLocalPanel">
+            <label>模型下载源
+              <select id="onboardingAsrSource">
+                <option value="modelscope">ModelScope（中国大陆）</option>
+                <option value="huggingface">Hugging Face（国际）</option>
+              </select>
+            </label>
+            <div id="onboardingAsrModels" class="onboarding-models"></div>
+            <div id="onboardingAsrProgress" class="onboarding-progress" hidden></div>
+          </div>
+          <div id="onboardingAsrCloudPanel" hidden>
+            <p>使用 OpenAI-compatible 音频转写服务，和选片 AI 可以不是同一家。</p>
+            <label>识别服务地址<input id="onboardingAsrBase" placeholder="https://api.openai.com/v1" /></label>
+            <label>识别模型<input id="onboardingAsrModel" placeholder="whisper-1" /></label>
+            <label>识别 API key<input id="onboardingAsrKey" type="password" placeholder="只保存在本机 .env" /></label>
+          </div>
+          <div id="onboardingAsrResult" class="onboarding-result" hidden></div>
+          <div class="onboarding-actions">
+            <button id="onboardingBackTo1Btn" class="secondary-button" type="button">上一步</button>
+            <button id="onboardingToStep3Btn" class="primary-button" type="button" disabled>下一步</button>
+          </div>
+        </section>
+        <section class="onboarding-step" data-step="3" hidden>
           <h2>选一个 AI 服务</h2>
           <p>切片选题由 AI 完成，需要一个 API key（一场直播的费用通常只要几分钱）。</p>
           <div id="onboardingPresets" class="onboarding-presets"></div>
@@ -404,31 +434,26 @@
           <label>模型<input id="onboardingLlmModel" /></label>
           <label>API key<input id="onboardingLlmKey" type="password" placeholder="粘贴你的 API key" /></label>
           <div id="onboardingLlmResult" class="onboarding-result" hidden></div>
-          <h3>语音识别服务</h3>
-          <p>桌面版首发包默认使用云端识别，不包含本机大模型。这里需要单独的 OpenAI-compatible 音频转写服务；它和上面的选片 AI 可以不是同一家。</p>
-          <label>识别服务地址<input id="onboardingAsrBase" placeholder="https://api.openai.com/v1" /></label>
-          <label>识别模型<input id="onboardingAsrModel" placeholder="whisper-1" /></label>
-          <label>识别 API key<input id="onboardingAsrKey" type="password" placeholder="只保存在本机 .env" /></label>
-          <div id="onboardingAsrResult" class="onboarding-result" hidden></div>
           <div class="onboarding-actions">
-            <button id="onboardingBackTo1Btn" class="secondary-button" type="button">上一步</button>
+            <button id="onboardingBackTo2Btn" class="secondary-button" type="button">上一步</button>
             <button id="onboardingLlmTestBtn" class="secondary-button" type="button">测试连接</button>
-            <button id="onboardingToStep3Btn" class="primary-button" type="button" disabled>下一步</button>
+            <button id="onboardingToStep4Btn" class="primary-button" type="button" disabled>下一步</button>
           </div>
         </section>
-        <section class="onboarding-step" data-step="3" hidden>
+        <section class="onboarding-step" data-step="4" hidden>
           <h2>确认设置</h2>
           <div id="onboardingSummary" class="onboarding-summary"></div>
           <div id="onboardingCompleteResult" class="onboarding-result" hidden></div>
           <div class="onboarding-actions">
-            <button id="onboardingBackTo2Btn" class="secondary-button" type="button">上一步</button>
+            <button id="onboardingBackTo3Btn" class="secondary-button" type="button">上一步</button>
             <button id="onboardingCompleteBtn" class="primary-button" type="button">完成设置</button>
+            <button id="onboardingEnterAppBtn" class="secondary-button" type="button" hidden>进入主界面</button>
           </div>
         </section>
       </div>
     </div>
     <div id="toast" class="toast" hidden></div>
     <script src="/static/app.js?v=20260702-v8"></script>
-    <script src="/static/onboarding.js?v=20260717-v9c"></script>
+    <script src="/static/onboarding.js?v=20260724-0.3.1"></script>
   </body>
 </html>

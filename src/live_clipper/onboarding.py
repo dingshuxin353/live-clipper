@@ -2,16 +2,18 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import requests
 
-from . import config_editor
+from . import asr_models, config_editor
 from .config import DEFAULT_CONFIG_PATH, Settings
 
 MARKER_FILENAME = "onboarding.json"
+FIRST_RUN_LOCAL_MODEL_ID = "mlx-community/whisper-small-mlx-q4"
 
 SUPPORTED_VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".m4v"}
 
@@ -69,6 +71,9 @@ def onboarding_status(settings: Settings, service_dir: Path) -> dict[str, Any]:
         "asr_api_base": str(settings.asr.api_base or ""),
         "asr_model": settings.asr.model,
         "asr_key_present": bool(settings.asr.api_key),
+        "asr_backend": settings.asr.backend,
+        "initial_asr_mode": "local",
+        "initial_local_model": FIRST_RUN_LOCAL_MODEL_ID,
         "presets": PROVIDER_PRESETS,
     }
 
@@ -152,16 +157,46 @@ def complete_onboarding(
     api_base = str(payload.get("llm_api_base") or "").strip().rstrip("/")
     model = str(payload.get("llm_model") or "").strip()
     api_key = str(payload.get("llm_api_key") or "").strip()
+    asr_mode = str(payload.get("asr_mode") or "").strip()
     asr_api_base = str(payload.get("asr_api_base") or "").strip().rstrip("/")
     asr_model = str(payload.get("asr_model") or "").strip()
     asr_api_key = str(payload.get("asr_api_key") or "").strip()
+    asr_model_source = str(payload.get("asr_model_source") or "").strip()
 
     source_check = test_recording_source(source_dir)
     if not source_check["ok"]:
         return source_check
     if not api_base or not model:
         return {"ok": False, "error_code": "llm_fields_missing", "message": "请先填写 AI 服务地址和模型"}
-    if not asr_api_base or not asr_model or not asr_api_key:
+    if "ASR_BACKEND" in os.environ or "ASR_MODEL" in os.environ:
+        return {
+            "ok": False,
+            "error_code": "asr_overridden_by_environment",
+            "message": "当前环境变量覆盖了语音识别配置，请移除 ASR_BACKEND / ASR_MODEL 后重试",
+        }
+    if asr_mode not in {"local", "cloud"}:
+        return {"ok": False, "error_code": "invalid_asr_mode", "message": "未知的语音识别模式"}
+
+    local_entry: dict[str, Any] | None = None
+    if asr_mode == "local":
+        if asr_model not in asr_models.registry_ids():
+            return {"ok": False, "error_code": "unknown_model", "message": "未知的本地语音识别模型"}
+        if asr_model_source == "hf-mirror":
+            return {
+                "ok": False,
+                "error_code": "unsupported_model_source",
+                "message": asr_models.HF_MIRROR_REMOVED_MESSAGE,
+            }
+        if asr_model_source not in asr_models.source_ids():
+            return {"ok": False, "error_code": "unknown_model_source", "message": "未知的模型下载源"}
+        if asr_models.local_path_for(asr_model) is None:
+            return {
+                "ok": False,
+                "error_code": "model_not_ready",
+                "message": "所选本地模型尚未完整安装，请先完成下载",
+            }
+        local_entry = asr_models.model_entry(asr_model)
+    elif not asr_api_base or not asr_model or not asr_api_key:
         return {
             "ok": False,
             "error_code": "asr_fields_missing",
@@ -177,10 +212,16 @@ def complete_onboarding(
     llm_section["api_base"] = api_base
     llm_section["model"] = model
     asr_section = draft.setdefault("asr", {})
-    asr_section["backend"] = "openai"
-    asr_section["api_base"] = asr_api_base
-    asr_section["model"] = asr_model
-    asr_section["api_key_env"] = "ASR_API_KEY"
+    if asr_mode == "local":
+        assert local_entry is not None
+        asr_section["backend"] = local_entry["backend"]
+        asr_section["model"] = local_entry["id"]
+        asr_section["model_source"] = asr_model_source
+    else:
+        asr_section["backend"] = "openai"
+        asr_section["api_base"] = asr_api_base
+        asr_section["model"] = asr_model
+        asr_section["api_key_env"] = "ASR_API_KEY"
 
     saved = config_editor.save_editable_config(draft, config_path=config_path)
     if not saved["ok"]:
@@ -188,7 +229,8 @@ def complete_onboarding(
 
     if api_key:
         _write_env_key(env_path, "CHEAP_MODEL_API_KEY", api_key)
-    _write_env_key(env_path, "ASR_API_KEY", asr_api_key)
+    if asr_mode == "cloud":
+        _write_env_key(env_path, "ASR_API_KEY", asr_api_key)
 
     service_dir.mkdir(parents=True, exist_ok=True)
     _marker_path(service_dir).write_text(
@@ -200,4 +242,8 @@ def complete_onboarding(
         "message": "初始设置完成",
         "config_path": str(config_path),
         "requires_service_restart": bool(saved.get("requires_service_restart")),
+        "asr_mode": asr_mode,
+        "current_backend": asr_section["backend"],
+        "current_model": asr_section["model"],
+        "model_source": asr_section.get("model_source"),
     }
