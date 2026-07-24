@@ -66,4 +66,12 @@ live-clipper = "live_clipper.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-live_clipper = ["prompts/*.md", "web_static/*.html", "web_static/*.css", "web_static/*.js"]
+live_clipper = [
+  "prompts/*.md",
+  "web_static/*.html",
+  "web_static/*.css",
+  "web_static/*.js",
+  "web_static/fonts/*.woff2",
+  "web_static/fonts/*.pdf",
+  "web_static/fonts/*.txt",
+]
