@@ -12,6 +12,18 @@ def test_project_dependencies_include_socks_proxy_support():
     assert any(dependency.startswith("socksio") for dependency in dependencies)
 
 
+def test_project_pins_lightweight_model_hub_dependencies_and_freezes_them():
+    metadata = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    dependencies = metadata["project"]["dependencies"]
+    build_script = Path("desktop/scripts/build-backend.sh").read_text(encoding="utf-8")
+
+    assert "huggingface-hub==1.24.0" in dependencies
+    assert "modelscope-hub==0.1.8" in dependencies
+    assert not any(dependency.split("=", 1)[0] == "modelscope" for dependency in dependencies)
+    assert "--collect-all huggingface_hub" in build_script
+    assert "--collect-all modelscope_hub" in build_script
+
+
 def test_desktop_version_matches_python_version():
     import json
     import tomllib

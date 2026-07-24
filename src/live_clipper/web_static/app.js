@@ -670,6 +670,13 @@ function formatModelBytes(bytes) {
   return mb >= 1024 ? `${(mb / 1024).toFixed(2)} GB` : `${Math.round(mb)} MB`;
 }
 
+function modelSourceLabel(source) {
+  return {
+    modelscope: "ModelScope",
+    huggingface: "Hugging Face",
+  }[source] || source || "-";
+}
+
 async function refreshAsrModels() {
   const container = el("asrModelList");
   if (!container) return;
@@ -688,11 +695,16 @@ async function refreshAsrModels() {
     row.className = "asr-model-row";
     const meta = [model.size_note, model.ram_note, model.speed_note, model.accuracy_note].filter(Boolean).join(" · ");
     let statusHtml;
-    if (model.installed) {
+    const sourceLabel = modelSourceLabel(model.download_source || payload.download_source);
+    if (model.state === "installed") {
       statusHtml = `<span class="asr-model-status ok">已安装 · ${formatModelBytes(model.installed_bytes)}</span><button type="button" data-action="delete">删除</button>`;
-    } else if (model.downloading) {
-      const percent = model.bytes_total ? Math.min(99, Math.round((model.bytes_downloaded / model.bytes_total) * 100)) : 0;
-      statusHtml = `<span class="asr-model-status">下载中 ${percent}% · ${formatModelBytes(model.bytes_downloaded)}</span>`;
+    } else if (model.state === "downloading") {
+      const percent = model.bytes_total ? Math.min(99, Math.round((model.partial_bytes / model.bytes_total) * 100)) : 0;
+      statusHtml = `<span class="asr-model-status">下载中 ${percent}% · ${formatModelBytes(model.partial_bytes)} · ${escapeHtml(sourceLabel)}</span>`;
+    } else if (model.state === "damaged") {
+      statusHtml = `<span class="asr-model-status error">损坏需修复${model.state_reason ? ` · ${escapeHtml(model.state_reason)}` : ""}</span><button type="button" data-action="download">修复</button>`;
+    } else if (model.partial_bytes || model.last_error) {
+      statusHtml = `<span class="asr-model-status error">${model.last_error ? escapeHtml(model.last_error) : "下载未完成"}</span><button type="button" data-action="download">继续下载</button>`;
     } else {
       statusHtml = `<button type="button" data-action="download">下载</button>`;
     }
@@ -700,6 +712,7 @@ async function refreshAsrModels() {
       <div class="asr-model-info">
         <strong>${model.display_name}${model.recommended ? " · 推荐" : ""}</strong>
         <span class="muted">${meta}</span>
+        <span class="asr-model-source">将使用：${escapeHtml(sourceLabel)}${model.last_source ? ` · 上次：${escapeHtml(modelSourceLabel(model.last_source))}` : ""}</span>
       </div>
       <div class="asr-model-actions">${statusHtml}</div>
     `;
@@ -739,7 +752,7 @@ function defaultConfig() {
     paths: { input_dir: "input", output_root: "output", work_dir: "work", glossary_path: "glossary/common_terms.json" },
     recording_source_default: { source_dir: "", input_dir: "input", output_root: "output", since_hours: 168, min_age_minutes: 10, stable_check_seconds: 60 },
     llm: { provider_label: "OpenAI-compatible LLM", api_base: "https://apihub.agnes-ai.com/v1", api_key_env: "CHEAP_MODEL_API_KEY", model: "agnes-2.0-flash", timeout_seconds: 300, request_attempts: 5, retry_delay_seconds: 3.0 },
-    asr: { backend: "mlx_whisper", model: "mlx-community/whisper-large-v3-turbo", language: "zh", api_base: "https://api.openai.com/v1", api_key_env: "ASR_API_KEY", hf_token_env: "HF_TOKEN", model_source: "huggingface" },
+    asr: { backend: "mlx_whisper", model: "mlx-community/whisper-large-v3-turbo", language: "zh", api_base: "https://api.openai.com/v1", api_key_env: "ASR_API_KEY", hf_token_env: "HF_TOKEN", model_source: "modelscope" },
     service: { enabled: true, scan_interval_minutes: 30, auto_render_after_selection: true, cleanup_mode: "preview_only" },
     scheduler: { enabled: true, timezone: "Asia/Shanghai", tick_seconds: 30, missed_policy: "run_once", state_dir: "work/service" },
     scheduler_jobs: [

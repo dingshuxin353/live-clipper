@@ -453,11 +453,11 @@ def handle_api_request(
             return _json_response({"ok": True, "events": service.read_event_tail(paths.service_dir, max_events=200)})
         if method == "GET" and parts == ["api", "asr", "models"]:
             settings = _settings_for_paths(paths)
-            source = getattr(settings.asr, "model_source", "huggingface") if settings.asr else "huggingface"
+            source = getattr(settings.asr, "model_source", asr_models.DEFAULT_MODEL_SOURCE) if settings.asr else asr_models.DEFAULT_MODEL_SOURCE
             return _json_response(
                 {
                     "ok": True,
-                    "models": asr_models.list_models(paths.service_dir),
+                    "models": asr_models.list_models(paths.service_dir, download_source=source),
                     "download_source": source,
                     "models_root": str(asr_models.models_root()),
                 }
@@ -466,8 +466,19 @@ def handle_api_request(
             model_id = str((body or {}).get("model") or "")
             if model_id not in asr_models.registry_ids():
                 return _json_response(_structured_error("unknown_model", f"未知模型: {model_id}"), status=400)
-            settings = _settings_for_paths(paths)
-            source = getattr(settings.asr, "model_source", "huggingface") if settings.asr else "huggingface"
+            requested_source = (body or {}).get("source")
+            if requested_source is None:
+                settings = _settings_for_paths(paths)
+                source = getattr(settings.asr, "model_source", asr_models.DEFAULT_MODEL_SOURCE) if settings.asr else asr_models.DEFAULT_MODEL_SOURCE
+            else:
+                source = str(requested_source)
+            if source == "hf-mirror":
+                return _json_response(
+                    _structured_error("unsupported_model_source", asr_models.HF_MIRROR_REMOVED_MESSAGE),
+                    status=400,
+                )
+            if source not in asr_models.source_ids():
+                return _json_response(_structured_error("unknown_model_source", f"未知模型下载源: {source}"), status=400)
             job = jobs.start_job(
                 paths.service_dir,
                 kind=asr_models.DOWNLOAD_JOB_KIND,
@@ -479,7 +490,12 @@ def handle_api_request(
             model_id = str((body or {}).get("model") or "")
             if model_id not in asr_models.registry_ids():
                 return _json_response(_structured_error("unknown_model", f"未知模型: {model_id}"), status=400)
-            return _json_response({"ok": True, **asr_models.delete_model(model_id)})
+            if jobs.active_job_for(paths.service_dir, model_id, asr_models.DOWNLOAD_JOB_KIND):
+                return _json_response(
+                    _structured_error("model_download_active", "模型正在下载，不能删除"),
+                    status=409,
+                )
+            return _json_response({"ok": True, **asr_models.delete_model(model_id, service_dir=paths.service_dir)})
         if method == "GET" and parts == ["api", "settings"]:
             return _json_response(_build_settings_payload(paths))
         if method == "GET" and parts == ["api", "config"]:

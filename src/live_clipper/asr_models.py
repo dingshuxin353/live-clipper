@@ -1,52 +1,85 @@
-"""本地 ASR 模型管理：内置注册表、按需下载（HF 官方/国内镜像）、安装检测、删除。
-
-模型存放在应用数据目录下的 models/ 子目录（macOS 默认
-~/Library/Application Support/Venus/models/），与安装包解耦：应用本体保持小体积，
-模型由用户在设置页按需下载。下载先写入 <目录>.partial，全部完成后原子重命名为
-最终目录——「最终目录存在」即「安装完成」，无需额外标记文件；前端进度 = partial
-目录当前字节数 / 清单总字节数。
-"""
+"""可恢复、可校验的本地 ASR 模型下载与安装。"""
 
 from __future__ import annotations
 
+import hashlib
+import os
 import shutil
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-import requests
+from huggingface_hub import hf_hub_download
+from modelscope_hub import HubApi
 
 from live_clipper import app_dirs, jobs
 from live_clipper.utils import read_json, write_json
 
-# 下载源 → HF 兼容端点。hf-mirror.com 是 huggingface.co 的国内反向代理，
-# /api/models 与 /resolve 路径完全同构。
-MODEL_SOURCES: dict[str, str] = {
-    "huggingface": "https://huggingface.co",
-    "hf-mirror": "https://hf-mirror.com",
+DOWNLOAD_JOB_KIND = "asr_model_download"
+DOWNLOAD_SCHEMA_VERSION = 1
+INSTALL_SCHEMA_VERSION = 1
+DEFAULT_MODEL_SOURCE = "modelscope"
+HF_MIRROR_REMOVED_MESSAGE = "HF Mirror 已停止支持，请选择 ModelScope 或 Hugging Face"
+
+SOURCE_LABELS = {
+    "modelscope": "ModelScope",
+    "huggingface": "Hugging Face",
 }
 
-# 内置模型注册表。web 下载接口以此为白名单，只允许下载注册表内的模型。
-# 新模型（qwen3-asr 等）经技术验证后按同样结构追加条目即可。
 REGISTRY: list[dict[str, Any]] = [
     {
         "id": "mlx-community/whisper-large-v3-turbo",
         "display_name": "Whisper Large V3 Turbo",
+        "backend": "mlx_whisper",
+        "tier": "high_accuracy",
         "size_note": "约 1.6 GB",
         "ram_note": "约 4 GB 内存",
         "speed_note": "约 8 倍速",
         "accuracy_note": "高精度",
         "recommended": True,
+        "sources": {
+            "modelscope": {
+                "repo": "mlx-community/whisper-large-v3-turbo",
+                "revision": "bf7cb825f64339244fffda3a5c514db6493a6ee8",
+                "endpoint": "https://modelscope.cn",
+            },
+            "huggingface": {
+                "repo": "mlx-community/whisper-large-v3-turbo",
+                "revision": "a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb",
+                "endpoint": "https://huggingface.co",
+            },
+        },
+        "files": [
+            {
+                "path": "config.json",
+                "bytes": 268,
+                "sha256": "b34fc29e4e11e0a25e812775dd67f4dd16fc2c8eb43d28ae25ff7d660ecb6379",
+            },
+            {
+                "path": "weights.safetensors",
+                "bytes": 1_613_977_612,
+                "sha256": "951ed3fc1203e6a62467abb2144a96ce7eafca8fa77e3704fdb8635ff3e7f8a6",
+            },
+        ],
     },
 ]
 
-DOWNLOAD_JOB_KIND = "asr_model_download"
-
-# 对推理无用、下载时跳过的仓库文件
-_SKIP_FILES = {".gitattributes"}
+_HASH_CACHE: dict[tuple[str, int, int, str], bool] = {}
 
 
 def registry_ids() -> set[str]:
     return {entry["id"] for entry in REGISTRY}
+
+
+def source_ids() -> set[str]:
+    return set(SOURCE_LABELS)
+
+
+def model_entry(model_id: str) -> dict[str, Any]:
+    for entry in REGISTRY:
+        if entry["id"] == model_id:
+            return entry
+    raise ValueError(f"未知模型: {model_id}")
 
 
 def models_root() -> Path:
@@ -65,66 +98,290 @@ def partial_dir(model_id: str) -> Path:
     return models_root() / (_dir_name(model_id) + ".partial")
 
 
-def local_path_for(model_id: str) -> Path | None:
-    """已安装则返回本地模型目录，否则 None。transcribe 用它决定传本地路径还是 repo 名。"""
-    path = install_dir(model_id)
-    return path if path.is_dir() else None
+def _now() -> str:
+    return datetime.now(UTC).isoformat()
 
 
-def _dir_size(path: Path) -> int:
-    if not path.is_dir():
-        return 0
-    return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+def _total_bytes(entry: dict[str, Any]) -> int:
+    return sum(int(file["bytes"]) for file in entry["files"])
 
 
-def _fetch_file_list(model_id: str, endpoint: str) -> list[dict[str, Any]]:
-    response = requests.get(f"{endpoint}/api/models/{model_id}?blobs=true", timeout=60)
-    response.raise_for_status()
-    payload = response.json()
-    siblings = payload.get("siblings") or []
-    files: list[dict[str, Any]] = []
-    for entry in siblings:
-        name = entry.get("rfilename", "")
-        if not name or name in _SKIP_FILES or name.startswith("."):
-            continue
-        files.append({"name": name, "size": int(entry.get("size") or 0)})
-    if not files:
-        raise RuntimeError(f"模型仓库文件列表为空: {model_id}")
-    return files
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
-def download_model(model_id: str, source: str = "huggingface") -> dict[str, Any]:
-    """阻塞式下载，设计为在后台 job 线程里执行；返回值会被写入 job.result。"""
-    if model_id not in registry_ids():
-        raise ValueError(f"未知模型: {model_id}")
-    endpoint = MODEL_SOURCES.get(source, MODEL_SOURCES["huggingface"])
+def _hash_matches(path: Path, expected: str) -> bool:
+    stat = path.stat()
+    key = (str(path.resolve()), stat.st_size, stat.st_mtime_ns, expected)
+    if key not in _HASH_CACHE:
+        _HASH_CACHE[key] = _sha256(path) == expected
+    return _HASH_CACHE[key]
+
+
+def _canonical_file_matches(path: Path, file_spec: dict[str, Any]) -> bool:
+    return (
+        path.is_file()
+        and path.stat().st_size == int(file_spec["bytes"])
+        and _hash_matches(path, str(file_spec["sha256"]))
+    )
+
+
+def _safe_read_json(path: Path) -> dict[str, Any] | None:
+    if not path.is_file():
+        return None
+    try:
+        value = read_json(path)
+    except (OSError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _installation_status(model_id: str) -> tuple[str, str | None]:
+    entry = model_entry(model_id)
     target = install_dir(model_id)
-    if target.is_dir():
-        return {"ok": True, "model": model_id, "status": "already_installed"}
-    staging = partial_dir(model_id)
-    if staging.exists():
-        shutil.rmtree(staging)
-    staging.mkdir(parents=True)
-    files = _fetch_file_list(model_id, endpoint)
-    total = sum(f["size"] for f in files)
-    write_json(staging / "_manifest.json", {"total_bytes": total, "files": [f["name"] for f in files]})
-    for entry in files:
-        url = f"{endpoint}/{model_id}/resolve/main/{entry['name']}"
-        dest = staging / entry["name"]
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        with requests.get(url, stream=True, timeout=600) as response:
-            response.raise_for_status()
-            with dest.open("wb") as fh:
-                for chunk in response.iter_content(chunk_size=1 << 20):
-                    if chunk:
-                        fh.write(chunk)
-    staging.rename(target)
-    return {"ok": True, "model": model_id, "status": "installed", "total_bytes": total}
+    if not target.is_dir():
+        return "not_installed", None
+    manifest = _safe_read_json(target / "_install.json")
+    if manifest is None:
+        return "damaged", "缺少安装清单"
+    if (
+        manifest.get("schema_version") != INSTALL_SCHEMA_VERSION
+        or manifest.get("model_id") != model_id
+        or manifest.get("backend") != entry["backend"]
+    ):
+        return "damaged", "安装清单不匹配"
+    manifest_files = {
+        item.get("path"): item
+        for item in manifest.get("files", [])
+        if isinstance(item, dict) and isinstance(item.get("path"), str)
+    }
+    allowed = {"_install.json", *(str(file["path"]) for file in entry["files"])}
+    actual = {str(path.relative_to(target)) for path in target.rglob("*") if path.is_file()}
+    if actual != allowed:
+        return "damaged", "安装目录包含缺失或多余文件"
+    for file_spec in entry["files"]:
+        relative = str(file_spec["path"])
+        path = target / relative
+        recorded = manifest_files.get(relative)
+        if recorded is None:
+            return "damaged", f"安装清单缺少 {relative}"
+        if (
+            recorded.get("bytes") != int(file_spec["bytes"])
+            or recorded.get("sha256") != file_spec["sha256"]
+            or not path.is_file()
+            or path.stat().st_size != int(file_spec["bytes"])
+        ):
+            return "damaged", f"{relative} 大小或清单不匹配"
+        if recorded.get("mtime_ns") != path.stat().st_mtime_ns and not _hash_matches(path, str(file_spec["sha256"])):
+            return "damaged", f"{relative} 校验失败"
+    return "installed", None
 
 
-def delete_model(model_id: str) -> dict[str, Any]:
+def local_path_for(model_id: str) -> Path | None:
+    """只有完整性快速校验通过的模型目录才可进入转写。"""
     if model_id not in registry_ids():
-        raise ValueError(f"未知模型: {model_id}")
+        return None
+    state, _reason = _installation_status(model_id)
+    return install_dir(model_id) if state == "installed" else None
+
+
+def _download_metadata(entry: dict[str, Any], source: str, *, last_error: str | None) -> dict[str, Any]:
+    source_spec = entry["sources"][source]
+    return {
+        "schema_version": DOWNLOAD_SCHEMA_VERSION,
+        "model_id": entry["id"],
+        "source": source,
+        "repo": source_spec["repo"],
+        "revision": source_spec["revision"],
+        "files": [dict(file) for file in entry["files"]],
+        "total_bytes": _total_bytes(entry),
+        "last_error": last_error,
+        "updated_at": _now(),
+    }
+
+
+def _write_download_metadata(staging: Path, entry: dict[str, Any], source: str, *, last_error: str | None) -> None:
+    write_json(staging / "_download.json", _download_metadata(entry, source, last_error=last_error))
+
+
+def _partial_bytes(staging: Path, entry: dict[str, Any]) -> int:
+    if not staging.is_dir():
+        return 0
+    total = 0
+    for file_spec in entry["files"]:
+        path = staging / str(file_spec["path"])
+        candidates = [path, path.with_suffix(path.suffix + ".incomplete")]
+        total += max((candidate.stat().st_size for candidate in candidates if candidate.is_file()), default=0)
+    hf_cache = staging / ".cache" / "huggingface" / "download"
+    if hf_cache.is_dir():
+        total += sum(path.stat().st_size for path in hf_cache.rglob("*.incomplete") if path.is_file())
+    return min(total, _total_bytes(entry))
+
+
+def _reuse_healthy_final_files(entry: dict[str, Any], target: Path, staging: Path) -> None:
+    if not target.is_dir():
+        return
+    staging.mkdir(parents=True, exist_ok=True)
+    for file_spec in entry["files"]:
+        source = target / str(file_spec["path"])
+        destination = staging / str(file_spec["path"])
+        if not _canonical_file_matches(source, file_spec):
+            continue
+        if _canonical_file_matches(destination, file_spec):
+            continue
+        if destination.exists():
+            destination.unlink()
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(source), str(destination))
+
+
+def _download_huggingface_file(entry: dict[str, Any], source: str, file_spec: dict[str, Any], staging: Path) -> Path:
+    source_spec = entry["sources"][source]
+    downloaded = hf_hub_download(
+        repo_id=source_spec["repo"],
+        filename=file_spec["path"],
+        revision=source_spec["revision"],
+        repo_type="model",
+        local_dir=staging,
+        endpoint=source_spec["endpoint"],
+        token=os.getenv("HF_TOKEN") or None,
+    )
+    return Path(downloaded)
+
+
+def _download_modelscope_file(entry: dict[str, Any], file_spec: dict[str, Any], staging: Path) -> Path:
+    source_spec = entry["sources"]["modelscope"]
+    api = HubApi(endpoint=source_spec["endpoint"])
+    return Path(
+        api.download_file(
+            source_spec["repo"],
+            "model",
+            file_spec["path"],
+            revision=source_spec["revision"],
+            local_dir=staging,
+            expected_sha256=file_spec["sha256"],
+        )
+    )
+
+
+def _download_file(entry: dict[str, Any], source: str, file_spec: dict[str, Any], staging: Path) -> None:
+    destination = staging / str(file_spec["path"])
+    if destination.exists():
+        destination.unlink()
+    if source == "modelscope":
+        downloaded = _download_modelscope_file(entry, file_spec, staging)
+    else:
+        downloaded = _download_huggingface_file(entry, source, file_spec, staging)
+    if downloaded.resolve() != destination.resolve():
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(downloaded, destination)
+
+
+def _clean_staging_for_install(staging: Path, entry: dict[str, Any]) -> None:
+    allowed = {str(file["path"]) for file in entry["files"]}
+    for path in sorted(staging.rglob("*"), key=lambda item: len(item.parts), reverse=True):
+        relative = str(path.relative_to(staging))
+        if path.is_file() and relative not in allowed:
+            path.unlink()
+        elif path.is_dir() and not any(value == relative or value.startswith(relative + "/") for value in allowed):
+            shutil.rmtree(path, ignore_errors=True)
+
+
+def _write_install_manifest(staging: Path, entry: dict[str, Any], source: str) -> None:
+    source_spec = entry["sources"][source]
+    files = []
+    for file_spec in entry["files"]:
+        path = staging / str(file_spec["path"])
+        files.append({
+            **file_spec,
+            "mtime_ns": path.stat().st_mtime_ns,
+        })
+    write_json(
+        staging / "_install.json",
+        {
+            "schema_version": INSTALL_SCHEMA_VERSION,
+            "model_id": entry["id"],
+            "backend": entry["backend"],
+            "source": source,
+            "repo": source_spec["repo"],
+            "revision": source_spec["revision"],
+            "files": files,
+            "verified_at": _now(),
+        },
+    )
+
+
+def _atomic_install(staging: Path, target: Path) -> None:
+    if not target.exists():
+        staging.rename(target)
+        return
+    backup = target.with_name(target.name + ".damaged-backup")
+    if backup.exists():
+        shutil.rmtree(backup)
+    target.rename(backup)
+    try:
+        staging.rename(target)
+    except Exception:
+        backup.rename(target)
+        raise
+    shutil.rmtree(backup)
+
+
+def download_model(model_id: str, source: str = DEFAULT_MODEL_SOURCE) -> dict[str, Any]:
+    """下载或修复白名单模型；失败时保留 partial 与错误摘要。"""
+    entry = model_entry(model_id)
+    if source == "hf-mirror":
+        raise ValueError(HF_MIRROR_REMOVED_MESSAGE)
+    if source not in entry["sources"] or source not in source_ids():
+        raise ValueError(f"未知模型下载源: {source}")
+    state, _reason = _installation_status(model_id)
+    if state == "installed":
+        return {"ok": True, "model": model_id, "status": "already_installed"}
+
+    target = install_dir(model_id)
+    staging = partial_dir(model_id)
+    staging.mkdir(parents=True, exist_ok=True)
+    if state == "damaged":
+        _reuse_healthy_final_files(entry, target, staging)
+    _write_download_metadata(staging, entry, source, last_error=None)
+
+    try:
+        for file_spec in entry["files"]:
+            path = staging / str(file_spec["path"])
+            if _canonical_file_matches(path, file_spec):
+                continue
+            _download_file(entry, source, file_spec, staging)
+            if not _canonical_file_matches(path, file_spec):
+                raise ValueError(f"{file_spec['path']} SHA256 校验失败")
+        for file_spec in entry["files"]:
+            path = staging / str(file_spec["path"])
+            if not _canonical_file_matches(path, file_spec):
+                raise ValueError(f"{file_spec['path']} 最终完整性校验失败")
+        _clean_staging_for_install(staging, entry)
+        _write_install_manifest(staging, entry, source)
+        _atomic_install(staging, target)
+    except Exception as exc:
+        staging.mkdir(parents=True, exist_ok=True)
+        _write_download_metadata(staging, entry, source, last_error=str(exc))
+        raise
+
+    return {
+        "ok": True,
+        "model": model_id,
+        "status": "installed",
+        "source": source,
+        "total_bytes": _total_bytes(entry),
+    }
+
+
+def delete_model(model_id: str, *, service_dir: Path | None = None) -> dict[str, Any]:
+    model_entry(model_id)
+    if service_dir is not None and jobs.active_job_for(service_dir, model_id, DOWNLOAD_JOB_KIND):
+        raise RuntimeError("模型正在下载，不能删除")
     removed = False
     for path in (install_dir(model_id), partial_dir(model_id)):
         if path.exists():
@@ -133,33 +390,34 @@ def delete_model(model_id: str) -> dict[str, Any]:
     return {"model": model_id, "removed": removed}
 
 
-def list_models(service_dir: Path) -> list[dict[str, Any]]:
+def list_models(service_dir: Path, *, download_source: str = DEFAULT_MODEL_SOURCE) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for entry in REGISTRY:
         model_id = entry["id"]
-        installed = install_dir(model_id).is_dir()
-        staging = partial_dir(model_id)
+        state, reason = _installation_status(model_id)
         job = jobs.active_job_for(service_dir, model_id, DOWNLOAD_JOB_KIND)
-        downloading = job is not None
-        bytes_total = 0
-        bytes_downloaded = 0
-        if downloading or staging.is_dir():
-            manifest_path = staging / "_manifest.json"
-            if manifest_path.is_file():
-                try:
-                    bytes_total = int(read_json(manifest_path).get("total_bytes") or 0)
-                except Exception:
-                    bytes_total = 0
-            bytes_downloaded = _dir_size(staging)
+        if job is not None:
+            state = "downloading"
+            reason = None
+        staging = partial_dir(model_id)
+        download_meta = _safe_read_json(staging / "_download.json") or {}
+        install_meta = _safe_read_json(install_dir(model_id) / "_install.json") or {}
+        partial_bytes = _partial_bytes(staging, entry)
         items.append(
             {
                 **entry,
-                "installed": installed,
-                "installed_bytes": _dir_size(install_dir(model_id)) if installed else 0,
-                "downloading": downloading,
+                "state": state,
+                "state_reason": reason,
+                "installed": state == "installed",
+                "downloading": state == "downloading",
                 "job_id": job["id"] if job else None,
-                "bytes_downloaded": bytes_downloaded,
-                "bytes_total": bytes_total,
+                "installed_bytes": _total_bytes(entry) if state == "installed" else 0,
+                "partial_bytes": partial_bytes,
+                "bytes_downloaded": partial_bytes,
+                "bytes_total": _total_bytes(entry),
+                "download_source": download_source,
+                "last_source": download_meta.get("source") or install_meta.get("source"),
+                "last_error": download_meta.get("last_error"),
             }
         )
     return items

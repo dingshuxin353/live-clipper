@@ -25,6 +25,8 @@ rm -rf desktop/backend-dist desktop/backend-build
   --specpath desktop/backend-build \
   --add-data "$PWD/src/live_clipper/prompts:live_clipper/prompts" \
   --add-data "$PWD/src/live_clipper/web_static:live_clipper/web_static" \
+  --collect-all huggingface_hub \
+  --collect-all modelscope_hub \
   --exclude-module torch \
   --exclude-module torchvision \
   --exclude-module torchaudio \

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from live_clipper.config import DEFAULT_CONFIG_TEMPLATE, load_settings, write_default_config
 
 
@@ -24,6 +26,7 @@ def test_load_settings_uses_mvp_defaults_when_env_is_missing(monkeypatch, tmp_pa
     assert settings.cheap_model_name == "agnes-2.0-flash"
     assert settings.asr_backend == "mlx_whisper"
     assert settings.asr_model == "mlx-community/whisper-large-v3-turbo"
+    assert settings.asr.model_source == "modelscope"
 
 
 def test_load_settings_defaults_openai_asr_model_when_backend_is_openai(monkeypatch, tmp_path):
@@ -278,3 +281,25 @@ def test_write_default_config_creates_friendly_template(tmp_path):
     assert "[review_automation]" in text
     assert "[review_automation.local_agent]" in text
     assert "[review_automation.model]" in text
+    assert 'model_source = "modelscope"' in text
+
+
+@pytest.mark.parametrize("source", ["modelscope", "huggingface"])
+def test_load_settings_preserves_explicit_model_source(monkeypatch, tmp_path, source):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "live-clipper.toml").write_text(
+        f'[asr]\nmodel_source = "{source}"\n',
+        encoding="utf-8",
+    )
+
+    assert load_settings().asr.model_source == source
+
+
+def test_load_settings_migrates_legacy_hf_mirror_to_modelscope(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "live-clipper.toml").write_text(
+        '[asr]\nmodel_source = "hf-mirror"\n',
+        encoding="utf-8",
+    )
+
+    assert load_settings().asr.model_source == "modelscope"
