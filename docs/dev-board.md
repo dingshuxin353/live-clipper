@@ -19,7 +19,6 @@ cd /Users/gouzi/dingshuxinRepo/live-clipper/lanes/<lane> && python3.11 -m venv .
 
 | 车道 | Spec | 文件集合 | 依赖 | 状态 |
 |---|---|---|---|---|
-| readme-product-home-v2-1 | `specs/2026-07-24-readme-product-home-v2.1.md` | `README.md`、`tests/test_docs.py` | `master@cab9cff` | 已派发实施 |
 
 ## 当前发布操作
 
@@ -36,6 +35,7 @@ cd /Users/gouzi/dingshuxinRepo/live-clipper/lanes/<lane> && python3.11 -m venv .
 
 ## 已合入
 
+- readme-product-home-v2-1（README 产品首页 V2.1，3018633df792f7445a1200277e0207583e9e3634）
 - readme-product-home（README 产品首页 V2，d7c715767bbcfdde4178bb9625cd7d7f18bfc825）
 - v10a-local-asr-models（本地 ASR 模型管理器，20a0033894e1e95b3f1a3dd3e331cea23fac6485）
 - v9f1-notary-recovery（Apple 公证恢复工作流，005fa90；因 GitHub 托管 job 的 6 小时硬上限，v0.3.0 实际恢复改走本地 V9f.2 操作）
