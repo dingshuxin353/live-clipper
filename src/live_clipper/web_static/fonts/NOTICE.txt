@@ -1,0 +1,5 @@
+Venus 使用 MiSans 作为界面字体。
+MiSans 字体版权归小米科技有限责任公司所有，不适用 Venus 的 MIT License。
+字体仅作为 Venus 应用的一部分分发，不得从本应用中提取后单独出售、出租、
+再许可或重新分发。
+完整许可协议见同目录 MiSans-Font-License.pdf。
