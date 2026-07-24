@@ -19,7 +19,6 @@ cd /Users/gouzi/dingshuxinRepo/live-clipper/lanes/<lane> && python3.11 -m venv .
 
 | 车道 | Spec | 文件集合 | 依赖 | 状态 |
 |---|---|---|---|---|
-| readme-product-home | `specs/2026-07-24-readme-product-home-v2.md` | README、中英文/高级文档、3 张真实截图、文档测试 | V10a 已合入（20a0033） | 已派发实施 |
 
 ## 当前发布操作
 
@@ -27,7 +26,7 @@ cd /Users/gouzi/dingshuxinRepo/live-clipper/lanes/<lane> && python3.11 -m venv .
 
 ## 产品版本路线
 
-- **0.3.1 · 本地模型与首次使用闭环**：本地 ASR 模型管理器已合入；README 产品首页实施中；待规划本地模型优先首启向导、tag 自动工作流停用、本地 `.[mlx]` 正式构建与 `0.3.0 → 0.3.1` 自动更新真机演练。
+- **0.3.1 · 本地模型与首次使用闭环**：本地 ASR 模型管理器与 README 产品首页已合入；待规划本地模型优先首启向导、tag 自动工作流停用、本地 `.[mlx]` 正式构建与 `0.3.0 → 0.3.1` 自动更新真机演练。
 - **0.3.2 · UI 组件系统统一**：盘点并统一输入框、选择框、按钮、卡片、状态、弹层和表单结构；保持原生 HTML/JS 技术栈，不在本版本迁移 React/Vue。
 - **0.4.0 · Project 工作台**：原 V11 方向；原 V10c“切片偏好 + 提示词编辑器”并入 Project、场景模板和关注点预设。
 
@@ -36,6 +35,7 @@ cd /Users/gouzi/dingshuxinRepo/live-clipper/lanes/<lane> && python3.11 -m venv .
 
 ## 已合入
 
+- readme-product-home（README 产品首页 V2，d7c715767bbcfdde4178bb9625cd7d7f18bfc825）
 - v10a-local-asr-models（本地 ASR 模型管理器，20a0033894e1e95b3f1a3dd3e331cea23fac6485）
 - v9f1-notary-recovery（Apple 公证恢复工作流，005fa90；因 GitHub 托管 job 的 6 小时硬上限，v0.3.0 实际恢复改走本地 V9f.2 操作）
 - v9f-release（签名公证发版流水线 + 包内自动更新，d62accf）
