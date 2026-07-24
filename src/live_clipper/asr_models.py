@@ -28,15 +28,88 @@ SOURCE_LABELS = {
 
 REGISTRY: list[dict[str, Any]] = [
     {
+        "id": "mlx-community/whisper-small-mlx-q4",
+        "display_name": "Whisper Small q4",
+        "backend": "mlx_whisper",
+        "tier": "light",
+        "tier_label": "轻量",
+        "size_note": "约 187 MiB",
+        "ram_note": "预估内存占用较低",
+        "speed_note": "预估速度较快",
+        "accuracy_note": "适合轻量处理",
+        "recommended": False,
+        "sources": {
+            "modelscope": {
+                "repo": "mlx-community/whisper-small-mlx-q4",
+                "revision": "fbd894a9ff818d41c663a36ade75b068776925cf",
+                "endpoint": "https://modelscope.cn",
+            },
+            "huggingface": {
+                "repo": "mlx-community/whisper-small-mlx-q4",
+                "revision": "cd85bf0648ec125b9cae1eb6b617a41e58721704",
+                "endpoint": "https://huggingface.co",
+            },
+        },
+        "files": [
+            {
+                "path": "config.json",
+                "bytes": 339,
+                "sha256": "d414b27f911c1c416a90525a0f856e0dc1c9e38632a833ca8dd05c58b3d8a01a",
+            },
+            {
+                "path": "weights.npz",
+                "bytes": 196_537_352,
+                "sha256": "ca6659298fe7550468ff0fc49dea7442615d9a53d1ce087aaded1b7627451998",
+            },
+        ],
+    },
+    {
+        "id": "mlx-community/whisper-medium-mlx-q4",
+        "display_name": "Whisper Medium q4",
+        "backend": "mlx_whisper",
+        "tier": "balanced",
+        "tier_label": "平衡",
+        "size_note": "约 489 MiB",
+        "ram_note": "预估内存占用适中",
+        "speed_note": "预估速度均衡",
+        "accuracy_note": "兼顾速度与精度",
+        "recommended": False,
+        "sources": {
+            "modelscope": {
+                "repo": "mlx-community/whisper-medium-mlx-q4",
+                "revision": "011c90813369d9c15bfd3c7aaa7ce412f4724a70",
+                "endpoint": "https://modelscope.cn",
+            },
+            "huggingface": {
+                "repo": "mlx-community/whisper-medium-mlx-q4",
+                "revision": "1b8a6ee7f882cb5ec97d7e93fee4b7f22405bf87",
+                "endpoint": "https://huggingface.co",
+            },
+        },
+        "files": [
+            {
+                "path": "config.json",
+                "bytes": 341,
+                "sha256": "2cb3af0368f094edf1b2182f516f2cd2c3f36967d3246294203bee11bae72777",
+            },
+            {
+                "path": "weights.npz",
+                "bytes": 512_230_640,
+                "sha256": "0d0d1c30691660c66ec3f4e559de7244495b359b38b112f9b7e824746e61aa50",
+            },
+        ],
+    },
+    {
         "id": "mlx-community/whisper-large-v3-turbo",
         "display_name": "Whisper Large V3 Turbo",
         "backend": "mlx_whisper",
         "tier": "high_accuracy",
+        "tier_label": "高精度",
         "size_note": "约 1.6 GB",
-        "ram_note": "约 4 GB 内存",
-        "speed_note": "约 8 倍速",
+        "ram_note": "预估约 4 GB 内存",
+        "speed_note": "预估约 8 倍速",
         "accuracy_note": "高精度",
-        "recommended": True,
+        "recommended": False,
         "sources": {
             "modelscope": {
                 "repo": "mlx-community/whisper-large-v3-turbo",
@@ -390,7 +463,13 @@ def delete_model(model_id: str, *, service_dir: Path | None = None) -> dict[str,
     return {"model": model_id, "removed": removed}
 
 
-def list_models(service_dir: Path, *, download_source: str = DEFAULT_MODEL_SOURCE) -> list[dict[str, Any]]:
+def list_models(
+    service_dir: Path,
+    *,
+    download_source: str = DEFAULT_MODEL_SOURCE,
+    current_backend: str | None = None,
+    current_model: str | None = None,
+) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for entry in REGISTRY:
         model_id = entry["id"]
@@ -418,6 +497,7 @@ def list_models(service_dir: Path, *, download_source: str = DEFAULT_MODEL_SOURC
                 "download_source": download_source,
                 "last_source": download_meta.get("source") or install_meta.get("source"),
                 "last_error": download_meta.get("last_error"),
+                "current": current_backend == entry["backend"] and current_model == model_id,
             }
         )
     return items

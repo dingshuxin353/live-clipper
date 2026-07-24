@@ -58,6 +58,10 @@ def test_v8_config_fields_remain_unique_and_complete():
         "web.host",
     ]:
         assert field in fields
+    model_field = re.findall(r'<input[^>]+data-config-field="asr\.model"[^>]*>', html)
+    assert len(model_field) == 1
+    assert "readonly" in model_field[0]
+    assert "当前识别模型（请在上方模型列表切换）" in html
 
 
 def test_v8_settings_keep_advanced_fields_collapsed():
@@ -85,9 +89,58 @@ def test_v8_model_download_sources_and_states():
     assert "hf-mirror" not in source_block
     assert "HF Mirror" not in source_block
     assert 'model_source: "modelscope"' in app
-    for label in ["继续下载", "损坏需修复", "修复", "将使用：", "last_error", "partial_bytes"]:
+    for label in [
+        "继续下载",
+        "损坏需修复",
+        "修复",
+        "将使用：",
+        "last_error",
+        "partial_bytes",
+        "设为当前模型",
+        "当前使用 · 尚未下载",
+        "当前使用 · 模型损坏",
+    ]:
         assert label in app
-    assert "设为当前模型" not in app
+    assert "model.recommended" not in app
+    assert " · 推荐" not in app
+
+
+def test_v8_model_matrix_order_tiers_and_safe_current_actions():
+    models = Path("src/live_clipper/asr_models.py").read_text(encoding="utf-8")
+    app = _app()
+    expected_ids = [
+        "mlx-community/whisper-small-mlx-q4",
+        "mlx-community/whisper-medium-mlx-q4",
+        "mlx-community/whisper-large-v3-turbo",
+    ]
+
+    assert [models.index(model_id) for model_id in expected_ids] == sorted(
+        models.index(model_id) for model_id in expected_ids
+    )
+    for tier_label in ['"tier_label": "轻量"', '"tier_label": "平衡"', '"tier_label": "高精度"']:
+        assert tier_label in models
+    assert "model.tier_label" in app
+    assert "if (!model.current)" in app
+    assert 'data-action="select"' in app
+    assert 'data-action="delete"' in app
+    assert "currentBadge" in app
+    for forbidden in ["Qwen3", "mlx_audio", "ForcedAligner"]:
+        assert forbidden not in models
+        assert forbidden not in app
+
+
+def test_v8_select_waits_for_server_and_refreshes_models_and_config():
+    app = _app()
+    selection = app.split("async function selectAsrModel", 1)[1].split(
+        "async function deleteAsrModel",
+        1,
+    )[0]
+
+    assert 'api("/api/asr/models/select"' in selection
+    assert 'button.disabled = true' in selection
+    assert "finally" in selection
+    assert "Promise.all([refreshAsrModels(), loadConfig(true)])" in selection
+    assert ".current =" not in selection
 
 
 def test_v8_mobile_nav_is_contained_inside_viewport():

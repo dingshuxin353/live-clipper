@@ -1071,3 +1071,5 @@ body.in-app-shell::before {
 .asr-model-status.ok { color: var(--ok, #2c8a4b); }
 .asr-model-status.error { color: var(--danger, #b42318); }
 .asr-model-source { color: var(--muted); font-size: 12px; }
+.asr-model-tier { display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 999px; background: var(--surface-2, #f1f1f4); color: var(--muted); font-size: 12px; font-weight: 500; }
+.asr-model-current { display: inline-block; margin-right: 6px; color: var(--accent, #6750a4); font-weight: 600; }

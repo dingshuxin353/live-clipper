@@ -694,30 +694,45 @@ async function refreshAsrModels() {
     const row = document.createElement("div");
     row.className = "asr-model-row";
     const meta = [model.size_note, model.ram_note, model.speed_note, model.accuracy_note].filter(Boolean).join(" · ");
-    let statusHtml;
+    const currentBadge = model.current ? '<span class="asr-model-current">当前使用</span>' : "";
+    let statusHtml = "";
+    let actionsHtml = "";
     const sourceLabel = modelSourceLabel(model.download_source || payload.download_source);
     if (model.state === "installed") {
-      statusHtml = `<span class="asr-model-status ok">已安装 · ${formatModelBytes(model.installed_bytes)}</span><button type="button" data-action="delete">删除</button>`;
+      statusHtml = `<span class="asr-model-status ok">${currentBadge}已安装 · ${formatModelBytes(model.installed_bytes)}</span>`;
+      if (!model.current) {
+        actionsHtml = '<button type="button" data-action="select">设为当前模型</button><button type="button" data-action="delete">删除</button>';
+      }
     } else if (model.state === "downloading") {
       const percent = model.bytes_total ? Math.min(99, Math.round((model.partial_bytes / model.bytes_total) * 100)) : 0;
-      statusHtml = `<span class="asr-model-status">下载中 ${percent}% · ${formatModelBytes(model.partial_bytes)} · ${escapeHtml(sourceLabel)}</span>`;
+      statusHtml = `<span class="asr-model-status">${currentBadge}下载中 ${percent}% · ${formatModelBytes(model.partial_bytes)} · ${escapeHtml(sourceLabel)}</span>`;
     } else if (model.state === "damaged") {
-      statusHtml = `<span class="asr-model-status error">损坏需修复${model.state_reason ? ` · ${escapeHtml(model.state_reason)}` : ""}</span><button type="button" data-action="download">修复</button>`;
+      const damagedLabel = model.current ? "当前使用 · 模型损坏" : "损坏需修复";
+      statusHtml = `<span class="asr-model-status error">${damagedLabel}${model.state_reason ? ` · ${escapeHtml(model.state_reason)}` : ""}</span>`;
+      actionsHtml = '<button type="button" data-action="download">修复</button>';
     } else if (model.partial_bytes || model.last_error) {
-      statusHtml = `<span class="asr-model-status error">${model.last_error ? escapeHtml(model.last_error) : "下载未完成"}</span><button type="button" data-action="download">继续下载</button>`;
+      const errorDetail = model.last_error ? ` · ${escapeHtml(model.last_error)}` : "";
+      const incompleteLabel = model.current
+        ? `当前使用 · 尚未下载${errorDetail}`
+        : (model.last_error ? escapeHtml(model.last_error) : "下载未完成");
+      statusHtml = `<span class="asr-model-status error">${incompleteLabel}</span>`;
+      actionsHtml = '<button type="button" data-action="download">继续下载</button>';
     } else {
-      statusHtml = `<button type="button" data-action="download">下载</button>`;
+      statusHtml = model.current ? '<span class="asr-model-status error">当前使用 · 尚未下载</span>' : "";
+      actionsHtml = '<button type="button" data-action="download">下载</button>';
     }
     row.innerHTML = `
       <div class="asr-model-info">
-        <strong>${model.display_name}${model.recommended ? " · 推荐" : ""}</strong>
+        <strong>${escapeHtml(model.display_name)} <span class="asr-model-tier">${escapeHtml(model.tier_label)}</span></strong>
         <span class="muted">${meta}</span>
         <span class="asr-model-source">将使用：${escapeHtml(sourceLabel)}${model.last_source ? ` · 上次：${escapeHtml(modelSourceLabel(model.last_source))}` : ""}</span>
       </div>
-      <div class="asr-model-actions">${statusHtml}</div>
+      <div class="asr-model-actions">${statusHtml}${actionsHtml}</div>
     `;
     const downloadBtn = row.querySelector('[data-action="download"]');
     if (downloadBtn) downloadBtn.addEventListener("click", () => startAsrModelDownload(model.id));
+    const selectBtn = row.querySelector('[data-action="select"]');
+    if (selectBtn) selectBtn.addEventListener("click", () => selectAsrModel(model.id, row));
     const deleteBtn = row.querySelector('[data-action="delete"]');
     if (deleteBtn) deleteBtn.addEventListener("click", () => deleteAsrModel(model.id));
     container.appendChild(row);
@@ -734,6 +749,18 @@ async function startAsrModelDownload(modelId) {
     toast(`下载启动失败：${err.message}`);
   }
   refreshAsrModels();
+}
+
+async function selectAsrModel(modelId, row) {
+  row.querySelectorAll("button").forEach((button) => { button.disabled = true; });
+  try {
+    await api("/api/asr/models/select", { method: "POST", body: JSON.stringify({ model: modelId }) });
+    toast("当前识别模型已切换");
+  } catch (err) {
+    toast(`切换模型失败：${err.message}`);
+  } finally {
+    await Promise.all([refreshAsrModels(), loadConfig(true)]);
+  }
 }
 
 async function deleteAsrModel(modelId) {
