@@ -19,14 +19,13 @@ cd /Users/gouzi/dingshuxinRepo/live-clipper/lanes/<lane> && python3.11 -m venv .
 
 | 车道 | Spec | 文件集合 | 依赖 | 状态 |
 |---|---|---|---|---|
-| 0.3.1-misans-default-font | `specs/2026-07-24-0.3.1-misans-default-font.md` | Phase 1 字体资产与许可；Phase 2 CSS 与打包接线 | `master@0a66004` | Phase 2 提交 `0c448ee` 已通过独立验收，等待本地合并 |
 | 0.3.1-macos-tray-icon-alpha | `specs/2026-07-24-0.3.1-macos-tray-icon-alpha.md` | 两张 Tray PNG 与独立资产测试 | `master@6f82db0` | 已派发实施 |
 
 ## 待派发队列
 
 | 顺序 | 车道 | Spec | 依赖 | 状态 |
 |---:|---|---|---|---|
-| 1 | 0.3.1-model-matrix-selection | `specs/2026-07-24-0.3.1-model-matrix-selection.md` | 下载基础设施与字体 Phase 2 合入后回写精确基线 | 下载基础设施已合入，仍等待字体 Phase 2 合入 |
+| 1 | 0.3.1-model-matrix-selection | `specs/2026-07-24-0.3.1-model-matrix-selection.md` | 下载基础设施与字体 Phase 2 均已合入 | 前置依赖已满足，等待规划者回写精确基线并派发 |
 
 ## 当前发布操作
 
@@ -34,7 +33,7 @@ cd /Users/gouzi/dingshuxinRepo/live-clipper/lanes/<lane> && python3.11 -m venv .
 
 ## 产品版本路线
 
-- **0.3.1 · 本地模型与首次使用闭环**：Qwen3 不进入本版本；下载基础设施已合入，MiSans 字体资产与 macOS 菜单栏图标修复可并行、CSS 接线在字体 Phase 1 独立验收后继续，随后实施 Whisper 三档/当前模型闭环；其后再规划首启向导、tag 自动工作流停用、本地 `.[mlx]` 正式构建、真实中文转写与 `0.3.0 → 0.3.1` 自动更新真机演练。
+- **0.3.1 · 本地模型与首次使用闭环**：Qwen3 不进入本版本；下载基础设施与 MiSans 默认字体已合入，macOS 菜单栏图标修复仍在独立车道，随后等待规划 Whisper 三档/当前模型闭环；其后再规划首启向导、tag 自动工作流停用、本地 `.[mlx]` 正式构建、真实中文转写与 `0.3.0 → 0.3.1` 自动更新真机演练。
 - **0.3.2 · UI 组件系统统一**：盘点并统一输入框、选择框、按钮、卡片、状态、弹层和表单结构；保持原生 HTML/JS 技术栈，不在本版本迁移 React/Vue。
 - **0.4.0 · Project 工作台**：原 V11 方向；原 V10c“切片偏好 + 提示词编辑器”并入 Project、场景模板和关注点预设。
 
@@ -43,6 +42,7 @@ cd /Users/gouzi/dingshuxinRepo/live-clipper/lanes/<lane> && python3.11 -m venv .
 
 ## 已合入
 
+- 0.3.1-misans-default-font（MiSans 默认界面字体与打包接线，62fc0ebff0f5c27cd69205f52f76a7a90166133d）
 - 0.3.1-model-download-foundation（ModelScope / Hugging Face 两源模型下载基础设施，2d1b2c2b5b8d8f12847f60311ffcd5cf4d8b93ba）
 - readme-product-home-v2-1（README 产品首页 V2.1，3018633df792f7445a1200277e0207583e9e3634）
 - readme-product-home（README 产品首页 V2，d7c715767bbcfdde4178bb9625cd7d7f18bfc825）
