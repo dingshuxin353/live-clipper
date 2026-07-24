@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 
@@ -248,7 +249,10 @@ def test_readme_is_a_product_homepage():
     text = Path("README.md").read_text(encoding="utf-8")
 
     for expected in [
-        "把一场长直播，变成一组可审阅、可发布的短视频。",
+        '<h1 align="center">Venus</h1>',
+        "美神直播剪辑工作台",
+        "把一场长直播，让 AI 自动帮你剪辑成可发布的短视频。",
+        "面向主播和内容团队的 macOS 客户端：自动发现录播、AI 选片、AI剪辑并渲染成片。",
         "下载最新版",
         "## 为什么选择 Venus",
         "## 界面预览",
@@ -266,6 +270,41 @@ def test_readme_is_a_product_homepage():
         "docs/privacy.md",
     ]:
         assert expected in text
+
+    assert text.count("<h1") == 1
+    assert "把一场长直播，变成一组可审阅、可发布的短视频。" not in text
+    assert "发现录播、语音转写、AI 选片、生成字幕并渲染成片。" not in text
+
+
+def test_readme_documents_collapsed_developer_setup():
+    text = Path("README.md").read_text(encoding="utf-8")
+
+    for expected in [
+        "## 开发者部署",
+        "<details>",
+        "<summary><strong>从源码运行与本地构建</strong></summary>",
+        "python3.11 -m venv .venv",
+        ".venv/bin/python -m pip install -e '.[dev,mlx]'",
+        "npm ci",
+        "npm start",
+        "npm run dist",
+        "docs/advanced-usage.md",
+        "CONTRIBUTING.md",
+    ]:
+        assert expected in text
+
+
+def test_readme_relative_links_exist():
+    readme = Path("README.md")
+    text = readme.read_text(encoding="utf-8")
+    targets = re.findall(r"\]\(([^)]+)\)", text)
+    targets.extend(re.findall(r'(?:href|src)="([^"]+)"', text))
+
+    for target in targets:
+        path = target.split("#", 1)[0]
+        if not path or path.startswith(("http://", "https://", "mailto:")):
+            continue
+        assert (readme.parent / path).exists(), target
 
 
 def test_readme_screenshots_exist_and_are_substantial():
