@@ -19,7 +19,7 @@ cd /Users/gouzi/dingshuxinRepo/live-clipper/lanes/<lane> && python3.11 -m venv .
 
 | 车道 | Spec | 文件集合 | 依赖 | 状态 |
 |---|---|---|---|---|
-| readme-product-home | `specs/2026-07-24-readme-product-home-v2.md` | README、中英文/高级文档、3 张真实截图、文档测试 | V10a 先合入；不得并行 | 前置已满足，等待规划者填写基线 |
+| readme-product-home | `specs/2026-07-24-readme-product-home-v2.md` | README、中英文/高级文档、3 张真实截图、文档测试 | V10a 已合入（20a0033） | 已派发实施 |
 
 ## 当前发布操作
 
