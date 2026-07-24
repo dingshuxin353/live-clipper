@@ -21,7 +21,7 @@ cd /Users/gouzi/dingshuxinRepo/live-clipper/lanes/<lane> && python3.11 -m venv .
 |---|---|---|---|---|
 | 0.3.1-model-download-foundation | `specs/2026-07-24-0.3.1-model-download-foundation.md` | 模型下载、三源配置、设置页与相关测试 | `master@bef3f82` | 已派发实施 |
 | 0.3.1-misans-default-font | `specs/2026-07-24-0.3.1-misans-default-font.md` | Phase 1 仅新增字体、许可、notice 与资产测试 | 以 Spec 头部精确基线为准 | Phase 1 已提交 `aa28794`，等待独立验收；Phase 2 等模型下载车道合入 |
-| 0.3.1-macos-tray-icon-alpha | `specs/2026-07-24-0.3.1-macos-tray-icon-alpha.md` | 两张 Tray PNG 与独立资产测试 | 以 Spec 头部精确基线为准 | 设计完成，等待用户确认派发 |
+| 0.3.1-macos-tray-icon-alpha | `specs/2026-07-24-0.3.1-macos-tray-icon-alpha.md` | 两张 Tray PNG 与独立资产测试 | `master@6f82db0` | 已派发实施 |
 
 ## 待派发队列
 
