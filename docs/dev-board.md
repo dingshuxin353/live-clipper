@@ -19,13 +19,15 @@ cd /Users/gouzi/dingshuxinRepo/live-clipper/lanes/<lane> && python3.11 -m venv .
 
 | 车道 | Spec | 文件集合 | 依赖 | 状态 |
 |---|---|---|---|---|
+| 0.3.1-model-download-foundation | `specs/2026-07-24-0.3.1-model-download-foundation.md` | 模型下载、三源配置、设置页与相关测试 | `master@bef3f82` | 已派发实施 |
+| 0.3.1-misans-default-font | `specs/2026-07-24-0.3.1-misans-default-font.md` | Phase 1 仅新增字体、许可、notice 与资产测试 | 以 Spec 头部精确基线为准 | 准备派发 Phase 1；Phase 2 等模型下载车道合入 |
 
 ## 待派发队列
 
 | 顺序 | 车道 | Spec | 依赖 | 状态 |
 |---:|---|---|---|---|
-| 1 | 0.3.1-model-download-foundation | `specs/2026-07-24-0.3.1-model-download-foundation.md` | 以 Spec 头部精确基线为准 | 设计完成，待用户确认派发 |
-| 2 | 0.3.1-model-matrix-selection | `specs/2026-07-24-0.3.1-model-matrix-selection.md` | 下载基础设施验收并合入后回写精确基线 | 排队，禁止提前开工 |
+| 1 | 0.3.1-misans-default-font Phase 2 | 同一字体 Spec 与 lane | 字体 Phase 1 + 下载基础设施验收并合入 | 接线门禁，禁止提前开工 |
+| 2 | 0.3.1-model-matrix-selection | `specs/2026-07-24-0.3.1-model-matrix-selection.md` | 下载基础设施与字体 Phase 2 合入后回写精确基线 | 排队，禁止提前开工 |
 
 ## 当前发布操作
 
@@ -33,7 +35,7 @@ cd /Users/gouzi/dingshuxinRepo/live-clipper/lanes/<lane> && python3.11 -m venv .
 
 ## 产品版本路线
 
-- **0.3.1 · 本地模型与首次使用闭环**：Qwen3 不进入本版本；三下载源/续传/校验/修复与 Whisper 三档/当前模型闭环已拆成两条串行 Spec，待用户确认派发；其后再规划首启向导、tag 自动工作流停用、本地 `.[mlx]` 正式构建、真实中文转写与 `0.3.0 → 0.3.1` 自动更新真机演练。
+- **0.3.1 · 本地模型与首次使用闭环**：Qwen3 不进入本版本；下载基础设施已派发，MiSans 字体资产可与其并行、CSS 接线在其合入后继续，随后实施 Whisper 三档/当前模型闭环；其后再规划首启向导、tag 自动工作流停用、本地 `.[mlx]` 正式构建、真实中文转写与 `0.3.0 → 0.3.1` 自动更新真机演练。
 - **0.3.2 · UI 组件系统统一**：盘点并统一输入框、选择框、按钮、卡片、状态、弹层和表单结构；保持原生 HTML/JS 技术栈，不在本版本迁移 React/Vue。
 - **0.4.0 · Project 工作台**：原 V11 方向；原 V10c“切片偏好 + 提示词编辑器”并入 Project、场景模板和关注点预设。
 
