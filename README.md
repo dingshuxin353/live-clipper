@@ -4,11 +4,11 @@
 
 <h1 align="center">Venus</h1>
 
-<p align="center"><strong>把一场长直播，变成一组可审阅、可发布的短视频。</strong></p>
+<p align="center"><strong>美神直播剪辑工作台</strong></p>
 
-<p align="center">
-  面向主播和内容团队的 macOS 客户端：发现录播、语音转写、AI 选片、生成字幕并渲染成片。
-</p>
+<p align="center">把一场长直播，让 AI 自动帮你剪辑成可发布的短视频。</p>
+
+<p align="center">面向主播和内容团队的 macOS 客户端：自动发现录播、AI 选片、AI剪辑并渲染成片。</p>
 
 <p align="center">
   <a href="https://github.com/dingshuxin353/live-clipper/releases/latest"><strong>下载最新版</strong></a>
@@ -176,6 +176,56 @@ Venus 支持应用内自动更新。你也可以随时到 [GitHub Releases](http
 - 云端 AI 审阅会发送完成判断所需的转录文本；
 - 日志默认隐藏模型请求正文，失败信息按脱敏策略记录；
 - 具体行为取决于你的配置，完整说明见 [隐私说明](docs/privacy.md)。
+
+## 开发者部署
+
+普通用户建议直接下载经过签名和公证的 DMG；以下内容面向希望从源码运行、调试或自行构建 Venus 的开发者。
+
+<details>
+<summary><strong>从源码运行与本地构建</strong></summary>
+
+### 环境要求
+
+- Apple Silicon Mac；
+- macOS 14 或更高版本；
+- Python 3.11；
+- Node.js 20；
+- Git；
+- 可从终端调用的 `ffmpeg`。
+
+### 获取源码并安装依赖
+
+```bash
+git clone https://github.com/dingshuxin353/live-clipper.git
+cd live-clipper
+python3.11 -m venv .venv
+.venv/bin/python -m pip install -e '.[dev,mlx]'
+cd desktop
+npm ci
+```
+
+### 运行桌面开发版
+
+```bash
+npm start
+```
+
+Electron 开发模式会调用仓库根目录的 `.venv/bin/live-clipper` 启动本地后端。
+
+### 验证与本地构建
+
+```bash
+cd ..
+.venv/bin/python -m pytest
+cd desktop
+npm run dist
+```
+
+`npm run dist` 用于在本机构建 macOS 安装包。自行构建不等于 Venus 官方 Release，也不自动保证 Developer ID 签名或 Apple 公证。
+
+完整 CLI、配置、Web 控制台、MCP 与自动化说明见 [高级使用](docs/advanced-usage.md)；参与贡献前请阅读 [贡献指南](CONTRIBUTING.md)。
+
+</details>
 
 ## 文档、贡献与许可证
 
