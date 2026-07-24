@@ -24,7 +24,7 @@ cd /Users/gouzi/dingshuxinRepo/live-clipper/lanes/<lane> && python3.11 -m venv .
 
 | 顺序 | 车道 | Spec | 依赖 | 状态 |
 |---:|---|---|---|---|
-| 1 | 0.3.1-model-download-foundation | `specs/2026-07-24-0.3.1-model-download-foundation.md` | `master@89d49d1` | 设计完成，待用户确认派发 |
+| 1 | 0.3.1-model-download-foundation | `specs/2026-07-24-0.3.1-model-download-foundation.md` | 以 Spec 头部精确基线为准 | 设计完成，待用户确认派发 |
 | 2 | 0.3.1-model-matrix-selection | `specs/2026-07-24-0.3.1-model-matrix-selection.md` | 下载基础设施验收并合入后回写精确基线 | 排队，禁止提前开工 |
 
 ## 当前发布操作
