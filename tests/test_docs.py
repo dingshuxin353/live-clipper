@@ -52,8 +52,8 @@ def test_ai_assistant_guide_explains_llm_examples_asr_download_and_agent_schedul
     assert "根据当前运行的 Agent 软件判断" in text
 
 
-def test_readme_guides_local_asr_install_and_first_download():
-    text = Path("README.md").read_text(encoding="utf-8")
+def test_advanced_usage_guides_local_asr_install_and_first_download():
+    text = Path("docs/advanced-usage.md").read_text(encoding="utf-8")
 
     assert "## 本地 ASR 安装" in text
     assert "mlx-community/whisper-large-v3-turbo" in text
@@ -62,8 +62,8 @@ def test_readme_guides_local_asr_install_and_first_download():
     assert "本地 ASR 模型可用" in text
 
 
-def test_readme_documents_service_core_commands_and_safety():
-    text = Path("README.md").read_text(encoding="utf-8")
+def test_advanced_usage_documents_service_core_commands_and_safety():
+    text = Path("docs/advanced-usage.md").read_text(encoding="utf-8")
 
     assert "## 本机常驻服务" in text
     assert ".venv/bin/live-clipper service start" in text
@@ -74,8 +74,8 @@ def test_readme_documents_service_core_commands_and_safety():
     assert "不会主动终止已经启动的 pipeline 子进程" in text
 
 
-def test_readme_documents_mcp_tools_and_confirmation_safety():
-    text = Path("README.md").read_text(encoding="utf-8")
+def test_advanced_usage_documents_mcp_tools_and_confirmation_safety():
+    text = Path("docs/advanced-usage.md").read_text(encoding="utf-8")
 
     assert "## MCP 工具面" in text
     assert "live_clipper.mcp_tools" in text
@@ -122,8 +122,8 @@ def test_web_static_exposes_v5_scheduler_config_section():
     assert "自动化引擎随 App 运行" in html
 
 
-def test_readme_documents_v3_web_console_confirmation_flow():
-    text = Path("README.md").read_text(encoding="utf-8")
+def test_advanced_usage_documents_v3_web_console_confirmation_flow():
+    text = Path("docs/advanced-usage.md").read_text(encoding="utf-8")
 
     assert "V3 Web 控制台" in text
     assert "`确认`" in text
@@ -132,8 +132,8 @@ def test_readme_documents_v3_web_console_confirmation_flow():
     assert "NAS 原始录播不会被 Web 直接删除" in text
 
 
-def test_readme_documents_v4_web_config_editor():
-    text = Path("README.md").read_text(encoding="utf-8")
+def test_advanced_usage_documents_v4_web_config_editor():
+    text = Path("docs/advanced-usage.md").read_text(encoding="utf-8")
 
     assert "V4 Web 配置页" in text
     assert "`配置`" in text
@@ -143,8 +143,8 @@ def test_readme_documents_v4_web_config_editor():
     assert "不会显示明文 API key" in text
 
 
-def test_readme_documents_v5_internal_scheduler_without_v6_ai_review():
-    text = Path("README.md").read_text(encoding="utf-8")
+def test_advanced_usage_documents_v5_internal_scheduler_without_v6_ai_review():
+    text = Path("docs/advanced-usage.md").read_text(encoding="utf-8")
 
     assert "V5 内置定时调度" in text
     assert "不再依赖 Codex 定时任务、cron 或 launchd" in text
@@ -195,8 +195,8 @@ def test_web_static_exposes_v7_layered_config_page():
         assert field in advanced
 
 
-def test_readme_documents_v7_layered_config_page():
-    text = Path("README.md").read_text(encoding="utf-8")
+def test_advanced_usage_documents_v7_layered_config_page():
+    text = Path("docs/advanced-usage.md").read_text(encoding="utf-8")
 
     assert "V7 配置页分层" in text
     assert "配置体检" in text
@@ -204,8 +204,8 @@ def test_readme_documents_v7_layered_config_page():
     assert "高级设置默认收起" in text
 
 
-def test_readme_documents_v6_ai_review_safety_and_modes():
-    text = Path("README.md").read_text(encoding="utf-8")
+def test_advanced_usage_documents_v6_ai_review_safety_and_modes():
+    text = Path("docs/advanced-usage.md").read_text(encoding="utf-8")
 
     assert "V6 AI 自动审阅" in text
     assert "默认不会静默启用" in text
@@ -227,8 +227,78 @@ def test_web_static_exposes_local_asr_model_manager():
     assert "/api/asr/models" in app
 
 
-def test_readme_mentions_in_app_model_download():
+def test_readme_explains_product_level_local_model_capability():
     text = Path("README.md").read_text(encoding="utf-8")
+
+    assert "约 1.6GB" in text
+    assert "下载完成后，可以离线完成语音转写" in text
+    assert "AI 选片是否联网" in text
+
+
+def test_advanced_usage_documents_model_source_details():
+    text = Path("docs/advanced-usage.md").read_text(encoding="utf-8")
 
     assert "设置页可直接下载本地语音模型" in text
     assert "hf-mirror" in text
+    assert "mlx-community/whisper-large-v3-turbo" in text
+    assert ".venv/bin/python -m pip install -e '.[dev,mlx]'" in text
+
+
+def test_readme_is_a_product_homepage():
+    text = Path("README.md").read_text(encoding="utf-8")
+
+    for expected in [
+        "把一场长直播，变成一组可审阅、可发布的短视频。",
+        "下载最新版",
+        "## 为什么选择 Venus",
+        "## 界面预览",
+        "## 一场直播如何变成短视频",
+        "### 1. 发现录播",
+        "### 2. 语音转写",
+        "### 3. AI 选片",
+        "### 4. 生成成片",
+        "## 功能特性",
+        "## 快速开始",
+        "## 常见问题",
+        "Apple Silicon",
+        "macOS 14",
+        "https://github.com/dingshuxin353/live-clipper/releases/latest",
+        "docs/privacy.md",
+    ]:
+        assert expected in text
+
+
+def test_readme_screenshots_exist_and_are_substantial():
+    text = Path("README.md").read_text(encoding="utf-8")
+    screenshots = [
+        Path("docs/assets/readme/venus-overview.png"),
+        Path("docs/assets/readme/venus-automation.png"),
+        Path("docs/assets/readme/venus-local-models.png"),
+    ]
+
+    for screenshot in screenshots:
+        assert screenshot.as_posix() in text
+        assert screenshot.is_file()
+        assert screenshot.stat().st_size > 50 * 1024
+
+
+def test_readme_length_and_forbidden_content():
+    text = Path("README.md").read_text(encoding="utf-8")
+    line_count = len(text.splitlines())
+
+    assert 180 <= line_count <= 280
+    for forbidden in [
+        "## 更新记录",
+        "### 0.2.0",
+        "### 0.3.0",
+        "CHANGELOG.md",
+        "V3 Web 控制台",
+        "V4 Web 配置页",
+        "V5 内置定时调度",
+        "V6 AI 自动审阅",
+        "V7 配置页分层",
+        "赞助商",
+        "优惠码",
+        "Star History",
+    ]:
+        assert forbidden not in text
