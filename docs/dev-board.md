@@ -19,8 +19,7 @@ cd /Users/gouzi/dingshuxinRepo/live-clipper/lanes/<lane> && python3.11 -m venv .
 
 | 车道 | Spec | 文件集合 | 依赖 | 状态 |
 |---|---|---|---|---|
-| v10a-local-asr-models | `specs/2026-07-23-v10a-local-asr-models.md` | ASR 模型管理器、设置 UI、相关测试与发版依赖 | v9f-release | 实施完成（a136c35），待独立验收与合入 |
-| readme-product-home | `specs/2026-07-24-readme-product-home-v2.md` | README、中英文/高级文档、3 张真实截图、文档测试 | V10a 先合入；不得并行 | V2 规划完成，等待前置 |
+| readme-product-home | `specs/2026-07-24-readme-product-home-v2.md` | README、中英文/高级文档、3 张真实截图、文档测试 | V10a 先合入；不得并行 | 前置已满足，等待规划者填写基线 |
 
 ## 当前发布操作
 
@@ -28,6 +27,7 @@ cd /Users/gouzi/dingshuxinRepo/live-clipper/lanes/<lane> && python3.11 -m venv .
 
 ## 已合入
 
+- v10a-local-asr-models（本地 ASR 模型管理器，20a0033894e1e95b3f1a3dd3e331cea23fac6485）
 - v9f1-notary-recovery（Apple 公证恢复工作流，005fa90；因 GitHub 托管 job 的 6 小时硬上限，v0.3.0 实际恢复改走本地 V9f.2 操作）
 - v9f-release（签名公证发版流水线 + 包内自动更新，d62accf）
 - v10ui-settings（设置页信息架构简化，1fc1623 + c001c6b，看板制之前在主仓完成）
