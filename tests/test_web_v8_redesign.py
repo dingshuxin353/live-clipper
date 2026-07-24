@@ -78,11 +78,12 @@ def test_v8_model_download_sources_and_states():
     source_block = html.split('data-config-field="asr.model_source"', 1)[1].split("</select>", 1)[0]
     expected = [
         'value="modelscope">ModelScope（中国大陆推荐）',
-        'value="hf-mirror">HF Mirror（国内备用）',
         'value="huggingface">Hugging Face（国际官方）',
     ]
     assert all(label in source_block for label in expected)
     assert [source_block.index(label) for label in expected] == sorted(source_block.index(label) for label in expected)
+    assert "hf-mirror" not in source_block
+    assert "HF Mirror" not in source_block
     assert 'model_source: "modelscope"' in app
     for label in ["继续下载", "损坏需修复", "修复", "将使用：", "last_error", "partial_bytes"]:
         assert label in app

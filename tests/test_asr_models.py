@@ -85,8 +85,8 @@ def test_registry_pins_large_model_artifacts():
     assert entry["backend"] == "mlx_whisper"
     assert entry["tier"] == "high_accuracy"
     assert entry["sources"]["huggingface"]["revision"] == "a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb"
-    assert entry["sources"]["hf-mirror"]["revision"] == "a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb"
     assert entry["sources"]["modelscope"]["revision"] == "bf7cb825f64339244fffda3a5c514db6493a6ee8"
+    assert set(entry["sources"]) == {"modelscope", "huggingface"}
     assert entry["files"] == [
         {
             "path": "config.json",
@@ -102,7 +102,7 @@ def test_registry_pins_large_model_artifacts():
     assert asr_models._total_bytes(entry) == 1_613_977_880
 
 
-def test_three_sources_route_to_pinned_sdk_contract(monkeypatch, small_registry):
+def test_two_sources_route_to_pinned_sdk_contract(monkeypatch, small_registry):
     entry, files = small_registry
     hf_calls = []
     ms_calls = []
@@ -146,23 +146,25 @@ def test_three_sources_route_to_pinned_sdk_contract(monkeypatch, small_registry)
 
     asr_models.download_model(MODEL_ID, "modelscope")
     asr_models.delete_model(MODEL_ID)
-    asr_models.download_model(MODEL_ID, "hf-mirror")
-    asr_models.delete_model(MODEL_ID)
     asr_models.download_model(MODEL_ID, "huggingface")
 
     assert {call["endpoint"] for call in ms_calls} == {entry["sources"]["modelscope"]["endpoint"]}
     assert {call["revision"] for call in ms_calls} == {entry["sources"]["modelscope"]["revision"]}
     assert {call["expected_sha256"] for call in ms_calls} == {file["sha256"] for file in entry["files"]}
-    assert {call["endpoint"] for call in hf_calls} == {
-        entry["sources"]["hf-mirror"]["endpoint"],
-        entry["sources"]["huggingface"]["endpoint"],
-    }
+    assert {call["endpoint"] for call in hf_calls} == {entry["sources"]["huggingface"]["endpoint"]}
     assert {call["revision"] for call in hf_calls} == {entry["sources"]["huggingface"]["revision"]}
 
 
-def test_unknown_source_does_not_fall_back(small_registry):
+def test_unknown_and_removed_sources_do_not_fall_back(monkeypatch, small_registry):
+    network_calls = []
+    monkeypatch.setattr(asr_models, "hf_hub_download", lambda **kwargs: network_calls.append(kwargs))
+    monkeypatch.setattr(asr_models, "HubApi", lambda **kwargs: network_calls.append(kwargs))
+
     with pytest.raises(ValueError, match="未知模型下载源"):
         asr_models.download_model(MODEL_ID, "unknown")
+    with pytest.raises(ValueError, match=asr_models.HF_MIRROR_REMOVED_MESSAGE):
+        asr_models.download_model(MODEL_ID, "hf-mirror")
+    assert network_calls == []
 
 
 def test_download_failure_keeps_partial_and_last_error(monkeypatch, small_registry):
@@ -228,25 +230,46 @@ def test_modelscope_retry_reuses_incomplete_file(monkeypatch, small_registry):
     assert attempts[1] == ("config.json", True)
 
 
-def test_switch_source_reuses_completed_canonical_file(monkeypatch, small_registry):
-    entry, files = small_registry
+def test_legacy_hf_mirror_partial_reuses_complete_file_with_modelscope(monkeypatch, small_registry):
+    _entry, files = small_registry
     staging = asr_models.partial_dir(MODEL_ID)
     staging.mkdir(parents=True)
     (staging / "config.json").write_bytes(files["config.json"])
+    (staging / "_download.json").write_text(
+        json.dumps({"source": "hf-mirror", "last_error": "legacy failure"}),
+        encoding="utf-8",
+    )
+    assert asr_models.list_models(Path("service"))[0]["last_source"] == "hf-mirror"
     calls = []
 
-    def fake_hf_hub_download(**kwargs):
-        calls.append(kwargs["filename"])
-        destination = Path(kwargs["local_dir"]) / kwargs["filename"]
-        destination.write_bytes(files[kwargs["filename"]])
-        return str(destination)
+    class FakeHubApi:
+        def __init__(self, *, endpoint):
+            self.endpoint = endpoint
 
-    monkeypatch.setattr(asr_models, "hf_hub_download", fake_hf_hub_download)
-    result = asr_models.download_model(MODEL_ID, "hf-mirror")
+        def download_file(
+            self,
+            repo_id,
+            repo_type,
+            file_path,
+            *,
+            revision,
+            local_dir,
+            expected_sha256,
+        ):
+            calls.append(file_path)
+            destination = Path(local_dir) / file_path
+            destination.write_bytes(files[file_path])
+            return destination
+
+    monkeypatch.setattr(asr_models, "HubApi", FakeHubApi)
+    result = asr_models.download_model(MODEL_ID, "modelscope")
 
     assert result["ok"] is True
     assert calls == ["weights.safetensors"]
-    assert entry["sources"]["hf-mirror"]["endpoint"] == "https://hf-mirror.com"
+    install_metadata = json.loads(
+        (asr_models.install_dir(MODEL_ID) / "_install.json").read_text(encoding="utf-8")
+    )
+    assert install_metadata["source"] == "modelscope"
 
 
 def test_sha_mismatch_never_installs(monkeypatch, small_registry):
@@ -287,6 +310,21 @@ def test_normal_install_writes_manifest_and_removes_sdk_cache(monkeypatch, small
     assert manifest["source"] == "huggingface"
     assert all(isinstance(file["mtime_ns"], int) for file in manifest["files"])
     assert asr_models.local_path_for(MODEL_ID) == target
+
+
+def test_legacy_hf_mirror_install_source_remains_historical_metadata(monkeypatch, small_registry):
+    _entry, files = small_registry
+    _install_with_fake_hf(monkeypatch, files)
+    manifest_path = asr_models.install_dir(MODEL_ID) / "_install.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["source"] = "hf-mirror"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    item = asr_models.list_models(Path("service"))[0]
+
+    assert item["state"] == "installed"
+    assert item["last_source"] == "hf-mirror"
+    assert json.loads(manifest_path.read_text(encoding="utf-8"))["source"] == "hf-mirror"
 
 
 @pytest.mark.parametrize("damage", ["missing", "size", "mtime_hash"])
@@ -353,7 +391,7 @@ def test_delete_api_returns_409_while_download_active(monkeypatch, tmp_path, sma
 
 def test_download_job_success_result_contains_ok(monkeypatch, tmp_path, small_registry):
     paths = _paths(tmp_path)
-    paths.config_path.write_text('[asr]\nmodel_source = "hf-mirror"\n', encoding="utf-8")
+    paths.config_path.write_text('[asr]\nmodel_source = "huggingface"\n', encoding="utf-8")
     monkeypatch.setattr(
         asr_models,
         "download_model",
@@ -371,7 +409,7 @@ def test_download_job_success_result_contains_ok(monkeypatch, tmp_path, small_re
     assert status == 202
     assert job["status"] == "succeeded"
     assert job["result"]["ok"] is True
-    assert job["result"]["source"] == "hf-mirror"
+    assert job["result"]["source"] == "huggingface"
 
 
 def test_get_api_exposes_four_states_and_status_fields(monkeypatch, tmp_path, small_registry):
@@ -427,3 +465,18 @@ def test_download_api_rejects_unknown_model_and_source(monkeypatch, tmp_path, sm
     )
     assert status == 400
     assert payload["error_code"] == "unknown_model_source"
+
+    monkeypatch.setattr(
+        jobs,
+        "start_job",
+        lambda *args, **kwargs: pytest.fail("removed source must not start a network job"),
+    )
+    status, _headers, payload = handle_api_request(
+        "POST",
+        "/api/asr/models/download",
+        paths,
+        body={"model": MODEL_ID, "source": "hf-mirror"},
+    )
+    assert status == 400
+    assert payload["error_code"] == "unsupported_model_source"
+    assert payload["message"] == asr_models.HF_MIRROR_REMOVED_MESSAGE

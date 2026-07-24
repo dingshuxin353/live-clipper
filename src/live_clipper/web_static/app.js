@@ -673,7 +673,6 @@ function formatModelBytes(bytes) {
 function modelSourceLabel(source) {
   return {
     modelscope: "ModelScope",
-    "hf-mirror": "HF Mirror",
     huggingface: "Hugging Face",
   }[source] || source || "-";
 }

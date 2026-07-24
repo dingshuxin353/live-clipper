@@ -227,7 +227,6 @@ def test_web_static_exposes_local_asr_model_manager():
         "本地语音模型",
         "模型下载源",
         "ModelScope（中国大陆推荐）",
-        "HF Mirror（国内备用）",
         "Hugging Face（国际官方）",
     ]:
         assert label in html
@@ -246,7 +245,8 @@ def test_advanced_usage_documents_model_source_details():
     text = Path("docs/advanced-usage.md").read_text(encoding="utf-8")
 
     assert "设置页可直接下载本地语音模型" in text
-    assert "hf-mirror" in text
+    assert "ModelScope 中国大陆推荐" in text
+    assert "Hugging Face 国际官方" in text
     assert "mlx-community/whisper-large-v3-turbo" in text
     assert ".venv/bin/python -m pip install -e '.[dev,mlx]'" in text
 

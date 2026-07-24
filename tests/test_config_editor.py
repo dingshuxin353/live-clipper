@@ -223,7 +223,7 @@ def test_save_editable_config_refuses_to_overwrite_unparseable_toml(tmp_path):
     assert config_path.read_text(encoding="utf-8") == "[service\nbroken = true"
 
 
-@pytest.mark.parametrize("source", ["modelscope", "hf-mirror", "huggingface"])
+@pytest.mark.parametrize("source", ["modelscope", "huggingface"])
 def test_model_source_validates_and_round_trips(tmp_path, source):
     config_path = tmp_path / "live-clipper.toml"
     draft = load_editable_config(config_path=config_path)["config"]
@@ -238,6 +238,35 @@ def test_model_source_validates_and_round_trips(tmp_path, source):
 
     assert result["ok"] is True
     assert load_editable_config(config_path=config_path)["config"]["asr"]["model_source"] == source
+
+
+def test_model_source_migrates_legacy_hf_mirror_and_saves_modelscope(tmp_path):
+    config_path = tmp_path / "live-clipper.toml"
+    config_path.write_text('[asr]\nmodel_source = "hf-mirror"\n', encoding="utf-8")
+
+    draft = load_editable_config(config_path=config_path)["config"]
+    assert draft["asr"]["model_source"] == "modelscope"
+
+    result = save_editable_config(
+        draft,
+        config_path=config_path,
+        backup_root=tmp_path / "work" / "config_backups",
+        base_dir=tmp_path,
+    )
+
+    assert result["ok"] is True
+    assert 'model_source = "modelscope"' in config_path.read_text(encoding="utf-8")
+    assert "hf-mirror" not in config_path.read_text(encoding="utf-8")
+
+
+def test_model_source_rejects_new_hf_mirror_value(tmp_path):
+    draft = load_editable_config(config_path=tmp_path / "live-clipper.toml")["config"]
+    draft["asr"]["model_source"] = "hf-mirror"
+
+    result = validate_editable_config(draft, config_path=tmp_path / "live-clipper.toml", base_dir=tmp_path)
+
+    assert result["ok"] is False
+    assert any(error["field"] == "asr.model_source" for error in result["errors"])
 
 
 def test_model_source_rejects_unknown_value(tmp_path):

@@ -466,8 +466,17 @@ def handle_api_request(
             model_id = str((body or {}).get("model") or "")
             if model_id not in asr_models.registry_ids():
                 return _json_response(_structured_error("unknown_model", f"未知模型: {model_id}"), status=400)
-            settings = _settings_for_paths(paths)
-            source = getattr(settings.asr, "model_source", asr_models.DEFAULT_MODEL_SOURCE) if settings.asr else asr_models.DEFAULT_MODEL_SOURCE
+            requested_source = (body or {}).get("source")
+            if requested_source is None:
+                settings = _settings_for_paths(paths)
+                source = getattr(settings.asr, "model_source", asr_models.DEFAULT_MODEL_SOURCE) if settings.asr else asr_models.DEFAULT_MODEL_SOURCE
+            else:
+                source = str(requested_source)
+            if source == "hf-mirror":
+                return _json_response(
+                    _structured_error("unsupported_model_source", asr_models.HF_MIRROR_REMOVED_MESSAGE),
+                    status=400,
+                )
             if source not in asr_models.source_ids():
                 return _json_response(_structured_error("unknown_model_source", f"未知模型下载源: {source}"), status=400)
             job = jobs.start_job(

@@ -462,6 +462,9 @@ def load_settings(config_path: Path | None = None) -> Settings:
     asr_api_key_env = str(asr_data.get("api_key_env", "ASR_API_KEY"))
     hf_token_env = str(asr_data.get("hf_token_env", "HF_TOKEN"))
     asr_api_base_default = DEFAULT_OPENAI_ASR_API_BASE if asr_backend == "openai" else None
+    model_source = str(asr_data.get("model_source", "modelscope"))
+    if model_source == "hf-mirror":
+        model_source = "modelscope"
     asr = ASRConfig(
         backend=asr_backend,
         model=asr_model,
@@ -471,7 +474,7 @@ def load_settings(config_path: Path | None = None) -> Settings:
         api_key=os.getenv(asr_api_key_env) or os.getenv("ASR_API_KEY"),
         hf_token_env=hf_token_env,
         hf_token=os.getenv(hf_token_env) or os.getenv("HF_TOKEN"),
-        model_source=str(asr_data.get("model_source", "modelscope")),
+        model_source=model_source,
     )
 
     llm_api_key_env = str(llm_data.get("api_key_env", "CHEAP_MODEL_API_KEY"))

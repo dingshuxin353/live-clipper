@@ -284,7 +284,7 @@ def test_write_default_config_creates_friendly_template(tmp_path):
     assert 'model_source = "modelscope"' in text
 
 
-@pytest.mark.parametrize("source", ["modelscope", "hf-mirror", "huggingface"])
+@pytest.mark.parametrize("source", ["modelscope", "huggingface"])
 def test_load_settings_preserves_explicit_model_source(monkeypatch, tmp_path, source):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "live-clipper.toml").write_text(
@@ -293,3 +293,13 @@ def test_load_settings_preserves_explicit_model_source(monkeypatch, tmp_path, so
     )
 
     assert load_settings().asr.model_source == source
+
+
+def test_load_settings_migrates_legacy_hf_mirror_to_modelscope(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "live-clipper.toml").write_text(
+        '[asr]\nmodel_source = "hf-mirror"\n',
+        encoding="utf-8",
+    )
+
+    assert load_settings().asr.model_source == "modelscope"

@@ -108,7 +108,7 @@ def test_post_api_config_saves_backup_and_loadable_file(tmp_path):
     _write_config(config_path, source_dir)
     draft = load_editable_config(config_path=config_path)["config"]
     draft["service"]["scan_interval_minutes"] = 15
-    draft["asr"]["model_source"] = "hf-mirror"
+    draft["asr"]["model_source"] = "huggingface"
 
     status, _headers, payload = handle_api_request(
         "POST",
@@ -122,7 +122,37 @@ def test_post_api_config_saves_backup_and_loadable_file(tmp_path):
     assert Path(payload["backup_path"]).exists()
     assert "scan_interval_minutes = 15" in config_path.read_text(encoding="utf-8")
     assert payload["requires_service_restart"] is True
-    assert load_editable_config(config_path=config_path)["config"]["asr"]["model_source"] == "hf-mirror"
+    assert load_editable_config(config_path=config_path)["config"]["asr"]["model_source"] == "huggingface"
+
+
+def test_config_api_migrates_legacy_hf_mirror_and_rejects_new_value(tmp_path):
+    source_dir = tmp_path / "nas"
+    source_dir.mkdir()
+    config_path = tmp_path / "live-clipper.toml"
+    _write_config(config_path, source_dir)
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            "[asr]\n",
+            '[asr]\nmodel_source = "hf-mirror"\n',
+        ),
+        encoding="utf-8",
+    )
+
+    status, _headers, payload = handle_api_request("GET", "/api/config", _paths(tmp_path))
+    assert status == 200
+    assert payload["config"]["asr"]["model_source"] == "modelscope"
+
+    draft = payload["config"]
+    draft["asr"]["model_source"] = "hf-mirror"
+    status, _headers, payload = handle_api_request(
+        "POST",
+        "/api/config",
+        _paths(tmp_path),
+        body={"config": draft},
+    )
+    assert status == 400
+    assert payload["ok"] is False
+    assert 'model_source = "hf-mirror"' in config_path.read_text(encoding="utf-8")
 
 
 def test_post_api_config_refuses_parse_error_without_overwrite(tmp_path):

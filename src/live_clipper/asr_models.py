@@ -19,10 +19,10 @@ DOWNLOAD_JOB_KIND = "asr_model_download"
 DOWNLOAD_SCHEMA_VERSION = 1
 INSTALL_SCHEMA_VERSION = 1
 DEFAULT_MODEL_SOURCE = "modelscope"
+HF_MIRROR_REMOVED_MESSAGE = "HF Mirror 已停止支持，请选择 ModelScope 或 Hugging Face"
 
 SOURCE_LABELS = {
     "modelscope": "ModelScope",
-    "hf-mirror": "HF Mirror",
     "huggingface": "Hugging Face",
 }
 
@@ -42,11 +42,6 @@ REGISTRY: list[dict[str, Any]] = [
                 "repo": "mlx-community/whisper-large-v3-turbo",
                 "revision": "bf7cb825f64339244fffda3a5c514db6493a6ee8",
                 "endpoint": "https://modelscope.cn",
-            },
-            "hf-mirror": {
-                "repo": "mlx-community/whisper-large-v3-turbo",
-                "revision": "a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb",
-                "endpoint": "https://hf-mirror.com",
             },
             "huggingface": {
                 "repo": "mlx-community/whisper-large-v3-turbo",
@@ -339,6 +334,8 @@ def _atomic_install(staging: Path, target: Path) -> None:
 def download_model(model_id: str, source: str = DEFAULT_MODEL_SOURCE) -> dict[str, Any]:
     """下载或修复白名单模型；失败时保留 partial 与错误摘要。"""
     entry = model_entry(model_id)
+    if source == "hf-mirror":
+        raise ValueError(HF_MIRROR_REMOVED_MESSAGE)
     if source not in entry["sources"] or source not in source_ids():
         raise ValueError(f"未知模型下载源: {source}")
     state, _reason = _installation_status(model_id)

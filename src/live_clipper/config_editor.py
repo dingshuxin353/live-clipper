@@ -235,6 +235,15 @@ def _editable_from_raw(raw: dict[str, Any]) -> EditableConfig:
     scheduler_jobs = scheduler.get("jobs")
     if not isinstance(scheduler_jobs, list) or not scheduler_jobs:
         scheduler_jobs = default_scheduler.get("jobs", [])
+    asr = {
+        **_pick(default_asr, ["backend", "model", "language", "api_base", "api_key_env", "hf_token_env", "model_source"]),
+        **_pick(
+            raw.get("asr", {}),
+            ["backend", "model", "language", "api_base", "api_key_env", "hf_token_env", "model_source"],
+        ),
+    }
+    if asr.get("model_source") == "hf-mirror":
+        asr["model_source"] = "modelscope"
     return {
         "paths": _pick(raw.get("paths", {}), ["input_dir", "output_root", "work_dir", "glossary_path"]),
         "recording_source_default": _pick(
@@ -245,13 +254,7 @@ def _editable_from_raw(raw: dict[str, Any]) -> EditableConfig:
             raw.get("llm", {}),
             ["provider_label", "api_base", "api_key_env", "model", "timeout_seconds", "request_attempts", "retry_delay_seconds"],
         ),
-        "asr": {
-            **_pick(default_asr, ["backend", "model", "language", "api_base", "api_key_env", "hf_token_env", "model_source"]),
-            **_pick(
-                raw.get("asr", {}),
-                ["backend", "model", "language", "api_base", "api_key_env", "hf_token_env", "model_source"],
-            ),
-        },
+        "asr": asr,
         "service": _pick(raw.get("service", {}), ["enabled", "scan_interval_minutes", "auto_render_after_selection", "cleanup_mode"]),
         "web": {
             **_pick(web, ["host", "port"]),
@@ -400,8 +403,8 @@ def _validate_enums(config: EditableConfig, errors: list[dict[str, str]]) -> Non
         errors.append(_error("service.cleanup_mode", "清理模式目前只允许 preview_only，避免误删文件。"))
     if config["asr"].get("backend") not in {"mlx_whisper", "openai"}:
         errors.append(_error("asr.backend", "ASR 后端只能选择 mlx_whisper 或 openai。"))
-    if config["asr"].get("model_source", "modelscope") not in {"modelscope", "hf-mirror", "huggingface"}:
-        errors.append(_error("asr.model_source", "模型下载源只能选择 modelscope、hf-mirror 或 huggingface。"))
+    if config["asr"].get("model_source", "modelscope") not in {"modelscope", "huggingface"}:
+        errors.append(_error("asr.model_source", "模型下载源只能选择 modelscope 或 huggingface。"))
     if config["scheduler"].get("missed_policy") not in {"run_once", "skip"}:
         errors.append(_error("scheduler.missed_policy", "missed_policy 只能是 run_once 或 skip。"))
 
