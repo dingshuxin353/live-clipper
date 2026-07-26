@@ -36,6 +36,31 @@ def test_desktop_version_matches_python_version():
     assert package_lock["packages"][""]["version"] == package["version"]
 
 
+def test_automatic_tag_release_workflow_is_disabled():
+    workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
+
+    assert "workflow_dispatch:" in workflow
+    assert "permissions: {}" in workflow
+    assert "Automatic tag releases are disabled." in workflow
+    for forbidden in (
+        "push:",
+        "pull_request:",
+        "release:",
+        "schedule:",
+        "repository_dispatch:",
+        "actions/checkout",
+        "electron-builder",
+        "notarytool",
+        "gh release",
+        "--publish",
+        "APPLE_",
+        "CSC_",
+        "GH_TOKEN",
+        "secrets.",
+    ):
+        assert forbidden not in workflow
+
+
 def test_release_recovery_workflow_contract():
     import re
 
