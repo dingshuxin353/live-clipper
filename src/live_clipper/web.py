@@ -243,7 +243,7 @@ def build_runs_index(paths: WebPaths | None = None) -> dict[str, Any]:
     }
 
 
-def build_clip_list(run_dir: Path) -> list[dict[str, Any]]:
+def build_clip_list(run_dir: Path, *, run_id: str | None = None) -> list[dict[str, Any]]:
     clips_dir = run_dir / "clips"
     if not clips_dir.exists():
         return []
@@ -252,16 +252,16 @@ def build_clip_list(run_dir: Path) -> list[dict[str, Any]]:
         clips.append({
             "name": path.name,
             "path": str(path),
-            "url": f"/media/runs/{quote(run_dir.name)}/clips/{quote(path.name)}",
+            "url": f"/media/runs/{quote(run_id or run_dir.name)}/clips/{quote(path.name)}",
             "bytes": path.stat().st_size,
             "updated_at": path.stat().st_mtime,
         })
     return clips
 
 
-def _cleanup_preview(run_dir: Path, paths: WebPaths) -> dict[str, Any]:
+def _cleanup_preview(run_dir: Path, paths: WebPaths, *, input_dir: Path | None = None) -> dict[str, Any]:
     try:
-        targets = cleanup_plan(run_dir, input_dir=paths.input_dir)
+        targets = cleanup_plan(run_dir, input_dir=input_dir or paths.input_dir)
     except FileNotFoundError:
         targets = []
     return {
@@ -327,13 +327,17 @@ def build_run_detail(run_id: str, paths: WebPaths | None = None, *, log_lines: i
         run["selected_count"] = detail.get("selected_count", 0)
         run["clip_count"] = detail.get("rendered_clip_count", 0)
         run["requires_codex"] = run.get("phase") == "needs_review"
-        cleanup = _cleanup_preview(run_dir, paths)
+        cleanup = _cleanup_preview(
+            run_dir,
+            paths,
+            input_dir=service.input_dir_for_run(service_run, _settings_for_paths(paths)),
+        )
         return {
             "ok": True,
             "run": run,
             "steps": [],
             "files": detail["files"],
-            "clips": build_clip_list(run_dir),
+            "clips": build_clip_list(run_dir, run_id=run_id),
             "cleanup": cleanup,
             "state": service_run,
             "events": detail.get("events", []),
@@ -977,7 +981,11 @@ def _media_clip_path(request_path: str, paths: WebPaths) -> Path | None:
         return None
     run_id = parts[2]
     clip_name = parts[4]
-    clips_dir = paths.output_root / run_id / "clips"
+    service_run = service.find_run(run_id, paths.service_dir)
+    if service_run is not None:
+        clips_dir = Path(str(service_run["run_dir"])) / "clips"
+    else:
+        clips_dir = paths.output_root / run_id / "clips"
     clip_path = clips_dir / clip_name
     if not _path_is_relative_to(clip_path, clips_dir):
         return None

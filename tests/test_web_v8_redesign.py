@@ -48,10 +48,11 @@ def test_v8_config_fields_remain_unique_and_complete():
     html = _html()
     fields = re.findall(r'data-config-field="([^"]+)"', html)
 
-    assert len(fields) == 50
+    assert len(fields) == 47
     assert len(fields) == len(set(fields))
     for field in [
         "recording_source_default.source_dir",
+        "paths.workspace_root",
         "service.auto_render_after_selection",
         "scheduler.tick_seconds",
         "review_automation_model.temperature",
@@ -62,6 +63,15 @@ def test_v8_config_fields_remain_unique_and_complete():
     assert len(model_field) == 1
     assert "readonly" in model_field[0]
     assert "当前识别模型（请在上方模型列表切换）" in html
+    for hidden_legacy_field in [
+        "recording_source_default.input_dir",
+        "recording_source_default.output_root",
+        "paths.input_dir",
+        "paths.output_root",
+    ]:
+        assert hidden_legacy_field not in fields
+    assert "任务工作区位置" in html
+    assert "应用内部状态目录" in html
 
 
 def test_v8_settings_keep_advanced_fields_collapsed():

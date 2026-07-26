@@ -35,13 +35,22 @@ def _selection() -> list[dict]:
     ]
 
 
-def _write_run(service_dir, run_dir, *, phase="needs_review", run_id="run-1", local_source_path=None):
+def _write_run(
+    service_dir,
+    run_dir,
+    *,
+    phase="needs_review",
+    run_id="run-1",
+    input_dir=None,
+    local_source_path=None,
+):
     run = {
         "run_id": run_id,
         "source_id": "default",
         "source_path": str(run_dir / "source.mp4"),
         "local_source_path": str(local_source_path) if local_source_path else None,
         "run_dir": str(run_dir),
+        "input_dir": str(input_dir) if input_dir else None,
         "fingerprint": "abc123",
         "phase": phase,
         "pid": None,
@@ -185,6 +194,46 @@ def test_render_run_and_preview_cleanup_do_not_delete_files(tmp_path, monkeypatc
     events = (service_dir / "events.jsonl").read_text(encoding="utf-8")
     assert "mcp_render_completed" in events
     assert "cleanup_preview_created" in events
+
+
+def test_cleanup_tools_use_saved_run_input_instead_of_legacy_setting(tmp_path, monkeypatch):
+    service_dir = tmp_path / "service"
+    run_input = tmp_path / "workspace" / "runs" / "run-1" / "input"
+    source = run_input / "source.mp4"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"source")
+    run_dir = run_input.parent / "output"
+    _write_run(
+        service_dir,
+        run_dir,
+        phase="rendered",
+        input_dir=run_input,
+        local_source_path=source,
+    )
+    calls = []
+
+    def fake_cleanup(run_path, *, input_dir, confirm=False):
+        calls.append((run_path, input_dir, confirm))
+        return {"targets": [], "deleted": []}
+
+    monkeypatch.setattr(mcp_tools.service, "cleanup_local_artifacts", fake_cleanup)
+    settings = Settings(
+        recording_source_default=RecordingSourceDefaultConfig(input_dir=tmp_path / "legacy-input")
+    )
+
+    preview = mcp_tools.preview_cleanup("run-1", settings=settings, service_dir=service_dir)
+    delete_source = mcp_tools.delete_local_source(
+        "run-1",
+        reason="rendered",
+        settings=settings,
+        service_dir=service_dir,
+    )
+
+    assert preview["ok"] is True
+    assert calls == [(run_dir, run_input, False)]
+    assert delete_source["status"] == "confirmation_required"
+    confirmation = read_json(service_dir / "confirmations.json")["confirmations"][0]
+    assert confirmation["validation"]["must_be_relative_to"] == str(run_input)
 
 
 def test_scan_now_and_start_run_for_source_use_service_core(tmp_path, monkeypatch):

@@ -28,6 +28,7 @@ DEFAULT_CONFIG_TEMPLATE = """# live-clipper configuration
 # paths, provider choices, and non-secret defaults.
 
 [paths]
+workspace_root = ""
 input_dir = "input"
 output_root = "output"
 work_dir = "work"
@@ -157,6 +158,7 @@ retry_attempts = 2
 
 @dataclass(frozen=True)
 class PathsConfig:
+    workspace_root: Path | None = None
     input_dir: Path = Path("input")
     output_root: Path = Path("output")
     work_dir: Path = Path("work")
@@ -407,10 +409,11 @@ class Settings:
         object.__setattr__(self, "cheap_model_name", llm.model)
 
 
-def _path_or_none(value: Any) -> Path | None:
+def _path_or_none(value: Any, *, expand_user: bool = False) -> Path | None:
     if value is None or value == "":
         return None
-    return Path(str(value))
+    path = Path(str(value))
+    return path.expanduser() if expand_user else path
 
 
 def _path_value(mapping: dict[str, Any], key: str, default: Path) -> Path:
@@ -491,6 +494,7 @@ def load_settings(config_path: Path | None = None) -> Settings:
 
     return Settings(
         paths=PathsConfig(
+            workspace_root=_path_or_none(paths_data.get("workspace_root"), expand_user=True),
             input_dir=_path_value(paths_data, "input_dir", Path("input")),
             output_root=_path_value(paths_data, "output_root", Path("output")),
             work_dir=_path_value(paths_data, "work_dir", Path("work")),
@@ -588,14 +592,18 @@ def write_default_config(path: Path = DEFAULT_CONFIG_PATH, *, overwrite: bool = 
     return path
 
 
-def render_app_config_template(output_root: Path) -> str:
+def render_app_config_template(workspace_root: Path) -> str:
     """Return the cloud-first config used only for a new desktop App home.
 
     CLI/source installs keep DEFAULT_CONFIG_TEMPLATE unchanged and therefore
     remain local-MLX-first. The slim desktop release does not bundle MLX, so a
     newly created App config must start on the OpenAI-compatible ASR backend.
     """
-    template = DEFAULT_CONFIG_TEMPLATE.replace('output_root = "output"', f'output_root = "{output_root}"')
+    template = DEFAULT_CONFIG_TEMPLATE.replace(
+        'workspace_root = ""',
+        f'workspace_root = "{workspace_root.expanduser().resolve()}"',
+        1,
+    )
     return template.replace(
         'backend = "mlx_whisper"\nmodel = "mlx-community/whisper-large-v3-turbo"',
         'backend = "openai"\nmodel = "whisper-1"',

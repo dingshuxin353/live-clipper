@@ -436,7 +436,7 @@ def preview_cleanup(
     if error is not None:
         return error
     assert run is not None
-    input_dir = _settings(settings).recording_source_default.input_dir
+    input_dir = service.input_dir_for_run(run, _settings(settings))
     cleanup = service.cleanup_local_artifacts(Path(str(run["run_dir"])), input_dir=input_dir, confirm=False)
     service.append_event(service_dir, "cleanup_preview_created", run_id=run_id, run_dir=run["run_dir"], created_by="mcp")
     return _ok(run_id=run_id, cleanup=cleanup)
@@ -485,7 +485,7 @@ def cleanup_confirm(
     if error is not None:
         return error
     assert run is not None
-    input_dir = _settings(settings).recording_source_default.input_dir
+    input_dir = service.input_dir_for_run(run, _settings(settings))
     targets = cleanup_plan(Path(str(run["run_dir"])), input_dir=input_dir)
     confirmation = service.create_confirmation(
         action="cleanup_confirm",
@@ -514,7 +514,7 @@ def delete_local_source(
     if error is not None:
         return error
     assert run is not None
-    input_dir = _settings(settings).recording_source_default.input_dir
+    input_dir = service.input_dir_for_run(run, _settings(settings))
     local_source = Path(str(run.get("local_source_path") or ""))
     if not local_source.exists() or not _path_is_relative_to(local_source, input_dir):
         return _error("path_rejected", f"Local source is outside input_dir or missing: {local_source}")

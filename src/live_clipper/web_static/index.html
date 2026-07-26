@@ -178,9 +178,9 @@
                   <input data-config-field="recording_source_default.source_dir" placeholder="例如 /Volumes/your-nas/recordings" />
                   <span class="field-help">直播录像所在的文件夹（支持 NAS）。出现新录像会自动切片；留空则不自动扫描。</span>
                 </label>
-                <label>成片保存位置
-                  <input data-config-field="recording_source_default.output_root" />
-                  <span class="field-help">切好的短视频和标题、简介都保存在这里。</span>
+                <label>任务工作区位置
+                  <input data-config-field="paths.workspace_root" />
+                  <span class="field-help">每次处理都会在这里建立独立目录，并把本地录像副本和转写、切片产物放在一起。</span>
                 </label>
               </div>
 
@@ -282,11 +282,8 @@
               <div class="advanced-grid">
                 <fieldset>
                   <legend>存储与扫描</legend>
-                  <p class="muted field-note">工作目录与扫描节奏，默认值适合绝大多数情况。</p>
-                  <label>本地输入目录<input data-config-field="recording_source_default.input_dir" /></label>
-                  <label>全局输入目录<input data-config-field="paths.input_dir" /></label>
-                  <label>全局输出目录<input data-config-field="paths.output_root" /></label>
-                  <label>工作目录<input data-config-field="paths.work_dir" /></label>
+                  <p class="muted field-note">应用内部状态目录与扫描节奏，默认值适合绝大多数情况。</p>
+                  <label>应用内部状态目录<input data-config-field="paths.work_dir" /></label>
                   <label>术语表路径<input data-config-field="paths.glossary_path" /></label>
                   <label>只处理最近多少小时的录像<input type="number" data-config-field="recording_source_default.since_hours" /></label>
                   <label>录像多少分钟没变化才开始处理<input type="number" data-config-field="recording_source_default.min_age_minutes" /></label>

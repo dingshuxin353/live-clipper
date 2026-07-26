@@ -8,6 +8,7 @@ import pytest
 from live_clipper import config_editor
 from live_clipper.config import load_settings
 from live_clipper.config_editor import (
+    ensure_workspace_root,
     load_editable_config,
     save_asr_model_selection,
     save_editable_config,
@@ -86,6 +87,73 @@ def test_load_editable_config_returns_whitelist_and_secret_status(monkeypatch, t
     assert payload["config"]["review_automation_local_agent"]["provider"] == "codex_cli"
     assert payload["config"]["review_automation_model"]["provider"] == "openai_compatible"
     assert payload["config"]["asr"]["model_source"] == "modelscope"
+
+
+def test_validate_workspace_allows_missing_but_rejects_source_overlap(tmp_path):
+    source_dir = tmp_path / "nas"
+    source_dir.mkdir()
+    config_path = tmp_path / "live-clipper.toml"
+    _write_config(config_path, source_dir)
+    draft = load_editable_config(config_path=config_path)["config"]
+    draft["paths"]["workspace_root"] = str(tmp_path / "not-created")
+
+    valid = validate_editable_config(draft, config_path=config_path)
+
+    assert valid["ok"] is True
+    assert any(item["field"] == "paths.workspace_root" for item in valid["warnings"])
+
+    draft["paths"]["workspace_root"] = str(source_dir / "workspace")
+    invalid = validate_editable_config(draft, config_path=config_path)
+    assert invalid["ok"] is False
+    assert any(item["field"] == "paths.workspace_root" for item in invalid["errors"])
+
+
+def test_ensure_workspace_root_migrates_one_field_without_other_file_changes(tmp_path):
+    missing_nas = tmp_path / "offline-nas"
+    config_path = tmp_path / "live-clipper.toml"
+    _write_config(config_path, missing_nas)
+    env_path = tmp_path / ".env"
+    marker_path = tmp_path / "work" / "service" / "onboarding.json"
+    env_path.write_bytes(b"ASR_API_KEY=keep\\n")
+    marker_path.parent.mkdir(parents=True)
+    marker_path.write_bytes(b"{}\\n")
+    original = tomllib.loads(config_path.read_text(encoding="utf-8"))
+
+    result = ensure_workspace_root(
+        config_path=config_path,
+        workspace_root=tmp_path / "workspace",
+        backup_root=tmp_path / "backups",
+    )
+
+    assert result["ok"] is True
+    assert result["migrated"] is True
+    raw = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert raw["paths"]["workspace_root"] == str(tmp_path / "workspace")
+    raw["paths"].pop("workspace_root")
+    assert raw == original
+    assert env_path.read_bytes() == b"ASR_API_KEY=keep\\n"
+    assert marker_path.read_bytes() == b"{}\\n"
+
+
+def test_ensure_workspace_root_preserves_existing_custom_value(tmp_path):
+    source_dir = tmp_path / "nas"
+    source_dir.mkdir()
+    config_path = tmp_path / "live-clipper.toml"
+    _write_config(config_path, source_dir)
+    original = config_path.read_text(encoding="utf-8").replace(
+        "[paths]\n",
+        f"[paths]\nworkspace_root = '{tmp_path / 'custom'}'\n",
+    )
+    config_path.write_text(original, encoding="utf-8")
+
+    result = ensure_workspace_root(
+        config_path=config_path,
+        workspace_root=tmp_path / "default",
+        backup_root=tmp_path / "backups",
+    )
+
+    assert result["migrated"] is False
+    assert config_path.read_text(encoding="utf-8") == original
 
 
 def test_validate_editable_config_rejects_invalid_values_with_chinese_errors(tmp_path):

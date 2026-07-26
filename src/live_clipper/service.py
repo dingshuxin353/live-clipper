@@ -169,17 +169,41 @@ def validate_service_settings(settings: Settings) -> None:
         raise ValueError("V1 service supports cleanup_mode='preview_only' only")
 
 
-def build_run_identity(source_id: str, source_path: Path, *, output_root: Path) -> dict[str, Any]:
+def build_run_identity(
+    source_id: str,
+    source_path: Path,
+    *,
+    output_root: Path,
+    input_dir: Path = Path("input"),
+    workspace_root: Path | None = None,
+) -> dict[str, Any]:
     stat = source_path.stat()
     raw = f"{source_id}|{source_path}|{stat.st_size}|{stat.st_mtime_ns}"
     fingerprint = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:8]
     run_id = f"{source_path.stem}__{fingerprint}"
+    if workspace_root is not None:
+        workspace_dir = (workspace_root.expanduser() / "runs" / run_id).resolve()
+        run_input_dir = workspace_dir / "input"
+        run_dir = workspace_dir / "output"
+    else:
+        workspace_dir = None
+        run_input_dir = input_dir
+        run_dir = output_root / source_id / run_id
     return {
         "source_id": source_id,
         "fingerprint": fingerprint,
         "run_id": run_id,
-        "run_dir": output_root / source_id / run_id,
+        "workspace_dir": workspace_dir,
+        "input_dir": run_input_dir,
+        "run_dir": run_dir,
     }
+
+
+def input_dir_for_run(run: dict[str, Any], settings: Settings) -> Path:
+    value = run.get("input_dir")
+    if value:
+        return Path(str(value))
+    return settings.recording_source_default.input_dir
 
 
 def _is_stable_file(path: Path, stable_check_seconds: int) -> bool:
@@ -486,7 +510,7 @@ def _approve_cleanup_confirm(
         for target in validation.get("cleanup_targets", [])
         if target.get("deletable")
     }
-    current_targets = cleanup_plan(run_dir, input_dir=settings.recording_source_default.input_dir)
+    current_targets = cleanup_plan(run_dir, input_dir=input_dir_for_run(run, settings))
     deleted = []
     skipped = []
     for target in current_targets:
@@ -507,7 +531,7 @@ def _approve_delete_local_source(
 ) -> dict[str, Any]:
     run_dir = Path(str(run["run_dir"]))
     target = Path(str(confirmation.get("target_path")))
-    input_dir = settings.recording_source_default.input_dir
+    input_dir = input_dir_for_run(run, settings)
     pipeline = _metadata_pipeline(run_dir)
     original_value = pipeline.get("original_source_path")
     original_source = Path(str(original_value)) if original_value else None
@@ -724,7 +748,7 @@ def reconcile_run(run: dict[str, Any], settings: Settings, *, service_dir: Path 
         render_selected_clips(run_dir / "selected_clips.json")
         cleanup_local_artifacts(
             run_dir,
-            input_dir=settings.recording_source_default.input_dir,
+            input_dir=input_dir_for_run(run, settings),
             confirm=False,
         )
         run["phase"] = "rendered"
@@ -760,6 +784,8 @@ def _start_run_for_source(
         source_config.source_id,
         source_path,
         output_root=source_config.output_root,
+        input_dir=source_config.input_dir,
+        workspace_root=settings.paths.workspace_root,
     )
     created_at = now_utc()
     run = {
@@ -767,6 +793,8 @@ def _start_run_for_source(
         "source_id": source_config.source_id,
         "source_path": str(source_path),
         "local_source_path": None,
+        "workspace_dir": str(identity["workspace_dir"]) if identity["workspace_dir"] else None,
+        "input_dir": str(Path(identity["input_dir"]).resolve()),
         "run_dir": str(identity["run_dir"]),
         "fingerprint": identity["fingerprint"],
         "phase": "discovered",
@@ -780,11 +808,11 @@ def _start_run_for_source(
     run["phase"] = "staging"
     run["updated_at"] = now_utc()
     append_event(service_dir, "staging_started", run_id=run["run_id"], source_path=str(source_path))
-    local_source_path = stage_source_file(source_path, input_dir=source_config.input_dir)
+    local_source_path = stage_source_file(source_path, input_dir=Path(identity["input_dir"]))
     run["local_source_path"] = str(local_source_path)
     pid = _start_pipeline_process(
         source_path,
-        input_dir=source_config.input_dir,
+        input_dir=Path(identity["input_dir"]),
         run_dir=Path(str(run["run_dir"])),
         log_path=Path(str(run["log_path"])),
     )
@@ -807,6 +835,8 @@ def start_run_for_source(
         settings.recording_source_default.source_id,
         source_path,
         output_root=settings.recording_source_default.output_root,
+        input_dir=settings.recording_source_default.input_dir,
+        workspace_root=settings.paths.workspace_root,
     )
     if identity["fingerprint"] in _known_fingerprints(runs):
         raise ValueError("duplicate_run")
@@ -840,6 +870,8 @@ def run_service_once(settings: Settings, *, service_dir: Path = DEFAULT_SERVICE_
             settings.recording_source_default.source_id,
             source_path,
             output_root=settings.recording_source_default.output_root,
+            input_dir=settings.recording_source_default.input_dir,
+            workspace_root=settings.paths.workspace_root,
         )
         if identity["fingerprint"] in known:
             continue

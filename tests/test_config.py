@@ -27,6 +27,20 @@ def test_load_settings_uses_mvp_defaults_when_env_is_missing(monkeypatch, tmp_pa
     assert settings.asr_backend == "mlx_whisper"
     assert settings.asr_model == "mlx-community/whisper-large-v3-turbo"
     assert settings.asr.model_source == "modelscope"
+    assert settings.paths.workspace_root is None
+
+
+def test_load_settings_expands_workspace_root(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path / "profile"))
+    (tmp_path / "live-clipper.toml").write_text(
+        '[paths]\nworkspace_root = "~/Venus"\n',
+        encoding="utf-8",
+    )
+
+    settings = load_settings()
+
+    assert settings.paths.workspace_root == tmp_path / "profile" / "Venus"
 
 
 def test_load_settings_defaults_openai_asr_model_when_backend_is_openai(monkeypatch, tmp_path):

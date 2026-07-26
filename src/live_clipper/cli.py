@@ -7,8 +7,9 @@ import shutil
 import time
 from pathlib import Path
 
+from . import config_editor
 from .ai_guide import AI_ASSISTANT_GUIDE
-from .app_dirs import default_output_root, prepare_app_home
+from .app_dirs import default_workspace_root, prepare_app_home
 from .automation import DEFAULT_NAS_DIR, check_automation_runs, start_latest_recording_job
 from .build_codex_brief import (
     build_codex_brief_file,
@@ -149,9 +150,20 @@ def run_app(*, host: str = "127.0.0.1", port: int = 8765) -> None:
     home = prepare_app_home()
     os.chdir(home)
     config_path = home / "live-clipper.toml"
+    workspace_root = default_workspace_root(home)
     if not config_path.exists():
-        config_path.write_text(render_app_config_template(default_output_root(home)), encoding="utf-8")
+        config_path.write_text(render_app_config_template(workspace_root), encoding="utf-8")
         emit_progress(f"[App] 已写入初始配置: {config_path}")
+    else:
+        migrated = config_editor.ensure_workspace_root(
+            config_path=config_path,
+            workspace_root=workspace_root,
+            backup_root=home / "work" / "config_backups",
+        )
+        if not migrated["ok"]:
+            raise RuntimeError(migrated["message"])
+        if migrated["migrated"]:
+            emit_progress(f"[App] 已升级任务工作区配置: {migrated['workspace_root']}")
     env_path = home / ".env"
     if not env_path.exists():
         env_path.write_text(ENV_TEMPLATE, encoding="utf-8")
