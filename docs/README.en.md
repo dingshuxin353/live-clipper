@@ -59,7 +59,7 @@ Local transcription does not mean AI review is fully offline. Network use for AI
 ### Models and services
 
 - Download, inspect, and remove local speech models.
-- Choose Hugging Face or a mirror as the download source.
+- Choose ModelScope (recommended in mainland China) or Hugging Face (official international source).
 - Configure speech recognition and AI review separately.
 
 ### Settings and safety
@@ -72,11 +72,11 @@ Local transcription does not mean AI review is fully offline. Network use for AI
 
 1. Download and install Venus.
 2. Choose recording and export folders.
-3. Download the recommended local speech model, or configure an ASR service.
+3. Choose and download a local speech model, or configure a cloud ASR service.
 4. Configure how AI review should run.
 5. Return to Clip Results and select “Scan recordings now.”
 
-The recommended local speech model is about 1.6GB. Its first download requires a network connection; transcription can run offline afterward. AI review may still use the network, depending on your configuration.
+Local speech models are available in Small (about 187 MB), Medium (about 489 MB), and Large (about 1.6 GB). Onboarding initially selects Small to reduce the first download cost, not as a quality recommendation. The first download requires a network connection; transcription can run offline afterward. AI review may still use the network, depending on your configuration.
 
 ## Download
 
