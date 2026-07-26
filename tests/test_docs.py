@@ -236,9 +236,32 @@ def test_web_static_exposes_local_asr_model_manager():
 def test_readme_explains_product_level_local_model_capability():
     text = Path("README.md").read_text(encoding="utf-8")
 
-    assert "约 1.6GB" in text
+    for expected in [
+        "ModelScope（中国大陆推荐）",
+        "Hugging Face（国际官方）",
+        "约 187 MB",
+        "约 489 MB",
+        "约 1.6 GB",
+    ]:
+        assert expected in text
     assert "下载完成后，可以离线完成语音转写" in text
     assert "AI 选片是否联网" in text
+    assert "镜像下载源" not in text
+
+
+def test_english_readme_explains_current_local_model_choices():
+    text = Path("docs/README.en.md").read_text(encoding="utf-8")
+
+    for expected in [
+        "ModelScope",
+        "Hugging Face",
+        "about 187 MB",
+        "about 489 MB",
+        "about 1.6 GB",
+    ]:
+        assert expected in text
+    assert "recommended local speech model" not in text
+    assert "Hugging Face or a mirror" not in text
 
 
 def test_advanced_usage_documents_model_source_details():

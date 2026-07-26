@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.3.1 - 2026-07-26
+
+### Added
+
+- Added resumable, integrity-checked local Whisper model downloads from ModelScope and Hugging Face.
+- Added Small, Medium, and Large local model choices with direct current-model switching.
+- Added a four-step first-run flow with local ASR first and cloud ASR as a fallback.
+
+### Changed
+
+- Made Whisper Small the initial first-run local choice without labeling any model as recommended.
+- Adopted MiSans as the default interface font.
+- Switched formal macOS release preparation to the local asynchronous notarization process.
+
+### Fixed
+
+- Fixed the macOS menu bar template icon so it no longer renders as a solid square.
+
 ## 0.3.0 - 2026-07-23
 
 ### Added
