@@ -24,7 +24,6 @@ cd /Users/gouzi/dingshuxinRepo/live-clipper/lanes/<lane> && python3.11 -m venv .
 
 | 顺序 | 车道 | Spec | 依赖 | 状态 |
 |---:|---|---|---|---|
-| 1 | onboarding | 待规划 | 模型矩阵已合入 | 下一规划项；等待规划者定义范围与 Spec，未启动 |
 
 ## 当前发布操作
 
@@ -32,7 +31,7 @@ cd /Users/gouzi/dingshuxinRepo/live-clipper/lanes/<lane> && python3.11 -m venv .
 
 ## 产品版本路线
 
-- **0.3.1 · 本地模型与首次使用闭环**：Qwen3 不进入本版本；下载基础设施、MiSans 默认字体、macOS 菜单栏图标修复及 Whisper 三档/当前模型闭环均已合入；下一规划项仅保留首启向导（onboarding），尚未启动；其后再规划 tag 自动工作流停用、本地 `.[mlx]` 正式构建、真实中文转写与 `0.3.0 → 0.3.1` 自动更新真机演练。
+- **0.3.1 · 本地模型与首次使用闭环**：Qwen3 不进入本版本；下载基础设施、MiSans 默认字体、macOS 菜单栏图标修复、Whisper 三档/当前模型闭环及首启向导均已合入；后续待规划 tag 自动工作流停用、本地 `.[mlx]` 正式构建、真实中文转写与 `0.3.0 → 0.3.1` 自动更新真机演练。
 - **0.3.2 · UI 组件系统统一**：盘点并统一输入框、选择框、按钮、卡片、状态、弹层和表单结构；保持原生 HTML/JS 技术栈，不在本版本迁移 React/Vue。
 - **0.4.0 · Project 工作台**：原 V11 方向；原 V10c“切片偏好 + 提示词编辑器”并入 Project、场景模板和关注点预设。
 
@@ -41,6 +40,7 @@ cd /Users/gouzi/dingshuxinRepo/live-clipper/lanes/<lane> && python3.11 -m venv .
 
 ## 已合入
 
+- 0.3.1-onboarding-local-asr（首次启动本地/云端语音识别闭环；lane `1df20b8041992c50f8d792a23118d588835afa10`；merge `ba5a272df406acdc491f77a465d9448fe843a0fb`；定向 70 passed；全量 385 passed；Ruff、Node 语法、禁用词与六文件边界通过）
 - 0.3.1-model-matrix-selection（Whisper 三档模型与当前模型闭环；lane `45fd9d814ae904427b8bd59bf0a469c9e5eb484a`；merge `42214c87745e9dfdce39eac7f837b6517eb9362f`；定向 50 passed；全量 367 passed；Ruff、Node 语法、禁用词与九文件边界通过）
 - 0.3.1-macos-tray-icon-alpha（macOS 菜单栏图标透明蒙版修复，89317ce4fa09c9a49b3738d313782534b41d973a）
 - 0.3.1-misans-default-font（MiSans 默认界面字体与打包接线，62fc0ebff0f5c27cd69205f52f76a7a90166133d）
