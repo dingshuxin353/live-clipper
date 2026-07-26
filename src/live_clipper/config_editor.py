@@ -18,7 +18,7 @@ from .utils import ensure_dir
 EditableConfig = dict[str, Any]
 
 PATH_FIELDS = {
-    "paths": {"input_dir", "output_root", "work_dir", "glossary_path"},
+    "paths": {"workspace_root", "input_dir", "output_root", "work_dir", "glossary_path"},
     "recording_source_default": {"source_dir", "input_dir", "output_root"},
 }
 NUMBER_RANGES: dict[tuple[str, str], tuple[float, float]] = {
@@ -271,6 +271,76 @@ def save_asr_model_selection(
     }
 
 
+def ensure_workspace_root(
+    *,
+    config_path: Path,
+    workspace_root: Path,
+    backup_root: Path,
+) -> dict[str, Any]:
+    """Add the App workspace field without validating or rewriting other settings."""
+    raw_result = _load_raw_config(config_path)
+    if not raw_result["ok"]:
+        return {"migrated": False, **raw_result}
+
+    raw = raw_result["config"]
+    paths = raw.get("paths")
+    existing = paths.get("workspace_root") if isinstance(paths, dict) else None
+    if existing:
+        resolved = Path(str(existing)).expanduser()
+        (resolved / "runs").mkdir(parents=True, exist_ok=True)
+        return {
+            "ok": True,
+            "migrated": False,
+            "workspace_root": str(resolved),
+            "backup_path": None,
+        }
+
+    resolved = workspace_root.expanduser().resolve()
+    merged = deepcopy(raw)
+    merged.setdefault("paths", {})
+    merged["paths"]["workspace_root"] = str(resolved)
+    rendered = _dump_toml(merged)
+    original_text = config_path.read_text(encoding="utf-8")
+    backup_path: Path | None = None
+    temp_name: str | None = None
+    replaced = False
+    try:
+        backup_path = _backup_config(config_path, backup_root)
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            delete=False,
+            dir=str(config_path.parent),
+            prefix=f".{config_path.name}.",
+            suffix=".tmp",
+        ) as temp_file:
+            temp_name = temp_file.name
+            temp_file.write(rendered)
+        Path(temp_name).replace(config_path)
+        replaced = True
+        loaded = load_settings(config_path)
+        if loaded.paths.workspace_root != resolved:
+            raise ValueError("任务工作区配置回读不一致")
+        (resolved / "runs").mkdir(parents=True, exist_ok=True)
+    except Exception as exc:  # noqa: BLE001 - preserve the exact prior App config.
+        if replaced:
+            config_path.write_text(original_text, encoding="utf-8")
+        if temp_name and Path(temp_name).exists():
+            Path(temp_name).unlink(missing_ok=True)
+        return {
+            "ok": False,
+            "migrated": False,
+            "message": f"任务工作区迁移失败，已保留旧配置：{exc}",
+            "error": str(exc),
+        }
+    return {
+        "ok": True,
+        "migrated": True,
+        "workspace_root": str(resolved),
+        "backup_path": str(backup_path),
+    }
+
+
 def _load_raw_config(config_path: Path) -> dict[str, Any]:
     if not config_path.exists():
         return {"ok": True, "config": tomllib.loads(DEFAULT_CONFIG_TEMPLATE)}
@@ -317,7 +387,10 @@ def _editable_from_raw(raw: dict[str, Any]) -> EditableConfig:
     if asr.get("model_source") == "hf-mirror":
         asr["model_source"] = "modelscope"
     return {
-        "paths": _pick(raw.get("paths", {}), ["input_dir", "output_root", "work_dir", "glossary_path"]),
+        "paths": _pick(
+            raw.get("paths", {}),
+            ["workspace_root", "input_dir", "output_root", "work_dir", "glossary_path"],
+        ),
         "recording_source_default": _pick(
             recording_default,
             ["source_dir", "input_dir", "output_root", "since_hours", "min_age_minutes", "stable_check_seconds"],
@@ -422,6 +495,25 @@ def _validate_paths(
     source_path = _resolve_path(source_value, base_dir) if source_value else None
     if source_path and (not source_path.exists() or not source_path.is_dir()):
         errors.append(_error("recording_source_default.source_dir", "录播源目录不存在，请确认 NAS 已挂载，或重新选择目录。"))
+
+    workspace_value = config["paths"].get("workspace_root")
+    if workspace_value:
+        workspace_path = _resolve_path(workspace_value, base_dir)
+        if not workspace_path.exists():
+            warnings.append({
+                "field": "paths.workspace_root",
+                "message": "任务工作区目录尚不存在，保存后运行时会按需创建。",
+            })
+        if source_path and (
+            workspace_path == source_path
+            or _is_relative_to(workspace_path, source_path)
+            or _is_relative_to(source_path, workspace_path)
+        ):
+            errors.append(_error(
+                "paths.workspace_root",
+                "任务工作区与录播源目录不能相同或互相包含，避免把运行产物再次扫描为原始录像。",
+            ))
+        return
 
     input_path = _resolve_path(config["recording_source_default"].get("input_dir"), base_dir)
     output_path = _resolve_path(config["recording_source_default"].get("output_root"), base_dir)
@@ -692,7 +784,7 @@ def _toml_value(value: Any) -> str:
 
 
 def _resolve_path(value: Any, base_dir: Path) -> Path:
-    path = Path(str(value or ""))
+    path = Path(str(value or "")).expanduser()
     return path if path.is_absolute() else base_dir / path
 
 

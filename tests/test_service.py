@@ -2,11 +2,19 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import pytest
 
 from live_clipper import service
-from live_clipper.config import RecordingSourceDefaultConfig, SchedulerConfig, SchedulerJobConfig, ServiceConfig, Settings
+from live_clipper.config import (
+    PathsConfig,
+    RecordingSourceDefaultConfig,
+    SchedulerConfig,
+    SchedulerJobConfig,
+    ServiceConfig,
+    Settings,
+)
 from live_clipper.utils import read_json, write_json
 
 
@@ -26,6 +34,23 @@ def test_build_run_identity_uses_source_fingerprint(tmp_path):
     assert identity["fingerprint"]
     assert identity["run_id"].startswith("recording__")
     assert identity["run_dir"].parent == tmp_path / "output" / "default"
+
+
+def test_build_run_identity_uses_per_run_workspace_layout(tmp_path):
+    source = tmp_path / "recording.mkv"
+    source.write_bytes(b"video")
+
+    identity = service.build_run_identity(
+        "default",
+        source,
+        output_root=tmp_path / "legacy-output",
+        input_dir=tmp_path / "legacy-input",
+        workspace_root=tmp_path / "workspace",
+    )
+
+    assert identity["workspace_dir"] == tmp_path / "workspace" / "runs" / identity["run_id"]
+    assert identity["input_dir"] == identity["workspace_dir"] / "input"
+    assert identity["run_dir"] == identity["workspace_dir"] / "output"
 
 
 def test_scan_recording_source_filters_recent_stable_videos(tmp_path):
@@ -98,6 +123,74 @@ def test_run_service_once_stages_and_launches_pipeline(tmp_path, monkeypatch):
     assert "pipeline_started" in events
 
 
+def test_start_run_workspace_stages_into_own_input_and_persists_absolute_paths(tmp_path, monkeypatch):
+    source = tmp_path / "nas" / "recording.mkv"
+    source.parent.mkdir()
+    source.write_bytes(b"video")
+    calls = []
+    monkeypatch.setattr(
+        service,
+        "_start_pipeline_process",
+        lambda source_path, *, input_dir, run_dir, log_path: calls.append(
+            (source_path, input_dir, run_dir, log_path)
+        )
+        or 4321,
+    )
+    workspace = tmp_path / "workspace"
+    settings = Settings(
+        paths=PathsConfig(workspace_root=workspace),
+        recording_source_default=RecordingSourceDefaultConfig(
+            source_dir=source.parent,
+            input_dir=tmp_path / "legacy-input",
+            output_root=tmp_path / "legacy-output",
+            stable_check_seconds=0,
+        ),
+    )
+
+    run = service.start_run_for_source(source, settings=settings, service_dir=tmp_path / "service")
+
+    assert Path(run["workspace_dir"]).is_absolute()
+    assert Path(run["input_dir"]).is_absolute()
+    assert Path(run["run_dir"]).is_absolute()
+    assert Path(run["local_source_path"]).read_bytes() == b"video"
+    assert Path(run["local_source_path"]).parent == Path(run["input_dir"])
+    assert Path(run["run_dir"]) == Path(run["workspace_dir"]) / "output"
+    assert calls[0][1] == Path(run["input_dir"])
+    assert calls[0][2] == Path(run["run_dir"])
+    saved = read_json(tmp_path / "service" / "runs.json")["runs"][0]
+    for field in ("workspace_dir", "input_dir", "run_dir", "local_source_path"):
+        assert saved[field] == run[field]
+
+
+def test_workspace_runs_with_same_filename_keep_independent_inputs(tmp_path, monkeypatch):
+    first = tmp_path / "nas-a" / "recording.mkv"
+    second = tmp_path / "nas-b" / "recording.mkv"
+    first.parent.mkdir()
+    second.parent.mkdir()
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+    monkeypatch.setattr(service, "_start_pipeline_process", lambda *args, **kwargs: 4321)
+    workspace = tmp_path / "workspace"
+    settings = Settings(
+        paths=PathsConfig(workspace_root=workspace),
+        recording_source_default=RecordingSourceDefaultConfig(
+            input_dir=tmp_path / "legacy-input",
+            output_root=tmp_path / "legacy-output",
+            stable_check_seconds=0,
+        ),
+    )
+    service_dir = tmp_path / "service"
+
+    first_run = service.start_run_for_source(first, settings=settings, service_dir=service_dir)
+    second_run = service.start_run_for_source(second, settings=settings, service_dir=service_dir)
+
+    assert first_run["run_id"] != second_run["run_id"]
+    assert Path(first_run["input_dir"]) != Path(second_run["input_dir"])
+    assert Path(first_run["local_source_path"]).read_bytes() == b"first"
+    assert Path(second_run["local_source_path"]).read_bytes() == b"second"
+    assert not list(workspace.rglob("*.part"))
+
+
 def test_reconcile_marks_needs_review_when_brief_exists(tmp_path, monkeypatch):
     run_dir = tmp_path / "output" / "default" / "recording__abc123"
     write_json(run_dir / "run_metadata.json", {"source_name": "recording.mkv"})
@@ -161,6 +254,46 @@ def test_reconcile_auto_renders_and_cleanup_preview_only(tmp_path, monkeypatch):
         ("render", run_dir / "selected_clips.json"),
         ("cleanup", run_dir, tmp_path / "input", False, False),
     ]
+
+
+def test_reconcile_auto_cleanup_uses_saved_run_input(tmp_path, monkeypatch):
+    run_dir = tmp_path / "workspace" / "runs" / "recording__abc123" / "output"
+    run_input = run_dir.parent / "input"
+    write_json(run_dir / "run_metadata.json", {"source_name": "recording.mkv"})
+    write_json(run_dir / "codex_brief.json", {"candidates": []})
+    write_json(run_dir / "selected_clips.json", [{"clip_id": "clip-1"}])
+    calls = []
+
+    def fake_render(selection_path):
+        clips_dir = run_dir / "clips"
+        clips_dir.mkdir(parents=True)
+        clip = clips_dir / "clip-1.mp4"
+        clip.write_bytes(b"clip")
+        return [clip]
+
+    def fake_cleanup(run_path, *, input_dir, confirm=False, force=False):
+        calls.append((run_path, input_dir, confirm, force))
+        return {"deleted": [], "targets": []}
+
+    monkeypatch.setattr(service, "render_selected_clips", fake_render)
+    monkeypatch.setattr(service, "cleanup_local_artifacts", fake_cleanup)
+    run = {
+        "run_id": "recording__abc123",
+        "source_id": "default",
+        "run_dir": str(run_dir),
+        "input_dir": str(run_input),
+        "phase": "needs_review",
+        "pid": None,
+        "updated_at": "now",
+    }
+    settings = Settings(
+        service=ServiceConfig(auto_render_after_selection=True),
+        recording_source_default=RecordingSourceDefaultConfig(input_dir=tmp_path / "legacy-input"),
+    )
+
+    service.reconcile_run(run, settings, service_dir=tmp_path / "service")
+
+    assert calls == [(run_dir, run_input, False, False)]
 
 
 def test_start_service_background_writes_pid_and_refuses_duplicate(tmp_path, monkeypatch):

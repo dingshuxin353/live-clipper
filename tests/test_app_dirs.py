@@ -15,6 +15,29 @@ def test_default_output_root_stays_in_home_with_env_override(monkeypatch, tmp_pa
     assert app_dirs.default_output_root(tmp_path / "home") == tmp_path / "home" / "output"
 
 
+def test_default_workspace_root_isolated_by_home_override(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    monkeypatch.setenv("LIVE_CLIPPER_HOME", str(home))
+
+    assert app_dirs.default_workspace_root(home) == home / "workspace"
+
+
+def test_default_workspace_root_uses_user_venus_on_macos(monkeypatch, tmp_path):
+    monkeypatch.delenv("LIVE_CLIPPER_HOME", raising=False)
+    monkeypatch.setattr(app_dirs.sys, "platform", "darwin")
+    monkeypatch.setattr(app_dirs.Path, "home", lambda: tmp_path)
+
+    assert app_dirs.default_workspace_root(tmp_path / "app-home") == tmp_path / "Venus"
+
+
+def test_default_workspace_root_falls_back_inside_app_home(monkeypatch, tmp_path):
+    monkeypatch.delenv("LIVE_CLIPPER_HOME", raising=False)
+    monkeypatch.setattr(app_dirs.sys, "platform", "linux")
+    home = tmp_path / "app-home"
+
+    assert app_dirs.default_workspace_root(home) == home / "workspace"
+
+
 def test_prepare_app_home_creates_directories(monkeypatch, tmp_path):
     home = tmp_path / "home"
     monkeypatch.setenv("LIVE_CLIPPER_HOME", str(home))
@@ -22,7 +45,8 @@ def test_prepare_app_home_creates_directories(monkeypatch, tmp_path):
     assert result == home
     for subdir in app_dirs.WORK_SUBDIRS:
         assert (home / subdir).is_dir()
-    assert (home / "output").is_dir()
+    assert (home / "workspace" / "runs").is_dir()
+    assert not (home / "input").exists()
 
 
 def test_run_app_bootstraps_home(monkeypatch, tmp_path):
@@ -43,14 +67,14 @@ def test_run_app_bootstraps_home(monkeypatch, tmp_path):
     cli.run_app(host="127.0.0.1", port=9999)
 
     config_text = (home / "live-clipper.toml").read_text(encoding="utf-8")
-    assert f'output_root = "{home / "output"}"' in config_text
+    assert f'workspace_root = "{home / "workspace"}"' in config_text
     assert 'backend = "openai"' in config_text
     assert 'model = "whisper-1"' in config_text
     assert 'model_source = "modelscope"' in config_text
     assert (home / ".env").exists()
     assert Path.cwd() == home
     assert captured["port"] == 9999
-    assert captured["paths"].output_root == home / "output"
+    assert captured["paths"].output_root == Path("output")
 
 
 def test_write_default_config_keeps_cli_mlx_default(tmp_path):

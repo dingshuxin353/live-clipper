@@ -109,6 +109,7 @@ def test_post_api_config_saves_backup_and_loadable_file(tmp_path):
     draft = load_editable_config(config_path=config_path)["config"]
     draft["service"]["scan_interval_minutes"] = 15
     draft["asr"]["model_source"] = "huggingface"
+    draft["paths"]["workspace_root"] = str(tmp_path / "workspace")
 
     status, _headers, payload = handle_api_request(
         "POST",
@@ -123,6 +124,9 @@ def test_post_api_config_saves_backup_and_loadable_file(tmp_path):
     assert "scan_interval_minutes = 15" in config_path.read_text(encoding="utf-8")
     assert payload["requires_service_restart"] is True
     assert load_editable_config(config_path=config_path)["config"]["asr"]["model_source"] == "huggingface"
+    assert load_editable_config(config_path=config_path)["config"]["paths"]["workspace_root"] == str(
+        tmp_path / "workspace"
+    )
 
 
 def test_config_api_migrates_legacy_hf_mirror_and_rejects_new_value(tmp_path):

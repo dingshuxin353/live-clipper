@@ -15,7 +15,6 @@ APP_DIR_NAME = "Venus"
 HOME_ENV_VAR = "LIVE_CLIPPER_HOME"
 
 WORK_SUBDIRS = [
-    Path("input"),
     Path("work") / "cache",
     Path("work") / "logs",
     Path("work") / "automation_state",
@@ -43,9 +42,17 @@ def default_output_root(home: Path) -> Path:
     return home / "output"
 
 
+def default_workspace_root(home: Path) -> Path:
+    if os.environ.get(HOME_ENV_VAR, "").strip():
+        return home / "workspace"
+    if sys.platform == "darwin":
+        return Path.home() / APP_DIR_NAME
+    return home / "workspace"
+
+
 def prepare_app_home(home: Path | None = None) -> Path:
     home = home or default_app_home()
     for subdir in WORK_SUBDIRS:
         (home / subdir).mkdir(parents=True, exist_ok=True)
-    default_output_root(home).mkdir(parents=True, exist_ok=True)
+    (default_workspace_root(home) / "runs").mkdir(parents=True, exist_ok=True)
     return home

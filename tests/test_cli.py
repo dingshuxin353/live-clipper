@@ -907,3 +907,44 @@ def test_main_reports_cheap_model_service_errors_without_traceback(tmp_path, mon
         "Cheap model request failed after 5/5 attempt(s): SSLError\n"
         "进度已经写入断点文件。请使用同一条命令加 --resume 继续。"
     )
+
+
+def test_run_app_upgrades_existing_home_without_touching_app_files(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("LIVE_CLIPPER_HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+    config_path = home / "live-clipper.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "[paths]",
+                "input_dir = 'input'",
+                "output_root = 'output'",
+                "",
+                "[recording_source.default]",
+                f"source_dir = '{tmp_path / 'offline-nas'}'",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    env_bytes = b"ASR_API_KEY=keep\\n"
+    marker_bytes = b'{"completed": true}\\n'
+    fixture_bytes = b"legacy input"
+    (home / ".env").write_bytes(env_bytes)
+    marker = home / "work" / "service" / "onboarding.json"
+    marker.parent.mkdir(parents=True)
+    marker.write_bytes(marker_bytes)
+    legacy_fixture = home / "input" / "keep.txt"
+    legacy_fixture.parent.mkdir()
+    legacy_fixture.write_bytes(fixture_bytes)
+    monkeypatch.setattr(cli, "run_web_server", lambda **kwargs: None)
+    monkeypatch.setattr(cli, "start_embedded_service", lambda *args, **kwargs: {"ok": True})
+
+    cli.run_app()
+
+    assert f'workspace_root = "{home / "workspace"}"' in config_path.read_text(encoding="utf-8")
+    assert (home / "workspace" / "runs").is_dir()
+    assert (home / ".env").read_bytes() == env_bytes
+    assert marker.read_bytes() == marker_bytes
+    assert legacy_fixture.read_bytes() == fixture_bytes

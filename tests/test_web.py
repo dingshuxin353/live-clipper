@@ -5,6 +5,7 @@ from http.server import ThreadingHTTPServer
 from threading import Thread
 from urllib.request import urlopen
 
+from live_clipper import web
 from live_clipper.utils import write_json
 from live_clipper.web import LiveClipperRequestHandler, WebPaths, build_run_detail, build_runs_index, handle_api_request
 
@@ -108,6 +109,61 @@ def test_build_run_detail_lists_generated_clips_and_cleanup_targets(tmp_path):
     local_source_target = next(target for target in detail["cleanup"]["targets"] if target["kind"] == "local_source_video")
     assert local_source_target["deletable"] is True
     assert detail["actions"]["can_delete_local_source"] is True
+
+
+def test_service_run_media_and_cleanup_use_saved_run_paths(tmp_path):
+    service_dir = tmp_path / "service"
+    workspace_dir = tmp_path / "workspace" / "runs" / "business-run"
+    input_dir = workspace_dir / "input"
+    run_dir = workspace_dir / "output"
+    local_source = input_dir / "recording.mkv"
+    local_source.parent.mkdir(parents=True)
+    local_source.write_bytes(b"local video")
+    clips_dir = run_dir / "clips"
+    clips_dir.mkdir(parents=True)
+    clip = clips_dir / "clip_01.mp4"
+    clip.write_bytes(b"clip one")
+    write_json(
+        run_dir / "run_metadata.json",
+        {
+            "pipeline": {
+                "local_source_path": str(local_source),
+                "original_source_path": str(tmp_path / "nas" / "recording.mkv"),
+            }
+        },
+    )
+    write_json(
+        service_dir / "runs.json",
+        {
+            "runs": [
+                    {
+                        "run_id": "business-run",
+                        "run_dir": str(run_dir),
+                        "input_dir": str(input_dir),
+                        "local_source_path": str(local_source),
+                        "log_path": str(service_dir / "runs" / "business-run.log"),
+                        "phase": "rendered",
+                    }
+            ]
+        },
+    )
+    paths = WebPaths(
+        output_root=tmp_path / "legacy-output",
+        state_dir=tmp_path / "state",
+        log_dir=tmp_path / "logs",
+        input_dir=tmp_path / "legacy-input",
+        service_dir=service_dir,
+        config_path=tmp_path / "missing.toml",
+    )
+
+    detail = build_run_detail("business-run", paths)
+
+    assert detail["clips"][0]["url"] == "/media/runs/business-run/clips/clip_01.mp4"
+    assert next(
+        target for target in detail["cleanup"]["targets"] if target["kind"] == "local_source_video"
+    )["path"] == str(local_source)
+    assert web._media_clip_path("/media/runs/business-run/clips/clip_01.mp4", paths) == clip
+    assert web._media_clip_path("/media/runs/business-run/clips/../secret.mp4", paths) is None
 
 
 def test_handle_api_request_returns_json_payloads(tmp_path):
