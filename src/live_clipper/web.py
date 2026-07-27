@@ -614,6 +614,8 @@ def handle_api_request(
                     str(data.get("model") or ""),
                 )
             )
+        if method == "POST" and parts == ["api", "onboarding", "skip"]:
+            return _json_response(onboarding.skip_onboarding(service_dir=paths.service_dir))
         if method == "POST" and parts == ["api", "onboarding", "complete"]:
             return _json_response(
                 onboarding.complete_onboarding(body or {}, config_path=paths.config_path, service_dir=paths.service_dir)
