@@ -701,7 +701,7 @@ async function refreshAsrModels() {
     if (model.state === "installed") {
       statusHtml = `<span class="asr-model-status ok">${currentBadge}已安装 · ${formatModelBytes(model.installed_bytes)}</span>`;
       if (!model.current) {
-        actionsHtml = '<button type="button" data-action="select">设为当前模型</button><button type="button" data-action="delete">删除</button>';
+        actionsHtml = '<button type="button" class="primary-button small asr-model-action" data-action="select">设为当前模型</button><button type="button" class="secondary-button small asr-model-action asr-model-delete" data-action="delete">删除</button>';
       }
     } else if (model.state === "downloading") {
       const percent = model.bytes_total ? Math.min(99, Math.round((model.partial_bytes / model.bytes_total) * 100)) : 0;
@@ -709,17 +709,17 @@ async function refreshAsrModels() {
     } else if (model.state === "damaged") {
       const damagedLabel = model.current ? "当前使用 · 模型损坏" : "损坏需修复";
       statusHtml = `<span class="asr-model-status error">${damagedLabel}${model.state_reason ? ` · ${escapeHtml(model.state_reason)}` : ""}</span>`;
-      actionsHtml = '<button type="button" data-action="download">修复</button>';
+      actionsHtml = '<button type="button" class="primary-button small asr-model-action" data-action="download">修复</button>';
     } else if (model.partial_bytes || model.last_error) {
       const errorDetail = model.last_error ? ` · ${escapeHtml(model.last_error)}` : "";
       const incompleteLabel = model.current
         ? `当前使用 · 尚未下载${errorDetail}`
         : (model.last_error ? escapeHtml(model.last_error) : "下载未完成");
       statusHtml = `<span class="asr-model-status error">${incompleteLabel}</span>`;
-      actionsHtml = '<button type="button" data-action="download">继续下载</button>';
+      actionsHtml = '<button type="button" class="primary-button small asr-model-action" data-action="download">继续下载</button>';
     } else {
       statusHtml = model.current ? '<span class="asr-model-status error">当前使用 · 尚未下载</span>' : "";
-      actionsHtml = '<button type="button" data-action="download">下载</button>';
+      actionsHtml = '<button type="button" class="primary-button small asr-model-action" data-action="download">下载</button>';
     }
     row.innerHTML = `
       <div class="asr-model-info">
@@ -727,7 +727,10 @@ async function refreshAsrModels() {
         <span class="muted">${meta}</span>
         <span class="asr-model-source">将使用：${escapeHtml(sourceLabel)}${model.last_source ? ` · 上次：${escapeHtml(modelSourceLabel(model.last_source))}` : ""}</span>
       </div>
-      <div class="asr-model-actions">${statusHtml}${actionsHtml}</div>
+      <div class="asr-model-side">
+        <div class="asr-model-status">${statusHtml}</div>
+        <div class="asr-model-actions">${actionsHtml}</div>
+      </div>
     `;
     const downloadBtn = row.querySelector('[data-action="download"]');
     if (downloadBtn) downloadBtn.addEventListener("click", () => startAsrModelDownload(model.id));

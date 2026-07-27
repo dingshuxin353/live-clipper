@@ -12,6 +12,10 @@ def _app() -> str:
     return Path("src/live_clipper/web_static/app.js").read_text(encoding="utf-8")
 
 
+def _styles() -> str:
+    return Path("src/live_clipper/web_static/styles.css").read_text(encoding="utf-8")
+
+
 def test_v8_console_uses_user_task_navigation():
     html = _html()
 
@@ -139,6 +143,65 @@ def test_v8_model_matrix_order_tiers_and_safe_current_actions():
         assert forbidden not in app
 
 
+def test_v8_model_cards_use_full_width_responsive_component_layout():
+    styles = _styles()
+    app = _app()
+    list_rule = re.search(r"\.asr-model-list\s*\{([^}]+)\}", styles, flags=re.DOTALL)
+    row_rule = re.search(r"\.asr-model-row\s*\{([^}]+)\}", styles, flags=re.DOTALL)
+    info_rule = re.search(r"\.asr-model-info\s*\{([^}]+)\}", styles, flags=re.DOTALL)
+    side_rule = re.search(r"\.asr-model-side\s*\{([^}]+)\}", styles, flags=re.DOTALL)
+    actions_rule = re.search(r"\.asr-model-actions\s*\{([^}]+)\}", styles, flags=re.DOTALL)
+    mobile = styles.split("@media (max-width: 920px)", 1)[1]
+
+    assert list_rule and "grid-column: 1 / -1" in list_rule.group(1)
+    assert "width: 100%" in list_rule.group(1)
+    assert "min-width: 0" in list_rule.group(1)
+    assert row_rule and "display: grid" in row_rule.group(1)
+    assert "grid-template-columns: minmax(0, 1fr) auto" in row_rule.group(1)
+    assert info_rule and "min-width: 0" in info_rule.group(1)
+    assert side_rule and "justify-content: flex-end" in side_rule.group(1)
+    assert actions_rule and "flex-wrap: nowrap" in actions_rule.group(1)
+    assert re.search(r"\.asr-model-row\s*\{[^}]*grid-template-columns:\s*1fr", mobile, flags=re.DOTALL)
+    assert '<div class="asr-model-side">' in app
+    assert '<div class="asr-model-status">' in app
+    assert '<div class="asr-model-actions">' in app
+
+
+def test_v8_model_actions_use_venus_button_components_without_bare_buttons():
+    styles = _styles()
+    app = _app()
+    action_rule = re.search(r"\.asr-model-action\s*\{([^}]+)\}", styles, flags=re.DOTALL)
+
+    assert action_rule
+    for declaration in [
+        "white-space: nowrap",
+        "min-width: 72px",
+        "min-height: 34px",
+        "flex: 0 0 auto",
+    ]:
+        assert declaration in action_rule.group(1)
+    assert ".asr-model-action:focus-visible" in styles
+    assert ".asr-model-action:disabled" in styles
+
+    expected_buttons = [
+        '<button type="button" class="primary-button small asr-model-action" data-action="select">设为当前模型</button>',
+        '<button type="button" class="secondary-button small asr-model-action asr-model-delete" data-action="delete">删除</button>',
+        '<button type="button" class="primary-button small asr-model-action" data-action="download">修复</button>',
+        '<button type="button" class="primary-button small asr-model-action" data-action="download">继续下载</button>',
+        '<button type="button" class="primary-button small asr-model-action" data-action="download">下载</button>',
+    ]
+    for button in expected_buttons:
+        assert button in app
+    action_buttons = re.findall(r'<button[^>]+data-action="(?:select|delete|download)"[^>]*>', app)
+    assert len(action_buttons) == 5
+    assert all("asr-model-action" in button for button in action_buttons)
+    installed_block = app.split('if (model.state === "installed")', 1)[1].split(
+        '} else if (model.state === "downloading")',
+        1,
+    )[0]
+    assert "if (!model.current)" in installed_block
+
+
 def test_v8_select_waits_for_server_and_refreshes_models_and_config():
     app = _app()
     selection = app.split("async function selectAsrModel", 1)[1].split(
@@ -154,7 +217,7 @@ def test_v8_select_waits_for_server_and_refreshes_models_and_config():
 
 
 def test_v8_mobile_nav_is_contained_inside_viewport():
-    styles = Path("src/live_clipper/web_static/styles.css").read_text(encoding="utf-8")
+    styles = _styles()
     mobile_styles = styles.split("@media (max-width: 920px)", 1)[1]
 
     assert ".app-shell" in mobile_styles
@@ -166,7 +229,7 @@ def test_v8_mobile_nav_is_contained_inside_viewport():
 
 
 def test_v8_uses_misans_default_font_and_inherited_form_controls():
-    styles = Path("src/live_clipper/web_static/styles.css").read_text(encoding="utf-8")
+    styles = _styles()
     root_match = re.search(r":root\s*\{([^}]+)\}", styles, flags=re.DOTALL)
     form_match = re.search(r"button,\s*input,\s*select\s*\{([^}]+)\}", styles, flags=re.DOTALL)
 

@@ -773,6 +773,78 @@ h4 {
   clip: rect(0 0 0 0);
 }
 
+.asr-model-list {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+
+.asr-model-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border: 1px solid var(--border, #e2e2e6);
+  border-radius: 10px;
+}
+
+.asr-model-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.asr-model-side {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  min-width: 0;
+}
+
+.asr-model-status {
+  min-width: 0;
+  text-align: right;
+}
+
+.asr-model-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
+}
+
+.asr-model-action {
+  flex: 0 0 auto;
+  min-width: 72px;
+  min-height: 34px;
+  white-space: nowrap;
+}
+
+.asr-model-action:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+
+.asr-model-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.asr-model-status.ok { color: var(--ok, #2c8a4b); }
+.asr-model-status.error { color: var(--danger, #b42318); }
+.asr-model-source { color: var(--muted); font-size: 12px; }
+.asr-model-tier { display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 999px; background: var(--surface-2, #f1f1f4); color: var(--muted); font-size: 12px; font-weight: 500; }
+.asr-model-current { display: inline-block; margin-right: 6px; color: var(--accent, #6750a4); font-weight: 600; }
+
 @media (max-width: 920px) {
   .app-shell {
     grid-template-columns: 1fr;
@@ -858,6 +930,21 @@ h4 {
 
   .clip-row {
     gap: 8px;
+  }
+
+  .asr-model-row {
+    grid-template-columns: 1fr;
+  }
+
+  .asr-model-side {
+    align-items: flex-start;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+    width: 100%;
+  }
+
+  .asr-model-status {
+    text-align: left;
   }
 }
 
@@ -1187,13 +1274,3 @@ body.in-app-shell::before {
   margin: 0 0 4px;
   font-size: 12px;
 }
-
-.asr-model-list { display: flex; flex-direction: column; gap: 8px; }
-.asr-model-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--border, #e2e2e6); border-radius: 10px; }
-.asr-model-info { display: flex; flex-direction: column; gap: 2px; }
-.asr-model-actions { display: flex; align-items: center; gap: 8px; }
-.asr-model-status.ok { color: var(--ok, #2c8a4b); }
-.asr-model-status.error { color: var(--danger, #b42318); }
-.asr-model-source { color: var(--muted); font-size: 12px; }
-.asr-model-tier { display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 999px; background: var(--surface-2, #f1f1f4); color: var(--muted); font-size: 12px; font-weight: 500; }
-.asr-model-current { display: inline-block; margin-right: 6px; color: var(--accent, #6750a4); font-weight: 600; }
