@@ -24,16 +24,16 @@ cd /Users/gouzi/dingshuxinRepo/live-clipper/lanes/<lane> && python3.11 -m venv .
 
 | 顺序 | 车道 | Spec | 依赖 | 状态 |
 |---:|---|---|---|---|
-| 1 | 0.3.1-local-mlx-release-operation · 阶段 B（重建） | `specs/2026-07-26-0.3.1-local-mlx-release-operation.md` | 统一逐次运行工作区已合入；旧 candidate 已 superseded | 等待重新冻结 release source 并重建 candidate |
+| 1 | 0.3.1-local-mlx-release-operation · 阶段 B（再次重建） | `specs/2026-07-26-0.3.1-local-mlx-release-operation.md` | 两条发布前阻断车道已合入；现有 candidate 均已 superseded | 等待从最终 master HEAD 重新冻结 release source 并重建 0.3.1 candidate |
 
 ## 当前发布操作
 
 - **v9f2-local-async-notarization**：已完成。从不可变 `v0.3.0` 标签在本机完成正式构建、Developer ID 签名、异步公证、票据装订、制包和 GitHub Release 发布；原始 Apple 提交包与发布证据保存在 `release-work/v0.3.0/`，等待 v0.3.1 自动更新真机演练完成后再申请清理。
-- **0.3.1 Stage B candidate（SUPERSEDED）**：基于旧 release source `7a2e4291e59105e9d66eca7deefbdeba0b8d2500` 的 candidate 仅保留为历史证据，不再进入真实转写、tag、Apple 公证或发布流程；等待重新冻结 release source 并重建 candidate。
+- **0.3.1 Stage B candidates（SUPERSEDED）**：基于旧 release source `7a2e4291e59105e9d66eca7deefbdeba0b8d2500` 的 candidate，以及基于 `0782bf74cbb42a606e054c3e485cca04744b0012` 的 rebuild candidate，均只保留为历史证据，不再进入真实转写、tag、Apple 公证或发布流程；下一步需要从最终 master HEAD 重新冻结 release source 并重建 0.3.1 candidate。
 
 ## 产品版本路线
 
-- **0.3.1 · 本地模型与首次使用闭环**：Qwen3 不进入本版本；下载基础设施、MiSans 默认字体、macOS 菜单栏图标修复、Whisper 三档/当前模型闭环、首启向导、统一逐次运行工作区及版本与发布文档冻结均已合入，tag 自动发布工作流已停用；旧 Stage B candidate 已 superseded，当前等待重新冻结 release source 并重建 candidate，尚未完成真实中文转写、Apple 公证或正式发布。
+- **0.3.1 · 本地模型与首次使用闭环**：Qwen3 不进入本版本；下载基础设施、MiSans 默认字体、macOS 菜单栏图标修复、Whisper 三档/当前模型闭环、首启向导、统一逐次运行工作区、ASR 静音幻觉与模型列表 UI 修复、首次引导与 Electron 壳层体验修复，以及版本与发布文档冻结均已合入，tag 自动发布工作流已停用；现有 Stage B candidates 均已 superseded，下一步需要从最终 master HEAD 重新冻结 release source 并重建 0.3.1 candidate，尚未完成新正式包真实中文转写、Apple 公证或正式发布。
 - **0.3.2 · UI 组件系统统一**：盘点并统一输入框、选择框、按钮、卡片、状态、弹层和表单结构；保持原生 HTML/JS 技术栈，不在本版本迁移 React/Vue。
 - **0.4.0 · Project 工作台**：原 V11 方向；原 V10c“切片偏好 + 提示词编辑器”并入 Project、场景模板和关注点预设。
 
@@ -42,6 +42,8 @@ cd /Users/gouzi/dingshuxinRepo/live-clipper/lanes/<lane> && python3.11 -m venv .
 
 ## 已合入
 
+- 0.3.1-onboarding-electron-ux-fixes（首次引导与 Electron 壳层体验回归修复；lane `ce9dabe64f731788314ac49282e0e052af28c1ef`；merge `dc01e45af1f3951ab6b85c1272cf29bbd089972e`；联合定向 123 passed；全量 424 passed；Ruff、两个 Node 语法、8 文件边界及禁用词/legacy 合同通过）
+- 0.3.1-release-blockers-asr-model-ui（ASR 静音幻觉与模型列表 UI 发布阻断修复；lane `36f24053f3142a65c140542a80fd6082fc70d19e`；merge `edad8bca84cbfe52831344ad994706b299c05af3`；联合定向 123 passed；全量 424 passed；Ruff、两个 Node 语法、5 文件边界及未安装 MLX 检查通过）
 - 0.3.1-unified-run-workspace（统一逐次运行工作区；lane `8f9c2ab3fadc964f47628c0b532991ec00d9c8b6`；merge `8fa17e6e716311b31680addab449074f153be423`；定向 132 passed；全量 401 passed；Ruff、Node 语法、17 文件边界及未安装 MLX 检查通过）
 - 0.3.1-release-metadata-freeze（冻结 0.3.1 版本与发布文档；lane `206fb5171c1e5191fd25be96d095f9c24e6fb257`；merge `5e8584cddecd227998ac0cd7ad7a60e87e9d90c1`；定向 31 passed；全量 387 passed；Ruff、四项 Node 语法、npm ci、七文件边界及 lockfile 依赖图一致性通过）
 - 0.3.1-disable-tag-release-workflow（停用 tag 自动发布工作流；lane `786edf083783db80ad8d149a0a58deb7685ee7f6`；merge `53b778407f23f349f8562a4a24e85ad5a8c23897`；定向 5 passed；全量 386 passed；发布能力与副作用审计零命中）
