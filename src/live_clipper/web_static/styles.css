@@ -1044,6 +1044,14 @@ h4 {
   box-sizing: border-box;
 }
 
+#onboardingAsrSource {
+  appearance: none;
+  padding-right: 44px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5 11 1.5' fill='none' stroke='%236e6e73' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 14px center;
+}
+
 .onboarding-asr-modes {
   display: flex;
   gap: 12px;
@@ -1221,12 +1229,51 @@ h4 {
   margin-top: 18px;
 }
 
-.onboarding-actions #onboardingSkipBtn {
+.onboarding-actions [data-onboarding-skip] {
   margin-right: auto;
 }
 
 .onboarding-overlay[hidden] {
   display: none;
+}
+
+.onboarding-skip-dialog {
+  position: fixed;
+  z-index: 80;
+  top: 50%;
+  left: 50%;
+  width: min(460px, calc(100vw - 40px));
+  padding: 24px;
+  border: 1px solid #d2d2d7;
+  border-radius: 16px;
+  background: #ffffff;
+  box-shadow: 0 20px 70px rgb(0 0 0 / 24%);
+  transform: translate(-50%, -50%);
+  box-sizing: border-box;
+}
+
+.onboarding-skip-dialog[hidden] {
+  display: none;
+}
+
+.onboarding-skip-dialog h2 {
+  margin: 0 0 8px;
+}
+
+.onboarding-skip-dialog p,
+.onboarding-skip-dialog ul {
+  color: #6e6e73;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.onboarding-skip-dialog ul {
+  margin: 12px 0 18px;
+  padding-left: 20px;
+}
+
+.onboarding-skip-dialog #onboardingSkipContinueBtn {
+  margin-right: 8px;
 }
 
 @media (max-width: 720px) {

@@ -57,14 +57,28 @@ def _now_iso() -> str:
     return datetime.now(UTC).astimezone().isoformat(timespec="seconds")
 
 
+def _marker_state(marker: Path) -> tuple[bool, bool]:
+    if not marker.exists():
+        return False, False
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return True, False
+    if isinstance(payload, dict) and payload.get("skipped_at") and not payload.get("completed_at"):
+        return False, True
+    return True, False
+
+
 def onboarding_status(settings: Settings, service_dir: Path) -> dict[str, Any]:
     marker = _marker_path(service_dir)
     source_dir = settings.recording_source_default.source_dir or settings.recording_source.source_dir
+    completed, skipped = _marker_state(marker)
     needs = not marker.exists() and source_dir is None
     return {
         "ok": True,
         "needs_onboarding": needs,
-        "completed": marker.exists(),
+        "completed": completed,
+        "skipped": skipped,
         "source_dir": str(source_dir) if source_dir else "",
         "output_root": str(settings.paths.output_root),
         "llm_key_present": bool(settings.cheap_model_api_key),
@@ -76,6 +90,27 @@ def onboarding_status(settings: Settings, service_dir: Path) -> dict[str, Any]:
         "initial_local_model": FIRST_RUN_LOCAL_MODEL_ID,
         "presets": PROVIDER_PRESETS,
     }
+
+
+def skip_onboarding(*, service_dir: Path = Path("work") / "service") -> dict[str, Any]:
+    marker = _marker_path(service_dir)
+    if marker.exists():
+        completed, skipped = _marker_state(marker)
+        if skipped:
+            return {"ok": True, "skipped": True, "completed": False}
+        if completed:
+            return {
+                "ok": True,
+                "skipped": False,
+                "completed": True,
+                "already_finished": True,
+            }
+    service_dir.mkdir(parents=True, exist_ok=True)
+    marker.write_text(
+        json.dumps({"skipped_at": _now_iso()}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return {"ok": True, "skipped": True, "completed": False}
 
 
 def test_recording_source(source_dir: str) -> dict[str, Any]:

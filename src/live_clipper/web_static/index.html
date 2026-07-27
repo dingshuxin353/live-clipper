@@ -386,12 +386,12 @@
           <label>录播文件夹路径
             <input id="onboardingSourceDir" placeholder="例如 /Volumes/your-nas/recordings" />
           </label>
-          <button id="onboardingBrowseBtn" class="secondary-button onboarding-browse" type="button" hidden>浏览选择文件夹…</button>
+          <button id="onboardingBrowseBtn" class="secondary-button onboarding-browse" type="button" hidden>选择文件夹</button>
           <div id="onboardingSourceResult" class="onboarding-result" hidden></div>
           <div class="onboarding-actions">
-            <button id="onboardingSkipBtn" class="secondary-button" type="button">稍后再设置</button>
+            <button class="secondary-button" data-onboarding-skip type="button">稍后设置</button>
             <button id="onboardingSourceTestBtn" class="secondary-button" type="button">检查文件夹</button>
-            <button id="onboardingToStep2Btn" class="primary-button" type="button" disabled>下一步</button>
+            <button id="onboardingToStep2Btn" class="primary-button" type="button">下一步</button>
           </div>
         </section>
         <section class="onboarding-step" data-step="2" hidden>
@@ -419,6 +419,7 @@
           </div>
           <div id="onboardingAsrResult" class="onboarding-result" hidden></div>
           <div class="onboarding-actions">
+            <button class="secondary-button" data-onboarding-skip type="button">稍后设置</button>
             <button id="onboardingBackTo1Btn" class="secondary-button" type="button">上一步</button>
             <button id="onboardingToStep3Btn" class="primary-button" type="button" disabled>下一步</button>
           </div>
@@ -432,6 +433,7 @@
           <label>API key<input id="onboardingLlmKey" type="password" placeholder="粘贴你的 API key" /></label>
           <div id="onboardingLlmResult" class="onboarding-result" hidden></div>
           <div class="onboarding-actions">
+            <button class="secondary-button" data-onboarding-skip type="button">稍后设置</button>
             <button id="onboardingBackTo2Btn" class="secondary-button" type="button">上一步</button>
             <button id="onboardingLlmTestBtn" class="secondary-button" type="button">测试连接</button>
             <button id="onboardingToStep4Btn" class="primary-button" type="button" disabled>下一步</button>
@@ -442,12 +444,39 @@
           <div id="onboardingSummary" class="onboarding-summary"></div>
           <div id="onboardingCompleteResult" class="onboarding-result" hidden></div>
           <div class="onboarding-actions">
+            <button class="secondary-button" data-onboarding-skip type="button">稍后设置</button>
             <button id="onboardingBackTo3Btn" class="secondary-button" type="button">上一步</button>
             <button id="onboardingCompleteBtn" class="primary-button" type="button">完成设置</button>
             <button id="onboardingEnterAppBtn" class="secondary-button" type="button" hidden>进入主界面</button>
           </div>
         </section>
       </div>
+    </div>
+    <div
+      id="onboardingSkipDialog"
+      class="onboarding-skip-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="onboardingSkipTitle"
+      hidden
+    >
+      <h2 id="onboardingSkipTitle">确认稍后设置？</h2>
+      <p>稍后设置会有以下影响：</p>
+      <ul>
+        <li>未配置录像目录时不会自动发现新录像</li>
+        <li>未配置语音识别时不能完成转写</li>
+        <li>未配置 AI 服务时不能自动选片</li>
+        <li>已经启动的模型下载不会因离开引导而取消</li>
+      </ul>
+      <p>你可以进入主界面，之后从以下位置继续设置：</p>
+      <ul>
+        <li>设置 → 基础设置 → 文件位置 → 录播文件夹</li>
+        <li>设置 → 基础设置 → 语音识别方式 / 本地语音模型</li>
+        <li>设置 → 基础设置 → AI 服务</li>
+      </ul>
+      <button id="onboardingSkipContinueBtn" class="secondary-button" type="button">继续设置</button>
+      <button id="onboardingSkipConfirmBtn" class="primary-button" type="button">确认稍后设置</button>
+      <div id="onboardingSkipResult" class="onboarding-result" hidden></div>
     </div>
     <div id="toast" class="toast" hidden></div>
     <script src="/static/app.js?v=20260702-v8"></script>

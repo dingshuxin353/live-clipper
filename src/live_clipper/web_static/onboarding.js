@@ -15,9 +15,11 @@
     selectedModelId: "",
     activeJobId: null,
     downloadActive: false,
+    downloadFailure: "",
     asrReady: false,
     llmOk: false,
     completed: false,
+    skipSubmitting: false,
     pollTimer: null,
     polling: false,
   };
@@ -47,6 +49,8 @@
     document.querySelectorAll("[data-step-dot]").forEach((dot) => {
       dot.classList.toggle("active", Number(dot.dataset.stepDot) === step);
     });
+    if (wizard.activeJobId && !wizard.pollTimer && !wizard.polling) pollJob(wizard.activeJobId);
+    if (step === 4) updateCompletionState();
   }
 
   function applyPreset(presetId) {
@@ -95,6 +99,17 @@
 
   function anyModelDownloading() {
     return wizard.models.find((model) => model.downloading || model.state === "downloading");
+  }
+
+  function selectedModelHasActiveDownload() {
+    const model = selectedModel();
+    return Boolean(
+      model
+      && wizard.downloadActive
+      && wizard.activeJobId
+      && model.job_id === wizard.activeJobId
+      && (model.downloading || model.state === "downloading"),
+    );
   }
 
   function formatBytes(value) {
@@ -165,6 +180,7 @@
       container.append(card);
     });
     updateAsrState();
+    if (wizard.step === 4) updateCompletionState();
   }
 
   function updateAsrState() {
@@ -184,7 +200,8 @@
     const cloudReady = ["onboardingAsrBase", "onboardingAsrModel", "onboardingAsrKey"].every(
       (id) => el(id).value.trim(),
     );
-    el("onboardingToStep3Btn").disabled = wizard.downloadActive || (local ? !wizard.asrReady : !cloudReady);
+    const localCanAdvance = wizard.asrReady || selectedModelHasActiveDownload();
+    el("onboardingToStep3Btn").disabled = local ? !localCanAdvance : !cloudReady;
   }
 
   async function refreshModels() {
@@ -194,9 +211,10 @@
       throw new Error("本地模型列表与当前版本不匹配");
     }
     wizard.models = payload.models;
+    const active = anyModelDownloading();
     if (!wizard.modelsInitialized) {
       const current = wizard.models.find((model) => model.current);
-      wizard.selectedModelId = current ? current.id : wizard.initialLocalModel;
+      wizard.selectedModelId = active ? active.id : current ? current.id : wizard.initialLocalModel;
       if (["modelscope", "huggingface"].includes(payload.download_source)) {
         wizard.modelSource = payload.download_source;
         el("onboardingAsrSource").value = wizard.modelSource;
@@ -205,7 +223,7 @@
     } else if (!wizard.models.some((model) => model.id === wizard.selectedModelId)) {
       wizard.selectedModelId = wizard.initialLocalModel;
     }
-    const active = anyModelDownloading();
+    if (active) wizard.selectedModelId = active.id;
     wizard.downloadActive = Boolean(active);
     wizard.activeJobId = active ? active.job_id : null;
     renderModelCards();
@@ -235,20 +253,22 @@
       await refreshModels();
       showDownloadProgress(selectedModel(), job);
       if (job.status === "failed") {
+        wizard.downloadFailure = job.error || job.message || "模型下载失败，可稍后继续";
         wizard.downloadActive = false;
         wizard.activeJobId = null;
         wizard.pollTimer = null;
         wizard.polling = false;
-        showResult("onboardingAsrResult", false, job.error || job.message || "模型下载失败，可稍后继续");
+        showResult("onboardingAsrResult", false, wizard.downloadFailure);
         renderModelCards();
         return;
       }
       if (job.status === "interrupted") {
+        wizard.downloadFailure = "模型下载已中断，已保留进度，可继续下载";
         wizard.downloadActive = false;
         wizard.activeJobId = null;
         wizard.pollTimer = null;
         wizard.polling = false;
-        showResult("onboardingAsrResult", false, "模型下载已中断，已保留进度，可继续下载");
+        showResult("onboardingAsrResult", false, wizard.downloadFailure);
         renderModelCards();
         return;
       }
@@ -260,9 +280,11 @@
         await refreshModels();
         el("onboardingAsrProgress").hidden = true;
         if (selectedModel()?.state === "installed") {
+          wizard.downloadFailure = "";
           showResult("onboardingAsrResult", true, "模型已安装，可以继续");
         } else {
-          showResult("onboardingAsrResult", false, "下载完成，但模型完整性验证未通过");
+          wizard.downloadFailure = "下载完成，但模型完整性验证未通过";
+          showResult("onboardingAsrResult", false, wizard.downloadFailure);
         }
         return;
       }
@@ -299,6 +321,7 @@
         return;
       }
       wizard.downloadActive = true;
+      wizard.downloadFailure = "";
       renderModelCards();
       const payload = await fetchJson("/api/asr/models/download", {
         method: "POST",
@@ -311,6 +334,7 @@
       showResult("onboardingAsrResult", true, "已开始下载，离开本步骤不会取消任务");
       pollJob(jobId);
     } catch (error) {
+      wizard.downloadFailure = error.message;
       wizard.downloadActive = false;
       wizard.activeJobId = null;
       renderModelCards();
@@ -320,7 +344,6 @@
 
   function invalidateSource() {
     wizard.sourceOk = false;
-    el("onboardingToStep2Btn").disabled = true;
     el("onboardingSourceResult").hidden = true;
   }
 
@@ -349,7 +372,11 @@
       appendSummaryRow("识别模型", selectedModel()?.display_name || wizard.selectedModelId);
       appendSummaryRow("模型档位", selectedModel()?.tier_label || "");
       appendSummaryRow("下载源", el("onboardingAsrSource").selectedOptions[0]?.textContent || wizard.modelSource);
-      appendSummaryRow("模型状态", "已下载");
+      const model = selectedModel();
+      appendSummaryRow(
+        "模型状态",
+        model?.state === "installed" ? "已安装" : selectedModelHasActiveDownload() ? "下载中" : "未安装",
+      );
     } else {
       appendSummaryRow("语音识别", "云端识别");
       appendSummaryRow("识别服务", el("onboardingAsrBase").value);
@@ -361,9 +388,16 @@
     appendSummaryRow("AI key", el("onboardingLlmKey").value ? "已填写（只保存在本机 .env）" : "未填写");
   }
 
-  async function testSource() {
-    const button = el("onboardingSourceTestBtn");
-    button.disabled = true;
+  function setSourceControlsLocked(locked) {
+    const nextButton = el("onboardingToStep2Btn");
+    el("onboardingSourceTestBtn").disabled = locked;
+    el("onboardingBrowseBtn").disabled = locked;
+    nextButton.disabled = locked;
+    nextButton.textContent = locked ? "检查中…" : "下一步";
+  }
+
+  async function validateSource({ advance = false } = {}) {
+    setSourceControlsLocked(true);
     try {
       const result = await fetchJson("/api/onboarding/test-source", {
         method: "POST",
@@ -371,11 +405,24 @@
       });
       wizard.sourceOk = result.ok === true;
       showResult("onboardingSourceResult", wizard.sourceOk, result.message || `文件夹可用，发现 ${result.video_count} 个视频`);
-      el("onboardingToStep2Btn").disabled = !wizard.sourceOk;
+      if (advance && wizard.sourceOk) showStep(2);
     } catch (error) {
+      wizard.sourceOk = false;
       showResult("onboardingSourceResult", false, error.message);
     } finally {
-      button.disabled = false;
+      setSourceControlsLocked(false);
+    }
+  }
+
+  async function selectRecordingFolder() {
+    try {
+      const selectedPath = await window.liveClipperShell.selectFolder("选择录播文件夹");
+      if (!selectedPath) return;
+      el("onboardingSourceDir").value = selectedPath;
+      invalidateSource();
+      await validateSource();
+    } catch (error) {
+      showResult("onboardingSourceResult", false, `无法选择文件夹：${error.message}`);
     }
   }
 
@@ -404,10 +451,40 @@
   function setCompletionLocked(locked) {
     el("onboardingBackTo3Btn").disabled = locked;
     el("onboardingCompleteBtn").disabled = locked;
+    if (!locked) updateCompletionState();
+  }
+
+  function updateCompletionState() {
+    const model = selectedModel();
+    const ready = wizard.asrMode !== "local" || Boolean(model && model.state === "installed");
+    el("onboardingCompleteBtn").disabled = !ready;
+    if (wizard.step !== 4 || wizard.asrMode !== "local" || wizard.completed) return;
+    renderSummary();
+    if (!ready) {
+      const message = selectedModelHasActiveDownload()
+        ? "模型仍在下载，安装完成后才能保存设置"
+        : wizard.downloadFailure || "所选模型尚未安装，返回语音识别步骤完成下载后再保存";
+      showResult("onboardingCompleteResult", false, message);
+    } else {
+      el("onboardingCompleteResult").hidden = true;
+    }
   }
 
   async function complete() {
     if (wizard.completed) return;
+    if (wizard.asrMode === "local") {
+      try {
+        await refreshModels();
+      } catch (error) {
+        showResult("onboardingCompleteResult", false, `无法确认模型状态：${error.message}`);
+        return;
+      }
+      if (selectedModel()?.state !== "installed") {
+        showResult("onboardingCompleteResult", false, "下载未完成，不能保存本机识别设置");
+        updateCompletionState();
+        return;
+      }
+    }
     setCompletionLocked(true);
     showResult("onboardingCompleteResult", true, "正在保存设置…");
     const payload = {
@@ -450,6 +527,40 @@
     }
   }
 
+  function openSkipDialog() {
+    el("onboardingSkipResult").hidden = true;
+    el("onboardingSkipDialog").hidden = false;
+    el("onboardingSkipContinueBtn").focus();
+  }
+
+  function closeSkipDialog() {
+    if (wizard.skipSubmitting) return;
+    el("onboardingSkipDialog").hidden = true;
+  }
+
+  async function confirmSkip() {
+    if (wizard.skipSubmitting) return;
+    wizard.skipSubmitting = true;
+    el("onboardingSkipConfirmBtn").disabled = true;
+    el("onboardingSkipContinueBtn").disabled = true;
+    showResult("onboardingSkipResult", true, "正在保存…");
+    try {
+      const result = await fetchJson("/api/onboarding/skip", {
+        method: "POST",
+        body: "{}",
+      });
+      if (!result.ok) throw new Error(result.message || "暂时无法稍后设置");
+      el("onboardingSkipDialog").hidden = true;
+      el("onboardingOverlay").hidden = true;
+    } catch (error) {
+      showResult("onboardingSkipResult", false, `未能保存：${error.message}`);
+    } finally {
+      wizard.skipSubmitting = false;
+      el("onboardingSkipConfirmBtn").disabled = false;
+      el("onboardingSkipContinueBtn").disabled = false;
+    }
+  }
+
   async function init() {
     const status = await fetchJson("/api/onboarding");
     if (!status.needs_onboarding) return;
@@ -462,6 +573,10 @@
     el("onboardingAsrModel").value = status.asr_backend === "openai" ? status.asr_model || "whisper-1" : "whisper-1";
     renderPresets();
     updateAsrState();
+    if (window.liveClipperShell) {
+      el("onboardingBrowseBtn").hidden = false;
+      el("onboardingBrowseBtn").addEventListener("click", selectRecordingFolder);
+    }
     try {
       await refreshModels();
     } catch (error) {
@@ -491,21 +606,30 @@
       renderModelCards();
       showResult("onboardingAsrResult", true, `下次下载将使用 ${el("onboardingAsrSource").selectedOptions[0].textContent}`);
     });
-    el("onboardingSourceTestBtn").addEventListener("click", testSource);
-    el("onboardingToStep2Btn").addEventListener("click", () => showStep(2));
+    el("onboardingSourceTestBtn").addEventListener("click", () => validateSource());
+    el("onboardingToStep2Btn").addEventListener("click", () => validateSource({ advance: true }));
     el("onboardingBackTo1Btn").addEventListener("click", () => showStep(1));
     el("onboardingToStep3Btn").addEventListener("click", () => showStep(3));
     el("onboardingBackTo2Btn").addEventListener("click", () => showStep(2));
     el("onboardingLlmTestBtn").addEventListener("click", testLlm);
-    el("onboardingToStep4Btn").addEventListener("click", () => {
+    el("onboardingToStep4Btn").addEventListener("click", async () => {
+      if (wizard.asrMode === "local") await refreshModels();
       renderSummary();
       showStep(4);
     });
     el("onboardingBackTo3Btn").addEventListener("click", () => showStep(3));
     el("onboardingCompleteBtn").addEventListener("click", complete);
     el("onboardingEnterAppBtn").addEventListener("click", () => window.location.reload());
-    el("onboardingSkipBtn").addEventListener("click", () => {
-      el("onboardingOverlay").hidden = true;
+    document.querySelectorAll("[data-onboarding-skip]").forEach((button) => {
+      button.addEventListener("click", openSkipDialog);
+    });
+    el("onboardingSkipContinueBtn").addEventListener("click", closeSkipDialog);
+    el("onboardingSkipConfirmBtn").addEventListener("click", confirmSkip);
+    el("onboardingSkipDialog").addEventListener("click", (event) => {
+      if (event.target === el("onboardingSkipDialog")) closeSkipDialog();
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && !el("onboardingSkipDialog").hidden) closeSkipDialog();
     });
     showStep(1);
     el("onboardingOverlay").hidden = false;

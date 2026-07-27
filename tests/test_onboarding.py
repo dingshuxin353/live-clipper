@@ -6,7 +6,7 @@ import tomllib
 import pytest
 
 from live_clipper import asr_models, onboarding
-from live_clipper.config import Settings, write_default_config
+from live_clipper.config import RecordingSourceDefaultConfig, Settings, write_default_config
 from live_clipper.config_editor import load_editable_config
 
 
@@ -14,6 +14,7 @@ def test_onboarding_status_needs_when_unconfigured(tmp_path):
     status = onboarding.onboarding_status(Settings(), tmp_path / "service")
     assert status["needs_onboarding"] is True
     assert status["completed"] is False
+    assert status["skipped"] is False
     assert status["asr_api_base"] == ""
     assert status["asr_model"] == "mlx-community/whisper-large-v3-turbo"
     assert status["asr_key_present"] is False
@@ -31,6 +32,101 @@ def test_onboarding_status_marker_wins(tmp_path):
     status = onboarding.onboarding_status(Settings(), service_dir)
     assert status["needs_onboarding"] is False
     assert status["completed"] is True
+    assert status["skipped"] is False
+
+
+def test_onboarding_status_configured_without_marker_is_neither_finished_nor_needed(tmp_path):
+    settings = Settings(recording_source_default=RecordingSourceDefaultConfig(source_dir=tmp_path / "recordings"))
+
+    status = onboarding.onboarding_status(settings, tmp_path / "service")
+
+    assert status["needs_onboarding"] is False
+    assert status["completed"] is False
+    assert status["skipped"] is False
+
+
+def test_skip_onboarding_writes_minimal_marker_and_updates_status(tmp_path):
+    service_dir = tmp_path / "service"
+
+    result = onboarding.skip_onboarding(service_dir=service_dir)
+
+    assert result == {"ok": True, "skipped": True, "completed": False}
+    marker = json.loads((service_dir / "onboarding.json").read_text(encoding="utf-8"))
+    assert set(marker) == {"skipped_at"}
+    assert marker["skipped_at"]
+    status = onboarding.onboarding_status(Settings(), service_dir)
+    assert status["needs_onboarding"] is False
+    assert status["completed"] is False
+    assert status["skipped"] is True
+
+
+def test_skip_onboarding_has_no_config_env_or_source_side_effects(tmp_path):
+    service_dir = tmp_path / "service"
+    config_path = tmp_path / "live-clipper.toml"
+    env_path = tmp_path / ".env"
+    config_path.write_bytes(b"config-before\n")
+    env_path.write_bytes(b"SECRET=before\n")
+
+    onboarding.skip_onboarding(service_dir=service_dir)
+
+    assert config_path.read_bytes() == b"config-before\n"
+    assert env_path.read_bytes() == b"SECRET=before\n"
+    assert not (tmp_path / "recordings").exists()
+    marker_text = (service_dir / "onboarding.json").read_text(encoding="utf-8")
+    for forbidden in ["source_dir", "api_key", "model", "job"]:
+        assert forbidden not in marker_text
+
+
+def test_skip_onboarding_does_not_create_config_or_env(tmp_path):
+    onboarding.skip_onboarding(service_dir=tmp_path / "service")
+
+    assert not (tmp_path / "live-clipper.toml").exists()
+    assert not (tmp_path / ".env").exists()
+
+
+def test_skip_onboarding_is_idempotent(tmp_path):
+    service_dir = tmp_path / "service"
+    first = onboarding.skip_onboarding(service_dir=service_dir)
+    marker_before = (service_dir / "onboarding.json").read_bytes()
+
+    second = onboarding.skip_onboarding(service_dir=service_dir)
+
+    assert first == second == {"ok": True, "skipped": True, "completed": False}
+    assert (service_dir / "onboarding.json").read_bytes() == marker_before
+
+
+def test_skip_onboarding_does_not_overwrite_completed_marker(tmp_path):
+    service_dir = tmp_path / "service"
+    service_dir.mkdir()
+    marker_path = service_dir / "onboarding.json"
+    marker_path.write_text(
+        json.dumps({"completed_at": "2026-07-27T10:00:00+09:00", "source_dir": "/recordings"}),
+        encoding="utf-8",
+    )
+    marker_before = marker_path.read_bytes()
+
+    result = onboarding.skip_onboarding(service_dir=service_dir)
+
+    assert result == {
+        "ok": True,
+        "skipped": False,
+        "completed": True,
+        "already_finished": True,
+    }
+    assert marker_path.read_bytes() == marker_before
+
+
+def test_skip_onboarding_does_not_overwrite_legacy_empty_marker(tmp_path):
+    service_dir = tmp_path / "service"
+    service_dir.mkdir()
+    marker_path = service_dir / "onboarding.json"
+    marker_path.write_text("{}", encoding="utf-8")
+
+    result = onboarding.skip_onboarding(service_dir=service_dir)
+
+    assert result["completed"] is True
+    assert result["skipped"] is False
+    assert marker_path.read_text(encoding="utf-8") == "{}"
 
 
 def test_test_recording_source_missing(tmp_path):

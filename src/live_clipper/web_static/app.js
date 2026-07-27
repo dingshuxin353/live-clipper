@@ -17,6 +17,10 @@ const state = {
 
 const el = (id) => document.getElementById(id);
 
+if (window.liveClipperShell) {
+  document.body.classList.add("in-app-shell");
+}
+
 async function api(path, options = {}) {
   const response = await fetch(path, {
     ...options,
