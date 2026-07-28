@@ -24,16 +24,16 @@ cd /Users/gouzi/dingshuxinRepo/live-clipper/lanes/<lane> && python3.11 -m venv .
 
 | 顺序 | 车道 | Spec | 依赖 | 状态 |
 |---:|---|---|---|---|
-| 1 | 0.3.1-local-mlx-release-operation · 阶段 B（再次重建） | `specs/2026-07-26-0.3.1-local-mlx-release-operation.md` | 两条发布前阻断车道已合入；现有 candidate 均已 superseded | 等待从最终 master HEAD 重新冻结 release source 并重建 0.3.1 candidate |
+| 1 | 0.3.1-local-mlx-release-operation · Provider 修复后重新制包 | `specs/2026-07-26-0.3.1-local-mlx-release-operation.md` | `0.3.1-updater-provider-config` 已合入；现有 candidate、finalize App 与 release assets 均已 superseded | 等待规划者读取本次合并与看板提交后的精确 master HEAD，修订发布 Spec 后另行派发 |
 
 ## 当前发布操作
 
 - **v9f2-local-async-notarization**：已完成。从不可变 `v0.3.0` 标签在本机完成正式构建、Developer ID 签名、异步公证、票据装订、制包和 GitHub Release 发布；原始 Apple 提交包与发布证据保存在 `release-work/v0.3.0/`，等待 v0.3.1 自动更新真机演练完成后再申请清理。
-- **0.3.1 Stage B candidates（SUPERSEDED）**：基于旧 release source `7a2e4291e59105e9d66eca7deefbdeba0b8d2500` 的 candidate，以及基于 `0782bf74cbb42a606e054c3e485cca04744b0012` 的 rebuild candidate，均只保留为历史证据，不再进入真实转写、tag、Apple 公证或发布流程；下一步需要从最终 master HEAD 重新冻结 release source 并重建 0.3.1 candidate。
+- **0.3.1 本地正式资产（SUPERSEDED）**：基于旧 release source `7a2e4291e59105e9d66eca7deefbdeba0b8d2500`、`0782bf74cbb42a606e054c3e485cca04744b0012` 的 candidate，以及基于 `327a8de61386496c588b9e50f451ee9ad985c053` 已完成签名、公证和制包但缺少 `app-update.yml` 的 candidate、finalize App 与四类 release assets，均只保留为历史证据，禁止发布或原地修改；Updater Provider 配置源修复已合入，下一步等待规划者从最终 master HEAD 重新冻结 release source 并派发差量重建。
 
 ## 产品版本路线
 
-- **0.3.1 · 本地模型与首次使用闭环**：Qwen3 不进入本版本；下载基础设施、MiSans 默认字体、macOS 菜单栏图标修复、Whisper 三档/当前模型闭环、首启向导、统一逐次运行工作区、ASR 静音幻觉与模型列表 UI 修复、首次引导与 Electron 壳层体验修复，以及版本与发布文档冻结均已合入，tag 自动发布工作流已停用；现有 Stage B candidates 均已 superseded，下一步需要从最终 master HEAD 重新冻结 release source 并重建 0.3.1 candidate，尚未完成新正式包真实中文转写、Apple 公证或正式发布。
+- **0.3.1 · 本地模型与首次使用闭环**：Qwen3 不进入本版本；下载基础设施、MiSans 默认字体、macOS 菜单栏图标修复、Whisper 三档/当前模型闭环、首启向导、统一逐次运行工作区、ASR 静音幻觉与模型列表 UI 修复、首次引导与 Electron 壳层体验修复、版本与发布文档冻结，以及自动更新 Provider 配置源修复均已合入，tag 自动发布工作流已停用；现有 0.3.1 candidate、finalize App 与 release assets 均已 superseded，下一步等待从最终 master HEAD 重新冻结 release source、差量重建与验收，尚未完成新的 Apple 公证或正式发布。
 - **0.3.2 · UI 组件系统统一**：盘点并统一输入框、选择框、按钮、卡片、状态、弹层和表单结构；保持原生 HTML/JS 技术栈，不在本版本迁移 React/Vue。
 - **0.4.0 · Project 工作台**：原 V11 方向；原 V10c“切片偏好 + 提示词编辑器”并入 Project、场景模板和关注点预设。
 
@@ -42,6 +42,7 @@ cd /Users/gouzi/dingshuxinRepo/live-clipper/lanes/<lane> && python3.11 -m venv .
 
 ## 已合入
 
+- 0.3.1-updater-provider-config（自动更新 Provider 配置发布阻断修复；lane `4028f49455e5ace7a502136b471c91ceaed721d3`；merge `adcf3906257514a44a5ef900071521a9d0295365`；定向 7 passed；全量 426 passed；Ruff、两个 Node 语法、单提交与三文件边界通过；现有本地正式资产已标记为 superseded，等待从最终 master HEAD 重新冻结 release source）
 - 0.3.1-onboarding-electron-ux-fixes（首次引导与 Electron 壳层体验回归修复；lane `ce9dabe64f731788314ac49282e0e052af28c1ef`；merge `dc01e45af1f3951ab6b85c1272cf29bbd089972e`；联合定向 123 passed；全量 424 passed；Ruff、两个 Node 语法、8 文件边界及禁用词/legacy 合同通过）
 - 0.3.1-release-blockers-asr-model-ui（ASR 静音幻觉与模型列表 UI 发布阻断修复；lane `36f24053f3142a65c140542a80fd6082fc70d19e`；merge `edad8bca84cbfe52831344ad994706b299c05af3`；联合定向 123 passed；全量 424 passed；Ruff、两个 Node 语法、5 文件边界及未安装 MLX 检查通过）
 - 0.3.1-unified-run-workspace（统一逐次运行工作区；lane `8f9c2ab3fadc964f47628c0b532991ec00d9c8b6`；merge `8fa17e6e716311b31680addab449074f153be423`；定向 132 passed；全量 401 passed；Ruff、Node 语法、17 文件边界及未安装 MLX 检查通过）
