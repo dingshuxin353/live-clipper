@@ -1,7 +1,76 @@
 from __future__ import annotations
 
+import json
+import re
 import tomllib
 from pathlib import Path
+
+
+def _parse_flat_yaml_mapping(text: str) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, value = line.split(":", 1)
+        mapping[key.strip()] = value.strip()
+    return mapping
+
+
+def _yaml_mapping_section(text: str, section_name: str) -> dict[str, str]:
+    lines = text.splitlines()
+    start = lines.index(f"{section_name}:") + 1
+    section: list[str] = []
+    for line in lines[start:]:
+        if line and not line.startswith((" ", "\t")):
+            break
+        if line.strip():
+            section.append(line)
+    return _parse_flat_yaml_mapping("\n".join(section))
+
+
+def test_desktop_updater_provider_config_is_complete_and_secret_free():
+    update_path = Path("desktop/build/app-update.yml")
+    update_text = update_path.read_text(encoding="utf-8")
+    update_config = _parse_flat_yaml_mapping(update_text)
+    package = json.loads(Path("desktop/package.json").read_text(encoding="utf-8"))
+
+    assert update_config == {
+        "provider": "github",
+        "owner": "dingshuxin353",
+        "repo": "live-clipper",
+        "updaterCacheDirName": "live-clipper-desktop-updater",
+    }
+    assert update_text.endswith("\n")
+    assert "\r" not in update_text
+    assert update_config["updaterCacheDirName"] == f"{package['name']}-updater"
+    lowered = update_text.lower()
+    for forbidden in ("token", "secret", "password", "private", "${", "$(", "process.env"):
+        assert forbidden not in lowered
+
+
+def test_builder_places_updater_config_at_resources_root_and_matches_publish():
+    builder_text = Path("desktop/electron-builder.yml").read_text(encoding="utf-8")
+    update_config = _parse_flat_yaml_mapping(
+        Path("desktop/build/app-update.yml").read_text(encoding="utf-8")
+    )
+    publish = _yaml_mapping_section(builder_text, "publish")
+
+    extra_resources = builder_text.split("extraResources:", 1)[1].split("afterPack:", 1)[0]
+    assert re.search(
+        r"(?m)^  - from: build/app-update\.yml$\n^    to: app-update\.yml$",
+        extra_resources,
+    )
+    assert "to: build/app-update.yml" not in extra_resources
+    assert "to: assets/app-update.yml" not in extra_resources
+    assert "to: app.asar/app-update.yml" not in extra_resources
+    assert {
+        key: publish[key]
+        for key in ("provider", "owner", "repo")
+    } == {
+        key: update_config[key]
+        for key in ("provider", "owner", "repo")
+    }
 
 
 def test_project_dependencies_include_socks_proxy_support():

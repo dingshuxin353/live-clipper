@@ -1,0 +1,4 @@
+provider: github
+owner: dingshuxin353
+repo: live-clipper
+updaterCacheDirName: live-clipper-desktop-updater
