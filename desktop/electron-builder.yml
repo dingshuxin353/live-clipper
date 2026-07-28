@@ -12,6 +12,8 @@ extraResources:
     to: backend
   - from: node_modules/ffmpeg-static/ffmpeg
     to: bin/ffmpeg
+  - from: build/app-update.yml
+    to: app-update.yml
 afterPack: ./scripts/after-pack.js
 npmRebuild: false
 mac:
