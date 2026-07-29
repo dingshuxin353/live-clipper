@@ -10,6 +10,9 @@ dist/
 .mypy_cache/
 .coverage
 htmlcov/
+frontend/node_modules/
+frontend/coverage/
+frontend/.vite/
 *.log
 .worktrees/
 worktrees/

@@ -4,6 +4,10 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."  # repo root
 
+npm --prefix frontend ci
+npm --prefix frontend run check
+git diff --exit-code -- src/live_clipper/web_static/react
+
 if ! .venv/bin/python -c "import PyInstaller" >/dev/null 2>&1; then
   .venv/bin/pip install "pyinstaller>=6.10"
 fi

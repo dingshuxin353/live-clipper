@@ -188,7 +188,7 @@ def test_handle_api_request_returns_json_payloads(tmp_path):
     assert body["runs"][0]["run_id"] == "recording"
 
 
-def test_static_assets_disable_cache_and_index_versions_app_js(tmp_path):
+def test_static_assets_disable_cache_and_serve_hashed_react_js(tmp_path):
     class TestHandler(LiveClipperRequestHandler):
         paths = WebPaths(output_root=tmp_path / "output", state_dir=tmp_path / "state", log_dir=tmp_path / "logs")
 
@@ -200,10 +200,15 @@ def test_static_assets_disable_cache_and_index_versions_app_js(tmp_path):
         index_response = urlopen(f"{base_url}/", timeout=5)
         html = index_response.read().decode("utf-8")
         assert index_response.headers["Cache-Control"] == "no-store"
-        script_match = re.search(r'<script src="([^"]*app\.js\?v=[^"]+)"></script>', html)
+        script_match = re.search(
+            r'<script[^>]+src="(/static/react/assets/index-[A-Za-z0-9_-]+\.js)"[^>]*></script>',
+            html,
+        )
         assert script_match
 
         app_response = urlopen(f"{base_url}{script_match.group(1)}", timeout=5)
+        assert app_response.status == 200
+        assert "javascript" in app_response.headers["Content-Type"]
         assert app_response.headers["Cache-Control"] == "no-store"
         assert b"/api/review-automation/run-due" in app_response.read()
     finally:
