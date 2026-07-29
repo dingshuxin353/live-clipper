@@ -81,6 +81,23 @@ def test_project_dependencies_include_socks_proxy_support():
     assert any(dependency.startswith("socksio") for dependency in dependencies)
 
 
+def test_react_renderer_package_and_frozen_build_contract():
+    metadata = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    package_data = metadata["tool"]["setuptools"]["package-data"]["live_clipper"]
+    build_script = Path("desktop/scripts/build-backend.sh").read_text(encoding="utf-8")
+    package = json.loads(Path("frontend/package.json").read_text(encoding="utf-8"))
+    lock = json.loads(Path("frontend/package-lock.json").read_text(encoding="utf-8"))
+
+    assert {"web_static/react/*.html", "web_static/react/assets/*"}.issubset(package_data)
+    assert package["engines"] == {"node": ">=24 <25", "npm": ">=11 <12"}
+    assert set(package["dependencies"]) == {"react", "react-dom"}
+    assert lock["lockfileVersion"] == 3
+    assert "npm --prefix frontend ci" in build_script
+    assert "npm --prefix frontend run check" in build_script
+    assert "git diff --exit-code -- src/live_clipper/web_static/react" in build_script
+    assert build_script.index("npm --prefix frontend ci") < build_script.index(".venv/bin/pyinstaller")
+
+
 def test_project_pins_lightweight_model_hub_dependencies_and_freezes_them():
     metadata = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
     dependencies = metadata["project"]["dependencies"]

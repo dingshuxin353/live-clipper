@@ -921,7 +921,7 @@ class LiveClipperRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _serve_static(self, *, head_only: bool = False) -> None:
-        target = STATIC_DIR / "index.html" if self.path == "/" else _static_path(self.path)
+        target = STATIC_DIR / "react" / "index.html" if self.path == "/" else _static_path(self.path)
         if target is None or not target.exists() or not target.is_file():
             self.send_error(HTTPStatus.NOT_FOUND, "File not found")
             return

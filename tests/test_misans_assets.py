@@ -9,7 +9,7 @@ from live_clipper.web import _static_path
 
 ROOT = Path(__file__).resolve().parents[1]
 FONT_DIR = ROOT / "src" / "live_clipper" / "web_static" / "fonts"
-STYLES_PATH = ROOT / "src" / "live_clipper" / "web_static" / "styles.css"
+STYLES_PATH = ROOT / "frontend" / "src" / "styles.css"
 PYPROJECT_PATH = ROOT / "pyproject.toml"
 LICENSE_URL = (
     "https://hyperos.mi.com/font-download/"
@@ -159,6 +159,18 @@ def test_styles_use_misans_default_stack_without_forbidden_sources() -> None:
     assert not re.search(r"""local\(\s*["']MiSans["']""", styles, flags=re.IGNORECASE)
     assert not re.search(r"\.(?:ttf|otf|woff)(?:[\"')?#\s]|$)", styles, flags=re.IGNORECASE)
     assert not re.search(r"url\([^)]*(?:variable|[-_]vf)", styles, flags=re.IGNORECASE)
+
+
+def test_production_build_preserves_misans_contract() -> None:
+    css_assets = list((ROOT / "src" / "live_clipper" / "web_static" / "react" / "assets").glob("*.css"))
+    assert len(css_assets) == 1
+    styles = css_assets[0].read_text(encoding="utf-8")
+
+    assert styles.count("@font-face") == 4
+    for name in EXPECTED_FONTS:
+        assert f"/static/fonts/{name}" in styles
+    compact_stack = EXPECTED_FONT_STACK.replace('"', "").replace(" ", "")
+    assert compact_stack in styles.replace('"', "").replace(" ", "")
 
 
 def test_package_data_includes_misans_assets() -> None:

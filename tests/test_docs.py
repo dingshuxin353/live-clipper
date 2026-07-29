@@ -4,6 +4,10 @@ import re
 from pathlib import Path
 
 
+def _frontend_source(*names: str) -> str:
+    return "\n".join(Path("frontend/src", name).read_text(encoding="utf-8") for name in names)
+
+
 def test_ai_assistant_guide_exists_and_covers_beginner_safety():
     guide = Path("docs/ai-assistant-guide.md")
 
@@ -88,39 +92,36 @@ def test_advanced_usage_documents_mcp_tools_and_confirmation_safety():
 
 
 def test_web_static_exposes_v3_console_sections():
-    html = Path("src/live_clipper/web_static/index.html").read_text(encoding="utf-8")
-    app = Path("src/live_clipper/web_static/app.js").read_text(encoding="utf-8")
+    app = _frontend_source("App.tsx", "Settings.tsx")
 
     for label in ["服务", "任务", "确认", "日志", "配置"]:
-        assert label in html
+        assert label in app
     assert "/api/confirmations/batch-approve" in app
     assert "/api/service/scan-now" in app
     assert "confirmation_required" in app
 
 
 def test_web_static_exposes_v4_config_editor():
-    html = Path("src/live_clipper/web_static/index.html").read_text(encoding="utf-8")
-    app = Path("src/live_clipper/web_static/app.js").read_text(encoding="utf-8")
+    app = _frontend_source("App.tsx", "Settings.tsx")
 
     for label in ["基础设置", "录播文件夹", "AI 服务地址", "语音识别方式", "启用自动处理引擎", "检查配置", "保存配置", "重启服务"]:
-        assert label in html
+        assert label in app
     assert "/api/config" in app
     assert "/api/config/validate" in app
     assert "/api/config/restart-service" in app
 
 
 def test_web_static_exposes_v5_scheduler_config_section():
-    html = Path("src/live_clipper/web_static/index.html").read_text(encoding="utf-8")
-    app = Path("src/live_clipper/web_static/app.js").read_text(encoding="utf-8")
+    app = _frontend_source("App.tsx", "Settings.tsx")
 
     for label in ["自动化", "每周录播扫描", "每周审阅检查", "按时间表自动扫描和检查（默认每周日）"]:
-        assert label in html
+        assert label in app
     for label in ["立即执行", "暂停", "启用"]:
         assert label in app
     assert "/api/scheduler" in app
     assert "/api/scheduler/jobs" in app
     assert "/run-now" in app
-    assert "自动化引擎随 App 运行" in html
+    assert "自动化引擎随 App 运行" in app
 
 
 def test_advanced_usage_documents_v3_web_console_confirmation_flow():
@@ -156,13 +157,12 @@ def test_advanced_usage_documents_v5_internal_scheduler_without_v6_ai_review():
 
 
 def test_web_static_exposes_v6_ai_review_automation_controls():
-    html = Path("src/live_clipper/web_static/index.html").read_text(encoding="utf-8")
-    app = Path("src/live_clipper/web_static/app.js").read_text(encoding="utf-8")
+    app = _frontend_source("App.tsx", "Settings.tsx")
 
-    assert "AI 审阅" in html
-    assert "让 AI 自动选片（不用人工挑）" in html
-    assert "测试 AI 审阅环境" in html
-    assert "立即 AI 审阅" in html
+    assert "AI 审阅" in app
+    assert "让 AI 自动选片（不用人工挑）" in app
+    assert "测试 AI 审阅环境" in app
+    assert "立即 AI 审阅" in app
     assert "/api/review-automation" in app
     assert "/api/review-automation/check" in app
     assert "/api/review-automation/run-due" in app
@@ -171,7 +171,7 @@ def test_web_static_exposes_v6_ai_review_automation_controls():
 
 
 def test_web_static_exposes_v7_layered_config_page():
-    html = Path("src/live_clipper/web_static/index.html").read_text(encoding="utf-8")
+    html = _frontend_source("Settings.tsx")
 
     for label in ["配置体检", "基础设置", "自动化", "高级设置"]:
         assert label in html
@@ -220,8 +220,7 @@ def test_advanced_usage_documents_v6_ai_review_safety_and_modes():
 
 
 def test_web_static_exposes_local_asr_model_manager():
-    html = Path("src/live_clipper/web_static/index.html").read_text(encoding="utf-8")
-    app = Path("src/live_clipper/web_static/app.js").read_text(encoding="utf-8")
+    app = _frontend_source("Settings.tsx")
 
     for label in [
         "本地语音模型",
@@ -229,7 +228,7 @@ def test_web_static_exposes_local_asr_model_manager():
         "ModelScope（中国大陆推荐）",
         "Hugging Face（国际官方）",
     ]:
-        assert label in html
+        assert label in app
     assert "/api/asr/models" in app
 
 

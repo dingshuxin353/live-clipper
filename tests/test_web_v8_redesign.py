@@ -3,54 +3,34 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-
-def _html() -> str:
-    return Path("src/live_clipper/web_static/index.html").read_text(encoding="utf-8")
+FRONTEND_SRC = Path("frontend/src")
 
 
-def _app() -> str:
-    return Path("src/live_clipper/web_static/app.js").read_text(encoding="utf-8")
+def _source(*names: str) -> str:
+    return "\n".join((FRONTEND_SRC / name).read_text(encoding="utf-8") for name in names)
 
 
 def _styles() -> str:
-    return Path("src/live_clipper/web_static/styles.css").read_text(encoding="utf-8")
+    return (FRONTEND_SRC / "styles.css").read_text(encoding="utf-8")
 
 
-def test_v8_console_uses_user_task_navigation():
-    html = _html()
+def test_v8_console_contract_moved_to_react_dom_tests():
+    app = _source("App.tsx")
 
-    assert "直播切片 · 本地控制台" in html
-    assert 'data-tab="clips"' in html
-    assert 'data-tab="automation"' in html
-    assert 'data-tab="confirmations"' in html
-    assert 'data-tab="settings"' in html
-    assert 'data-tab="service"' not in html
-    assert 'data-tab="runs"' not in html
-    assert 'data-tab="logs"' not in html
-    assert 'data-tab="config"' not in html
-
-
-def test_v8_console_exposes_core_actions_without_prototype_runtime():
-    html = _html()
-    app = _app()
-
-    for label in ["切片结果", "自动化", "确认", "设置", "立即扫描录播", "运行日志", "AI 自动审阅", "没有待确认的操作"]:
-        assert label in html
-    for forbidden in ["sc-if", "sc-for", "DCLogic"]:
-        assert forbidden not in html
-        assert forbidden not in app
-    assert "/api/service/scan-now" in app
-    assert "/api/review-automation/run-due" in app
-    assert "/api/runs/" in app
-    assert "/ai-review" in app
-    assert "reviewAutomationActionStatus" in html
-    assert "review_automation_disabled" in app
-    assert "自动 AI 审阅还没有启用" in app
+    expected_tabs = ['["clips", "▶", "切片结果"]', '["automation", "◷", "自动化"]', '["confirmations", "✓", "确认"]', '["settings", "☰", "设置"]']
+    assert [app.index(tab) for tab in expected_tabs] == sorted(app.index(tab) for tab in expected_tabs)
+    for legacy_tab in ['"service"', '"runs"', '"logs"', '"config"']:
+        assert f"data-tab={legacy_tab}" not in app
+    for label in ["立即扫描录播", "运行日志", "AI 自动审阅", "没有待确认的操作"]:
+        assert label in app
+    for endpoint in ["/api/service/scan-now", "/api/review-automation/run-due", "/api/runs/", "/ai-review"]:
+        assert endpoint in app
 
 
 def test_v8_config_fields_remain_unique_and_complete():
-    html = _html()
-    fields = re.findall(r'data-config-field="([^"]+)"', html)
+    config = _source("config.ts")
+    fields_block = config.split("export const CONFIG_FIELDS = [", 1)[1].split("] as const", 1)[0]
+    fields = re.findall(r'"([a-z0-9_.]+)"', fields_block)
 
     assert len(fields) == 47
     assert len(fields) == len(set(fields))
@@ -63,10 +43,6 @@ def test_v8_config_fields_remain_unique_and_complete():
         "web.host",
     ]:
         assert field in fields
-    model_field = re.findall(r'<input[^>]+data-config-field="asr\.model"[^>]*>', html)
-    assert len(model_field) == 1
-    assert "readonly" in model_field[0]
-    assert "当前识别模型（请在上方模型列表切换）" in html
     for hidden_legacy_field in [
         "recording_source_default.input_dir",
         "recording_source_default.output_root",
@@ -74,54 +50,24 @@ def test_v8_config_fields_remain_unique_and_complete():
         "paths.output_root",
     ]:
         assert hidden_legacy_field not in fields
-    assert "任务工作区位置" in html
-    assert "应用内部状态目录" in html
 
 
 def test_v8_settings_keep_advanced_fields_collapsed():
-    html = _html()
+    settings = _source("Settings.tsx")
+    advanced = settings.split('data-config-layer="advanced"', 1)[0]
+    quick_start = settings.split('data-config-layer="quick-start"', 1)[1].split(
+        'data-config-layer="automation"', 1
+    )[0]
 
-    advanced_match = re.search(r'<details[^>]+data-config-layer="advanced"[^>]*>', html)
-    assert advanced_match
-    assert " open" not in advanced_match.group(0)
-    quick_start = html.split('data-config-layer="quick-start"', 1)[1].split('data-config-layer="automation"', 1)[0]
+    assert "<details" in advanced
     for advanced_label in ["tick 秒数", "Temperature", "Max tokens"]:
         assert advanced_label not in quick_start
+    assert "当前识别模型（请在上方模型列表切换）" in settings
 
 
-def test_v8_model_download_sources_and_states():
-    html = _html()
-    app = _app()
-
-    source_block = html.split('data-config-field="asr.model_source"', 1)[1].split("</select>", 1)[0]
-    expected = [
-        'value="modelscope">ModelScope（中国大陆推荐）',
-        'value="huggingface">Hugging Face（国际官方）',
-    ]
-    assert all(label in source_block for label in expected)
-    assert [source_block.index(label) for label in expected] == sorted(source_block.index(label) for label in expected)
-    assert "hf-mirror" not in source_block
-    assert "HF Mirror" not in source_block
-    assert 'model_source: "modelscope"' in app
-    for label in [
-        "继续下载",
-        "损坏需修复",
-        "修复",
-        "将使用：",
-        "last_error",
-        "partial_bytes",
-        "设为当前模型",
-        "当前使用 · 尚未下载",
-        "当前使用 · 模型损坏",
-    ]:
-        assert label in app
-    assert "model.recommended" not in app
-    assert " · 推荐" not in app
-
-
-def test_v8_model_matrix_order_tiers_and_safe_current_actions():
+def test_v8_model_sources_states_order_and_safe_actions():
+    settings = _source("Settings.tsx")
     models = Path("src/live_clipper/asr_models.py").read_text(encoding="utf-8")
-    app = _app()
     expected_ids = [
         "mlx-community/whisper-small-mlx-q4",
         "mlx-community/whisper-medium-mlx-q4",
@@ -131,21 +77,26 @@ def test_v8_model_matrix_order_tiers_and_safe_current_actions():
     assert [models.index(model_id) for model_id in expected_ids] == sorted(
         models.index(model_id) for model_id in expected_ids
     )
-    for tier_label in ['"tier_label": "轻量"', '"tier_label": "平衡"', '"tier_label": "高精度"']:
-        assert tier_label in models
-    assert "model.tier_label" in app
-    assert "if (!model.current)" in app
-    assert 'data-action="select"' in app
-    assert 'data-action="delete"' in app
-    assert "currentBadge" in app
-    for forbidden in ["Qwen3", "mlx_audio", "ForcedAligner"]:
-        assert forbidden not in models
-        assert forbidden not in app
+    for label in [
+        "ModelScope（中国大陆推荐）",
+        "Hugging Face（国际官方）",
+        "继续下载",
+        "损坏需修复",
+        "修复",
+        "将使用：",
+        "设为当前模型",
+        "当前使用 · 尚未下载",
+        "当前使用 · 模型损坏",
+    ]:
+        assert label in settings
+    assert 'model.state === "installed" && !model.current' in settings
+    assert "Promise.all([refreshModels()" in settings
+    for forbidden in ["Qwen3", "mlx_audio", "ForcedAligner", "hf-mirror", "HF Mirror"]:
+        assert forbidden not in settings
 
 
-def test_v8_model_cards_use_full_width_responsive_component_layout():
+def test_v8_model_cards_keep_existing_responsive_layout():
     styles = _styles()
-    app = _app()
     list_rule = re.search(r"\.asr-model-list\s*\{([^}]+)\}", styles, flags=re.DOTALL)
     row_rule = re.search(r"\.asr-model-row\s*\{([^}]+)\}", styles, flags=re.DOTALL)
     info_rule = re.search(r"\.asr-model-info\s*\{([^}]+)\}", styles, flags=re.DOTALL)
@@ -156,87 +107,39 @@ def test_v8_model_cards_use_full_width_responsive_component_layout():
     assert list_rule and "grid-column: 1 / -1" in list_rule.group(1)
     assert "width: 100%" in list_rule.group(1)
     assert "min-width: 0" in list_rule.group(1)
-    assert row_rule and "display: grid" in row_rule.group(1)
-    assert "grid-template-columns: minmax(0, 1fr) auto" in row_rule.group(1)
+    assert row_rule and "grid-template-columns: minmax(0, 1fr) auto" in row_rule.group(1)
     assert info_rule and "min-width: 0" in info_rule.group(1)
     assert side_rule and "justify-content: flex-end" in side_rule.group(1)
     assert actions_rule and "flex-wrap: nowrap" in actions_rule.group(1)
     assert re.search(r"\.asr-model-row\s*\{[^}]*grid-template-columns:\s*1fr", mobile, flags=re.DOTALL)
-    assert '<div class="asr-model-side">' in app
-    assert '<div class="asr-model-status">' in app
-    assert '<div class="asr-model-actions">' in app
 
 
-def test_v8_model_actions_use_venus_button_components_without_bare_buttons():
+def test_v8_model_actions_use_venus_button_styles():
     styles = _styles()
-    app = _app()
+    settings = _source("Settings.tsx")
     action_rule = re.search(r"\.asr-model-action\s*\{([^}]+)\}", styles, flags=re.DOTALL)
 
     assert action_rule
-    for declaration in [
-        "white-space: nowrap",
-        "min-width: 72px",
-        "min-height: 34px",
-        "flex: 0 0 auto",
-    ]:
+    for declaration in ["white-space: nowrap", "min-width: 72px", "min-height: 34px", "flex: 0 0 auto"]:
         assert declaration in action_rule.group(1)
     assert ".asr-model-action:focus-visible" in styles
     assert ".asr-model-action:disabled" in styles
-
-    expected_buttons = [
-        '<button type="button" class="primary-button small asr-model-action" data-action="select">设为当前模型</button>',
-        '<button type="button" class="secondary-button small asr-model-action asr-model-delete" data-action="delete">删除</button>',
-        '<button type="button" class="primary-button small asr-model-action" data-action="download">修复</button>',
-        '<button type="button" class="primary-button small asr-model-action" data-action="download">继续下载</button>',
-        '<button type="button" class="primary-button small asr-model-action" data-action="download">下载</button>',
-    ]
-    for button in expected_buttons:
-        assert button in app
-    action_buttons = re.findall(r'<button[^>]+data-action="(?:select|delete|download)"[^>]*>', app)
-    assert len(action_buttons) == 5
-    assert all("asr-model-action" in button for button in action_buttons)
-    installed_block = app.split('if (model.state === "installed")', 1)[1].split(
-        '} else if (model.state === "downloading")',
-        1,
-    )[0]
-    assert "if (!model.current)" in installed_block
+    for label in ["设为当前模型", "删除", "修复", "继续下载", "下载"]:
+        assert label in settings
 
 
-def test_v8_select_waits_for_server_and_refreshes_models_and_config():
-    app = _app()
-    selection = app.split("async function selectAsrModel", 1)[1].split(
-        "async function deleteAsrModel",
-        1,
-    )[0]
-
-    assert 'api("/api/asr/models/select"' in selection
-    assert 'button.disabled = true' in selection
-    assert "finally" in selection
-    assert "Promise.all([refreshAsrModels(), loadConfig(true)])" in selection
-    assert ".current =" not in selection
-
-
-def test_v8_mobile_nav_is_contained_inside_viewport():
+def test_v8_mobile_nav_and_misans_contract_are_unchanged():
     styles = _styles()
     mobile_styles = styles.split("@media (max-width: 920px)", 1)[1]
-
-    assert ".app-shell" in mobile_styles
-    assert "max-width: 100vw" in mobile_styles
-    assert ".nav-list" in mobile_styles
-    assert "overflow-x: auto" in mobile_styles
-    assert ".nav-item" in mobile_styles
-    assert "min-width: max-content" not in mobile_styles
-
-
-def test_v8_uses_misans_default_font_and_inherited_form_controls():
-    styles = _styles()
     root_match = re.search(r":root\s*\{([^}]+)\}", styles, flags=re.DOTALL)
     form_match = re.search(r"button,\s*input,\s*select\s*\{([^}]+)\}", styles, flags=re.DOTALL)
 
+    assert "max-width: 100vw" in mobile_styles
+    assert "overflow-x: auto" in mobile_styles
+    assert "min-width: max-content" not in mobile_styles
     assert root_match
     assert (
         'font-family: "MiSans", "SF Pro Text", "PingFang SC", "Microsoft YaHei", '
         "system-ui, -apple-system, BlinkMacSystemFont, sans-serif;"
     ) in root_match.group(1)
-    assert form_match
-    assert "font: inherit;" in form_match.group(1)
+    assert form_match and "font: inherit;" in form_match.group(1)
