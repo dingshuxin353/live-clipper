@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
+import { Button } from "@astryxdesign/core/Button";
+import { List, ListItem } from "@astryxdesign/core/List";
 
 import { post } from "./api";
 import {
@@ -158,7 +160,7 @@ function ModelList({
 
   if (!models.length) return <p className="muted">加载中…</p>;
   return (
-    <>
+    <List className="asr-model-rows" density="compact" hasDividers>
       {models.map((model) => {
         const meta = [model.size_note, model.ram_note, model.speed_note, model.accuracy_note]
           .filter(Boolean)
@@ -183,37 +185,48 @@ function ModelList({
         }
         const disabled = busy === model.id;
         return (
-          <div className="asr-model-row" key={model.id}>
-            <div className="asr-model-info">
-              <strong>{model.display_name} <span className="asr-model-tier">{model.tier_label}</span></strong>
-              <span className="muted">{meta}</span>
-              <span className="asr-model-source">
-                将使用：{modelSourceLabel(downloadSource)}
-                {model.last_source ? ` · 上次：${modelSourceLabel(model.last_source)}` : ""}
-              </span>
-            </div>
-            <div className="asr-model-side">
+          <ListItem
+            className="asr-model-row"
+            description={(
+              <div className="asr-model-meta">
+                <span>{meta}</span>
+                <span className="asr-model-source">
+                  将使用：{modelSourceLabel(downloadSource)}
+                  {model.last_source ? ` · 上次：${modelSourceLabel(model.last_source)}` : ""}
+                </span>
+              </div>
+            )}
+            endContent={(
+              <div className="asr-model-side">
               <div className={`asr-model-status ${model.state === "damaged" ? "error" : model.state === "installed" ? "ok" : ""}`}>
                 {status}
               </div>
               <div className="asr-model-actions">
                 {model.state === "installed" && !model.current && (
                   <>
-                    <button className="primary-button small asr-model-action" disabled={disabled} onClick={() => void act(model, "select")} type="button">设为当前模型</button>
-                    <button className="secondary-button small asr-model-action asr-model-delete" disabled={disabled} onClick={() => void act(model, "delete")} type="button">删除</button>
+                    <Button className="asr-model-action" isDisabled={disabled} label="设为当前模型" onClick={() => void act(model, "select")} size="sm" variant="primary" />
+                    <Button className="asr-model-action asr-model-delete" isDisabled={disabled} label="删除" onClick={() => void act(model, "delete")} size="sm" variant="secondary" />
                   </>
                 )}
                 {model.state !== "installed" && model.state !== "downloading" && (
-                  <button className="primary-button small asr-model-action" disabled={disabled} onClick={() => void act(model, "download")} type="button">
-                    {model.state === "damaged" ? "修复" : model.partial_bytes || model.last_error ? "继续下载" : "下载"}
-                  </button>
+                  <Button
+                    className="asr-model-action"
+                    isDisabled={disabled}
+                    label={model.state === "damaged" ? "修复" : model.partial_bytes || model.last_error ? "继续下载" : "下载"}
+                    onClick={() => void act(model, "download")}
+                    size="sm"
+                    variant="primary"
+                  />
                 )}
               </div>
             </div>
-          </div>
+            )}
+            key={model.id}
+            label={<strong>{model.display_name} <span className="asr-model-tier">{model.tier_label}</span></strong>}
+          />
         );
       })}
-    </>
+    </List>
   );
 }
 

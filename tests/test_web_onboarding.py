@@ -196,5 +196,7 @@ def test_onboarding_styles_remain_scoped_and_keep_hidden_guard():
         ".onboarding-progress",
     ]:
         assert class_name in styles
-    source_select = styles.split("#onboardingAsrSource", 1)[1].split("}", 1)[0]
-    assert "appearance: none" in source_select
+    source = _react()
+    assert 'from "@astryxdesign/core/Selector"' in source
+    assert 'className="onboarding-source-selector"' in source
+    assert "#onboardingAsrSource" not in styles

@@ -17,8 +17,17 @@ def _styles() -> str:
 def test_v8_console_contract_moved_to_react_dom_tests():
     app = _source("App.tsx")
 
-    expected_tabs = ['["clips", "▶", "切片结果"]', '["automation", "◷", "自动化"]', '["confirmations", "✓", "确认"]', '["settings", "☰", "设置"]']
+    expected_tabs = ['["clips", "切片结果"]', '["automation", "自动化"]', '["confirmations", "确认"]', '["settings", "设置"]']
     assert [app.index(tab) for tab in expected_tabs] == sorted(app.index(tab) for tab in expected_tabs)
+    for component in ["AppShell", "SideNav", "SideNavHeading", "SideNavItem", "SideNavSection"]:
+        assert component in app
+    for old_tab in [
+        '["clips", "▶", "切片结果"]',
+        '["automation", "◷", "自动化"]',
+        '["confirmations", "✓", "确认"]',
+        '["settings", "☰", "设置"]',
+    ]:
+        assert old_tab not in app
     for legacy_tab in ['"service"', '"runs"', '"logs"', '"config"']:
         assert f"data-tab={legacy_tab}" not in app
     for label in ["立即扫描录播", "运行日志", "AI 自动审阅", "没有待确认的操作"]:
@@ -95,11 +104,10 @@ def test_v8_model_sources_states_order_and_safe_actions():
         assert forbidden not in settings
 
 
-def test_v8_model_cards_keep_existing_responsive_layout():
+def test_v8_model_list_uses_astryx_rows_and_safe_responsive_layout():
     styles = _styles()
+    settings = _source("Settings.tsx")
     list_rule = re.search(r"\.asr-model-list\s*\{([^}]+)\}", styles, flags=re.DOTALL)
-    row_rule = re.search(r"\.asr-model-row\s*\{([^}]+)\}", styles, flags=re.DOTALL)
-    info_rule = re.search(r"\.asr-model-info\s*\{([^}]+)\}", styles, flags=re.DOTALL)
     side_rule = re.search(r"\.asr-model-side\s*\{([^}]+)\}", styles, flags=re.DOTALL)
     actions_rule = re.search(r"\.asr-model-actions\s*\{([^}]+)\}", styles, flags=re.DOTALL)
     mobile = styles.split("@media (max-width: 920px)", 1)[1]
@@ -107,14 +115,15 @@ def test_v8_model_cards_keep_existing_responsive_layout():
     assert list_rule and "grid-column: 1 / -1" in list_rule.group(1)
     assert "width: 100%" in list_rule.group(1)
     assert "min-width: 0" in list_rule.group(1)
-    assert row_rule and "grid-template-columns: minmax(0, 1fr) auto" in row_rule.group(1)
-    assert info_rule and "min-width: 0" in info_rule.group(1)
+    assert 'from "@astryxdesign/core/List"' in settings
+    assert "<List " in settings
+    assert "<ListItem" in settings
     assert side_rule and "justify-content: flex-end" in side_rule.group(1)
     assert actions_rule and "flex-wrap: nowrap" in actions_rule.group(1)
-    assert re.search(r"\.asr-model-row\s*\{[^}]*grid-template-columns:\s*1fr", mobile, flags=re.DOTALL)
+    assert re.search(r"\.asr-model-side\s*\{[^}]*flex-wrap:\s*wrap", mobile, flags=re.DOTALL)
 
 
-def test_v8_model_actions_use_venus_button_styles():
+def test_v8_model_actions_use_astryx_buttons_with_only_layout_adapters():
     styles = _styles()
     settings = _source("Settings.tsx")
     action_rule = re.search(r"\.asr-model-action\s*\{([^}]+)\}", styles, flags=re.DOTALL)
@@ -122,24 +131,26 @@ def test_v8_model_actions_use_venus_button_styles():
     assert action_rule
     for declaration in ["white-space: nowrap", "min-width: 72px", "min-height: 34px", "flex: 0 0 auto"]:
         assert declaration in action_rule.group(1)
-    assert ".asr-model-action:focus-visible" in styles
-    assert ".asr-model-action:disabled" in styles
+    assert 'from "@astryxdesign/core/Button"' in settings
+    assert ".asr-model-action:focus-visible" not in styles
+    assert ".asr-model-action:disabled" not in styles
     for label in ["设为当前模型", "删除", "修复", "继续下载", "下载"]:
         assert label in settings
 
 
-def test_v8_mobile_nav_and_misans_contract_are_unchanged():
+def test_v8_astryx_shell_and_misans_contract():
     styles = _styles()
+    app = _source("App.tsx")
     mobile_styles = styles.split("@media (max-width: 920px)", 1)[1]
     root_match = re.search(r":root\s*\{([^}]+)\}", styles, flags=re.DOTALL)
-    form_match = re.search(r"button,\s*input,\s*select\s*\{([^}]+)\}", styles, flags=re.DOTALL)
 
     assert "max-width: 100vw" in mobile_styles
-    assert "overflow-x: auto" in mobile_styles
     assert "min-width: max-content" not in mobile_styles
+    assert "<AppShell" in app
+    assert 'mobileNav={{ breakpoint: "none", hasToggle: false }}' in app
     assert root_match
     assert (
         'font-family: "MiSans", "SF Pro Text", "PingFang SC", "Microsoft YaHei", '
         "system-ui, -apple-system, BlinkMacSystemFont, sans-serif;"
     ) in root_match.group(1)
-    assert form_match and "font: inherit;" in form_match.group(1)
+    assert not re.search(r"button,\s*input,\s*select\s*\{", styles)

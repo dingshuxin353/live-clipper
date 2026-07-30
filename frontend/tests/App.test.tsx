@@ -10,9 +10,11 @@ describe("React application shell", () => {
     });
     render(<App />);
     const navigation = await screen.findByRole("navigation", { name: "控制台页面" });
-    expect(within(navigation).getAllByRole("button").map((button) => button.textContent)).toEqual([
-      "▶切片结果", "◷自动化", "✓确认1", "☰设置",
+    expect(within(navigation).getAllByRole("button").slice(0, 4).map((button) => button.textContent)).toEqual([
+      "切片结果", "自动化", "确认1", "设置",
     ]);
+    expect(document.querySelector(".astryx-app-shell")).toBeInTheDocument();
+    expect(navigation.closest(".astryx-side-nav")).toBeInTheDocument();
     fireEvent.click(within(navigation).getByRole("button", { name: /自动化/ }));
     expect(screen.getByRole("heading", { name: "自动化" })).toBeVisible();
   });
@@ -52,6 +54,8 @@ describe("React application shell", () => {
     ]);
     expect(list.closest(".asr-model-row")).not.toHaveTextContent("删除");
     expect(screen.getAllByRole("button", { name: "下载" })).toHaveLength(2);
+    expect(document.querySelector(".astryx-list")).toContainElement(rows[0] as HTMLElement);
+    expect(rows[1].querySelector(".astryx-button")).toBeInTheDocument();
   });
 
   it("selects and deletes only non-current installed models through the model APIs", async () => {

@@ -1,4 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Banner } from "@astryxdesign/core/Banner";
+import { Button } from "@astryxdesign/core/Button";
+import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
+import { ProgressBar } from "@astryxdesign/core/ProgressBar";
+import { RadioList, RadioListItem } from "@astryxdesign/core/RadioList";
+import { SelectableCard } from "@astryxdesign/core/SelectableCard";
+import { Selector } from "@astryxdesign/core/Selector";
 
 import { api, post } from "./api";
 import type { GenericRecord, Model } from "./types";
@@ -12,9 +19,29 @@ interface ResultState {
   message: string;
 }
 
-function Result({ value, id }: { value: ResultState | null; id: string }) {
+function Result({
+  value,
+  id,
+  asBanner = false,
+}: {
+  value: ResultState | null;
+  id: string;
+  asBanner?: boolean;
+}) {
   if (!value) return null;
-  return <div id={id} className={`onboarding-result ${value.ok ? "ok" : "error"}`}>{value.message}</div>;
+  return asBanner ? (
+    <Banner
+      className="onboarding-asr-result"
+      container="card"
+      id={id}
+      status={value.ok ? "success" : "error"}
+      title={value.message}
+    />
+  ) : (
+    <div id={id} className={`legacy-onboarding-result ${value.ok ? "ok" : "error"}`}>
+      {value.message}
+    </div>
+  );
 }
 
 function formatBytes(value: unknown) {
@@ -83,7 +110,6 @@ export function Onboarding({ notify }: OnboardingProps) {
   );
   const localCanAdvance = selectedModel?.state === "installed" || selectedModelHasActiveDownload;
   const cloudReady = Boolean(asrBase.trim() && asrModel.trim() && asrKey.trim());
-  const asrCanAdvance = asrMode === "local" ? localCanAdvance : cloudReady;
 
   const refreshModels = useCallback(async (initialize = false) => {
     const payload = await api<{ ok?: boolean; message?: string; models?: Model[]; download_source?: string }>("/api/asr/models");
@@ -391,8 +417,37 @@ export function Onboarding({ notify }: OnboardingProps) {
     }
   }
 
+  function advanceFromAsr() {
+    if (asrMode === "local" && !localCanAdvance) {
+      setAsrResult({ ok: false, message: "请先下载并安装所选本地模型" });
+      window.setTimeout(() => {
+        document.getElementById(`onboardingModelDownload-${selectedModelId}`)?.focus();
+      });
+      return;
+    }
+    if (asrMode === "cloud" && !cloudReady) {
+      const missing = [
+        [asrBase.trim(), "onboardingAsrBase", "请填写识别服务地址"],
+        [asrModel.trim(), "onboardingAsrModel", "请填写识别模型"],
+        [asrKey.trim(), "onboardingAsrKey", "请填写识别 API key"],
+      ].find(([value]) => !value);
+      setAsrResult({ ok: false, message: String(missing?.[2] || "请完整填写云端识别配置") });
+      window.setTimeout(() => document.getElementById(String(missing?.[1]))?.focus());
+      return;
+    }
+    setAsrResult(null);
+    setStep(3);
+  }
+
   if (!visible) return null;
-  const skipButton = <button className="secondary-button" data-onboarding-skip onClick={() => { setSkipResult(null); setSkipOpen(true); }} type="button">稍后设置</button>;
+  const skipButton = (
+    <Button
+      data-onboarding-skip
+      label="稍后设置"
+      onClick={() => { setSkipResult(null); setSkipOpen(true); }}
+      variant="secondary"
+    />
+  );
   const sourceLabel = modelSource === "modelscope" ? "ModelScope（中国大陆）" : "Hugging Face（国际）";
   const summary = asrMode === "local"
     ? [
@@ -428,22 +483,90 @@ export function Onboarding({ notify }: OnboardingProps) {
           {step === 2 && (
             <section className="onboarding-step" data-step="2">
               <h2>选择语音识别方式</h2><p>默认在本机完成识别。模型只会在你明确点击下载后安装。</p>
-              <div className="onboarding-asr-modes">
-                <label><input id="onboardingAsrLocal" name="onboardingAsrMode" type="radio" value="local" checked={asrMode === "local"} disabled={downloadActive} onChange={() => setAsrMode("local")} /> 本机识别（默认）</label>
-                <label><input id="onboardingAsrCloud" name="onboardingAsrMode" type="radio" value="cloud" checked={asrMode === "cloud"} disabled={downloadActive} onChange={() => setAsrMode("cloud")} /> 云端识别（需要 API Key）</label>
-              </div>
+              <RadioList
+                className="onboarding-asr-modes"
+                htmlName="onboardingAsrMode"
+                isDisabled={downloadActive}
+                isLabelHidden
+                label="语音识别方式"
+                onChange={(value) => {
+                  setAsrMode(value === "cloud" ? "cloud" : "local");
+                  setAsrResult(null);
+                }}
+                orientation="horizontal"
+                value={asrMode}
+              >
+                <RadioListItem label="本机识别（默认）" value="local" description="模型下载后可离线识别" />
+                <RadioListItem label="云端识别（需要 API Key）" value="cloud" description="使用 OpenAI-compatible 服务" />
+              </RadioList>
               {asrMode === "local" ? (
                 <div id="onboardingAsrLocalPanel">
-                  <label>模型下载源<select id="onboardingAsrSource" value={modelSource} disabled={downloadActive} onChange={(event) => { setModelSource(event.target.value); setAsrResult({ ok: true, message: `下次下载将使用 ${event.target.selectedOptions[0].textContent}` }); }}><option value="modelscope">ModelScope（中国大陆）</option><option value="huggingface">Hugging Face（国际）</option></select></label>
+                  <Selector
+                    className="onboarding-source-selector"
+                    htmlName="onboardingAsrSource"
+                    isDisabled={downloadActive}
+                    label="模型下载源"
+                    onChange={(value) => {
+                      setModelSource(value);
+                      const label = value === "modelscope" ? "ModelScope（中国大陆）" : "Hugging Face（国际）";
+                      setAsrResult({ ok: true, message: `下次下载将使用 ${label}` });
+                    }}
+                    options={[
+                      { value: "modelscope", label: "ModelScope（中国大陆）" },
+                      { value: "huggingface", label: "Hugging Face（国际）" },
+                    ]}
+                    value={modelSource}
+                    width="100%"
+                  />
                   <div id="onboardingAsrModels" className="onboarding-models onboarding-model-grid">
                     {models.map((model) => (
-                      <article className={`onboarding-model-card ${model.id === selectedModelId ? "selected" : ""} ${model.state}`} data-onboarding-model-id={model.id} key={model.id}>
-                        <button className="onboarding-model-select" disabled={downloadActive} onClick={() => setSelectedModelId(model.id)} type="button"><strong>{model.display_name}</strong><span>{model.tier_label} · {String(model.size_note || "")}</span><span>将使用 {sourceLabel}</span><span className="onboarding-model-state">{modelStateLabel(model)}</span></button>
-                        {model.state !== "installed" && <button className="secondary-button onboarding-model-download" disabled={downloadActive} onClick={() => void startModelDownload(model.id)} type="button">{model.state === "damaged" ? "修复并使用" : Number(model.partial_bytes || 0) > 0 ? "继续下载" : "下载并使用"}</button>}
-                      </article>
+                      <SelectableCard
+                        className={`onboarding-model-card ${model.state}`}
+                        data-onboarding-model-id={model.id}
+                        isDisabled={downloadActive}
+                        isSelected={model.id === selectedModelId}
+                        key={model.id}
+                        label={model.display_name}
+                        onChange={() => {
+                          setSelectedModelId(model.id);
+                          setAsrResult(null);
+                        }}
+                        padding={3}
+                      >
+                        <div className="onboarding-model-choice">
+                          <strong>{model.display_name}</strong>
+                          <span>{model.tier_label} · {String(model.size_note || "")}</span>
+                          <span>将使用 {sourceLabel}</span>
+                          <span className="onboarding-model-state">{modelStateLabel(model)}</span>
+                          {model.state !== "installed" && (
+                            <Button
+                              className="onboarding-model-download"
+                              id={`onboardingModelDownload-${model.id}`}
+                              isDisabled={downloadActive}
+                              label={model.state === "damaged" ? "修复并使用" : Number(model.partial_bytes || 0) > 0 ? "继续下载" : "下载并使用"}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                void startModelDownload(model.id);
+                              }}
+                              size="sm"
+                              variant="secondary"
+                              width="100%"
+                            />
+                          )}
+                        </div>
+                      </SelectableCard>
                     ))}
                   </div>
-                  {progress && <div id="onboardingAsrProgress" className="onboarding-progress">{progress}</div>}
+                  {progress && (
+                    <div id="onboardingAsrProgress" className="onboarding-progress">
+                      <ProgressBar
+                        hasValueLabel
+                        label={progress}
+                        max={Number(selectedModel?.bytes_total || 1)}
+                        value={Number(selectedModel?.partial_bytes || 0)}
+                      />
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div id="onboardingAsrCloudPanel">
@@ -453,8 +576,12 @@ export function Onboarding({ notify }: OnboardingProps) {
                   <label>识别 API key<input id="onboardingAsrKey" type="password" value={asrKey} onChange={(event) => setAsrKey(event.target.value)} placeholder="只保存在本机 .env" /></label>
                 </div>
               )}
-              <Result id="onboardingAsrResult" value={asrResult} />
-              <div className="onboarding-actions">{skipButton}<button id="onboardingBackTo1Btn" className="secondary-button" onClick={() => setStep(1)} type="button">上一步</button><button id="onboardingToStep3Btn" className="primary-button" disabled={!asrCanAdvance} onClick={() => setStep(3)} type="button">下一步</button></div>
+              <Result asBanner id="onboardingAsrResult" value={asrResult} />
+              <div className="onboarding-actions">
+                {skipButton}
+                <Button id="onboardingBackTo1Btn" label="上一步" onClick={() => setStep(1)} variant="secondary" />
+                <Button id="onboardingToStep3Btn" label="下一步" onClick={advanceFromAsr} variant="primary" />
+              </div>
             </section>
           )}
           {step === 3 && (
@@ -480,17 +607,31 @@ export function Onboarding({ notify }: OnboardingProps) {
           )}
         </div>
       </div>
-      {skipOpen && (
-        <div id="onboardingSkipDialog" className="onboarding-skip-dialog" role="dialog" aria-modal="true" aria-labelledby="onboardingSkipTitle" onClick={(event) => { if (event.target === event.currentTarget && !skipBusy) setSkipOpen(false); }}>
-          <h2 id="onboardingSkipTitle">确认稍后设置？</h2><p>稍后设置会有以下影响：</p>
-          <ul><li>未配置录像目录时不会自动发现新录像</li><li>未配置语音识别时不能完成转写</li><li>未配置 AI 服务时不能自动选片</li><li>已经启动的模型下载不会因离开引导而取消</li></ul>
-          <p>你可以进入主界面，之后从以下位置继续设置：</p>
-          <ul><li>设置 → 基础设置 → 文件位置 → 录播文件夹</li><li>设置 → 基础设置 → 语音识别方式 / 本地语音模型</li><li>设置 → 基础设置 → AI 服务</li></ul>
-          <button id="onboardingSkipContinueBtn" className="secondary-button" disabled={skipBusy} autoFocus onClick={() => setSkipOpen(false)} type="button">继续设置</button>
-          <button id="onboardingSkipConfirmBtn" className="primary-button" disabled={skipBusy} onClick={() => void confirmSkip()} type="button">确认稍后设置</button>
+      <Dialog
+        id="onboardingSkipDialog"
+        isOpen={skipOpen}
+        maxHeight="85vh"
+        onOpenChange={(open) => {
+          if (!skipBusy) setSkipOpen(open);
+        }}
+        purpose="info"
+        width={460}
+      >
+        <div className="onboarding-skip-dialog">
+          <DialogHeader hasDivider onOpenChange={setSkipOpen} title="确认稍后设置？" />
+          <div className="onboarding-skip-content">
+            <p>稍后设置会有以下影响：</p>
+            <ul><li>未配置录像目录时不会自动发现新录像</li><li>未配置语音识别时不能完成转写</li><li>未配置 AI 服务时不能自动选片</li><li>已经启动的模型下载不会因离开引导而取消</li></ul>
+            <p>你可以进入主界面，之后从以下位置继续设置：</p>
+            <ul><li>设置 → 基础设置 → 文件位置 → 录播文件夹</li><li>设置 → 基础设置 → 语音识别方式 / 本地语音模型</li><li>设置 → 基础设置 → AI 服务</li></ul>
+          </div>
+          <div className="onboarding-dialog-actions">
+            <Button id="onboardingSkipContinueBtn" isDisabled={skipBusy} label="继续设置" onClick={() => setSkipOpen(false)} variant="secondary" />
+            <Button id="onboardingSkipConfirmBtn" isDisabled={skipBusy} label="确认稍后设置" onClick={() => void confirmSkip()} variant="primary" />
+          </div>
           <Result id="onboardingSkipResult" value={skipResult} />
         </div>
-      )}
+      </Dialog>
     </>
   );
 }

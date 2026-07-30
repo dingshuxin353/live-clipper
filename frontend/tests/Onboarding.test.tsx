@@ -24,6 +24,9 @@ describe("four-step onboarding", () => {
     fireEvent.change(screen.getByLabelText("录播文件夹路径"), { target: { value: "/recordings" } });
     fireEvent.click(screen.getByRole("button", { name: "下一步" }));
     expect(await screen.findByText("选择语音识别方式")).toBeVisible();
+    expect(document.querySelector(".astryx-radio-list")).toBeInTheDocument();
+    expect(document.querySelectorAll(".astryx-selectable-card")).toHaveLength(3);
+    expect(screen.getByRole("combobox", { name: "模型下载源" }).closest(".astryx-selector")).toBeInTheDocument();
     fireEvent.click(screen.getByLabelText(/云端识别/));
     expect(screen.getByLabelText("识别服务地址")).toBeVisible();
     fireEvent.click(screen.getByLabelText(/本机识别/));
@@ -49,8 +52,8 @@ describe("four-step onboarding", () => {
     render(<Onboarding notify={vi.fn()} />);
     fireEvent.click(await screen.findByRole("button", { name: "下一步" }));
     await screen.findByText("选择语音识别方式");
-    expect(screen.getByText("Small").closest(".onboarding-model-card")).toHaveClass("selected");
-    expect(screen.getByText("Large").closest(".onboarding-model-card")).not.toHaveClass("selected");
+    expect(screen.getByText("Small").closest(".onboarding-model-card")).toHaveAttribute("data-selected", "true");
+    expect(screen.getByText("Large").closest(".onboarding-model-card")).toHaveAttribute("data-selected", "false");
   });
 
   it("shows the native folder picker only with the Electron bridge and preserves cancellation", async () => {
@@ -75,10 +78,71 @@ describe("four-step onboarding", () => {
     const calls = installFetchMock({ "/api/onboarding": onboardingPayload() });
     render(<Onboarding notify={vi.fn()} />);
     fireEvent.click(await screen.findByRole("button", { name: "稍后设置" }));
+    expect(screen.getByRole("dialog")).toHaveClass("astryx-dialog");
     expect(screen.getByRole("dialog")).toHaveTextContent("未配置录像目录时不会自动发现新录像");
     expect(calls.some(([path, options]) => path === "/api/onboarding/skip" && options?.method === "POST")).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: "确认稍后设置" }));
     await waitFor(() => expect(calls.some(([path, options]) => path === "/api/onboarding/skip" && options?.method === "POST")).toBe(true));
+  });
+
+  it("keeps blocked ASR advance actionable and explains the missing download", async () => {
+    const models = MODELS.map((model) => ({ ...model, state: "missing", current: false }));
+    installFetchMock({
+      "/api/onboarding": onboardingPayload(),
+      "/api/onboarding/test-source": { ok: true },
+      "/api/asr/models": { ok: true, models, download_source: "modelscope" },
+    });
+    render(<Onboarding notify={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "下一步" }));
+    await screen.findByText("选择语音识别方式");
+    const next = screen.getByRole("button", { name: "下一步" });
+    expect(next).toBeEnabled();
+    fireEvent.click(next);
+    expect(await screen.findByText("请先下载并安装所选本地模型")).toBeVisible();
+    expect(document.getElementById(`onboardingModelDownload-${MODELS[0].id}`)).toHaveFocus();
+  });
+
+  it("allows an active download to continue into the AI step", async () => {
+    const models = MODELS.map((model, index) => index === 0
+      ? { ...model, state: "downloading", downloading: true, job_id: "job-active" }
+      : model);
+    installFetchMock({
+      "/api/onboarding": onboardingPayload(),
+      "/api/onboarding/test-source": { ok: true },
+      "/api/asr/models": { ok: true, models, download_source: "modelscope" },
+      "/api/jobs/job-active": { ok: true, job: { status: "running", bytes_downloaded: 1024, bytes_total: 4096 } },
+    });
+    render(<Onboarding notify={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "下一步" }));
+    await screen.findByText("选择语音识别方式");
+    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
+    expect(await screen.findByText("选一个 AI 服务")).toBeVisible();
+  });
+
+  it("explains and focuses the first missing cloud field", async () => {
+    installFetchMock({
+      "/api/onboarding": onboardingPayload(),
+      "/api/onboarding/test-source": { ok: true },
+    });
+    render(<Onboarding notify={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "下一步" }));
+    await screen.findByText("选择语音识别方式");
+    fireEvent.click(screen.getByLabelText(/云端识别/));
+    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
+    expect(await screen.findByText("请填写识别 API key")).toBeVisible();
+    expect(screen.getByLabelText("识别 API key")).toHaveFocus();
+  });
+
+  it("closes the skip dialog with Escape and returns focus", async () => {
+    installFetchMock({ "/api/onboarding": onboardingPayload() });
+    render(<Onboarding notify={vi.fn()} />);
+    const trigger = await screen.findByRole("button", { name: "稍后设置" });
+    trigger.focus();
+    fireEvent.click(trigger);
+    expect(screen.getByRole("dialog")).toBeVisible();
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(trigger).toHaveFocus();
   });
 
   it("recovers an active model job and reports success without exposing secrets to console", async () => {

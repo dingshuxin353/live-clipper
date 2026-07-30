@@ -10,6 +10,7 @@ from live_clipper.web import _static_path
 ROOT = Path(__file__).resolve().parents[1]
 FONT_DIR = ROOT / "src" / "live_clipper" / "web_static" / "fonts"
 STYLES_PATH = ROOT / "frontend" / "src" / "styles.css"
+THEME_PATH = ROOT / "frontend" / "src" / "theme" / "venus-stone-overrides.css"
 PYPROJECT_PATH = ROOT / "pyproject.toml"
 LICENSE_URL = (
     "https://hyperos.mi.com/font-download/"
@@ -159,6 +160,15 @@ def test_styles_use_misans_default_stack_without_forbidden_sources() -> None:
     assert not re.search(r"""local\(\s*["']MiSans["']""", styles, flags=re.IGNORECASE)
     assert not re.search(r"\.(?:ttf|otf|woff)(?:[\"')?#\s]|$)", styles, flags=re.IGNORECASE)
     assert not re.search(r"url\([^)]*(?:variable|[-_]vf)", styles, flags=re.IGNORECASE)
+
+
+def test_astryx_theme_uses_local_misans_and_system_code_fonts() -> None:
+    theme = THEME_PATH.read_text(encoding="utf-8")
+
+    assert f"--font-body: {EXPECTED_FONT_STACK};" in theme
+    assert f"--font-heading: {EXPECTED_FONT_STACK};" in theme
+    assert '--font-code: "SF Mono", Monaco, Consolas, monospace;' in theme
+    assert "http://" not in theme and "https://" not in theme
 
 
 def test_production_build_preserves_misans_contract() -> None:

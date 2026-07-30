@@ -8,12 +8,16 @@
     "npm": ">=11 <12"
   },
   "scripts": {
+    "theme:build": "node scripts/build-venus-stone-overrides.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "build": "vite build",
+    "build": "npm run theme:build && vite build",
     "check": "npm run typecheck && npm run test && npm run build"
   },
   "dependencies": {
+    "@astryxdesign/core": "0.1.9",
+    "@astryxdesign/theme-stone": "0.1.9",
+    "@stylexjs/stylex": "0.19.0",
     "react": "19.2.8",
     "react-dom": "19.2.8"
   },

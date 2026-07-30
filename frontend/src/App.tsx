@@ -1,4 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AppShell } from "@astryxdesign/core/AppShell";
+import { Button } from "@astryxdesign/core/Button";
+import {
+  SideNav,
+  SideNavHeading,
+  SideNavItem,
+  SideNavSection,
+} from "@astryxdesign/core/SideNav";
 
 import { api, post } from "./api";
 import { Onboarding } from "./Onboarding";
@@ -251,11 +259,11 @@ export function App() {
   }
 
   const pending = snapshot.confirmations.filter((item) => item.status === "pending");
-  const tabs: Array<[TabId, string, string]> = [
-    ["clips", "▶", "切片结果"],
-    ["automation", "◷", "自动化"],
-    ["confirmations", "✓", "确认"],
-    ["settings", "☰", "设置"],
+  const tabs: Array<[TabId, string]> = [
+    ["clips", "切片结果"],
+    ["automation", "自动化"],
+    ["confirmations", "确认"],
+    ["settings", "设置"],
   ];
   const service = snapshot.service ?? {};
   const schedulerState = snapshot.scheduler?.scheduler ?? {};
@@ -263,33 +271,52 @@ export function App() {
 
   return (
     <>
-      <div className="app-shell">
-        <aside className="sidebar">
-          <div className="brand">
-            <img className="brand-mark" src="/static/venus-mark.png" alt="Venus" />
-            <div><h1>Venus</h1><span className="version">直播切片 · 本地控制台</span></div>
-          </div>
-          <nav className="nav-list" aria-label="控制台页面">
-            {tabs.map(([id, icon, label]) => (
-              <button className={`nav-item ${activeTab === id ? "active" : ""}`} data-tab={id} onClick={() => setActiveTab(id)} key={id} type="button">
-                <span className="nav-icon">{icon}</span><span>{label}</span>
-                {id === "confirmations" && pending.length > 0 && <span id="confirmationBadge" className="nav-badge">{pending.length}</span>}
-              </button>
-            ))}
-          </nav>
-          <div id="sidebarServiceCard" className="sidebar-card">
+      <AppShell
+        className="venus-app-shell"
+        contentPadding={0}
+        height="fill"
+        mobileNav={{ breakpoint: "none", hasToggle: false }}
+        sideNav={(
+          <SideNav
+            aria-label="控制台页面"
+            className="venus-side-nav"
+            header={(
+              <SideNavHeading
+                heading="Venus"
+                subheading="直播切片 · 本地控制台"
+                icon={<img className="brand-mark" src="/static/venus-mark.png" alt="" />}
+              />
+            )}
+            footer={(
+              <div id="sidebarServiceCard" className="sidebar-service">
             <small>本机服务</small>
             <strong>{running ? "服务运行中" : labelFor(service.service?.status || "已停止")}</strong>
             <small>PID：{String(service.service?.pid || "无")}</small>
             <small>下次扫描：{String(service.service?.next_scan_at || "-")}</small>
             <small>下次定时：{String(schedulerState.next_due_at || "-")}</small>
-            <div className="button-row" style={{ marginTop: 12 }}>
-              <button className="secondary-button small" onClick={() => void runAction("/api/service/scan-now")} type="button">立即扫描</button>
-              <button className="secondary-button small" onClick={() => void runAction(running ? "/api/service/stop" : "/api/service/start")} type="button">{running ? "停止" : "启动"}</button>
-            </div>
-          </div>
-        </aside>
-        <main className="main-content">
+                <div className="sidebar-service-actions">
+                  <Button label="立即扫描" size="sm" variant="secondary" onClick={() => void runAction("/api/service/scan-now")} />
+                  <Button label={running ? "停止" : "启动"} size="sm" variant="secondary" onClick={() => void runAction(running ? "/api/service/stop" : "/api/service/start")} />
+                </div>
+              </div>
+            )}
+          >
+            <SideNavSection title="工作台" isHeaderHidden>
+              {tabs.map(([id, label]) => (
+                <SideNavItem
+                  endContent={id === "confirmations" && pending.length > 0 ? <span id="confirmationBadge" className="nav-badge">{pending.length}</span> : undefined}
+                  isSelected={activeTab === id}
+                  key={id}
+                  label={label}
+                  onClick={() => setActiveTab(id)}
+                />
+              ))}
+            </SideNavSection>
+          </SideNav>
+        )}
+        variant="elevated"
+      >
+        <div className="main-content">
           {loadError && <div className="notice error" role="alert">初次加载失败：{loadError}</div>}
           <section className={`page ${activeTab === "clips" ? "active" : ""}`} id="section-clips">
             <Clips
@@ -346,8 +373,8 @@ export function App() {
               schedulerDraft={schedulerDraft}
             />
           </section>
-        </main>
-      </div>
+            </div>
+      </AppShell>
       <Onboarding notify={notify} />
       {toast && <div id="toast" className="toast">{toast}</div>}
     </>
