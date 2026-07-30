@@ -5,8 +5,8 @@
     --color-on-accent: light-dark(#FFFFFF, #33236B);
     --color-text-accent: var(--color-accent);
     --color-icon-accent: var(--color-accent);
-    --font-body: "MiSans", "SF Pro Text", "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-    --font-heading: "MiSans", "SF Pro Text", "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-    --font-code: "SF Mono", Monaco, Consolas, monospace;
+    --font-family-body: "MiSans", "SF Pro Text", "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-family-heading: "MiSans", "SF Pro Text", "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-family-code: "SF Mono", Monaco, Consolas, monospace;
   }
 }

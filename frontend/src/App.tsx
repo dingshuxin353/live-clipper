@@ -1,17 +1,30 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AppShell } from "@astryxdesign/core/AppShell";
+import { AppShell, useAppShellMobile } from "@astryxdesign/core/AppShell";
+import { AlertDialog } from "@astryxdesign/core/AlertDialog";
+import { Badge } from "@astryxdesign/core/Badge";
 import { Button } from "@astryxdesign/core/Button";
+import { Card } from "@astryxdesign/core/Card";
+import { CheckboxInput } from "@astryxdesign/core/CheckboxInput";
+import { EmptyState } from "@astryxdesign/core/EmptyState";
+import { InternationalizationProvider } from "@astryxdesign/core/i18n";
+import { List, ListItem } from "@astryxdesign/core/List";
+import { Spinner } from "@astryxdesign/core/Spinner";
 import {
   SideNav,
   SideNavHeading,
   SideNavItem,
   SideNavSection,
 } from "@astryxdesign/core/SideNav";
+import { Tab, TabList } from "@astryxdesign/core/TabList";
+import { Text } from "@astryxdesign/core/Text";
+import { Toast } from "@astryxdesign/core/Toast";
+import { VisuallyHidden } from "@astryxdesign/core/VisuallyHidden";
 
 import { api, post } from "./api";
 import { Onboarding } from "./Onboarding";
 import { Settings } from "./Settings";
 import type { AppSnapshot, GenericRecord, Model, Run, TabId } from "./types";
+import { formatLocalTime, semanticToneStyles, type SemanticTone } from "./ui/presentation";
 
 const EMPTY_SNAPSHOT: AppSnapshot = {
   service: null,
@@ -22,6 +35,17 @@ const EMPTY_SNAPSHOT: AppSnapshot = {
   scheduler: null,
   reviewAutomation: null,
   models: [],
+};
+
+const VENUS_I18N_OVERRIDES = {
+  "zh-Hans": {
+    "@astryx.appShell.mobileNavigation": "移动导航",
+    "@astryx.dialog.close": "关闭",
+    "@astryx.mobileNav.closeNavigation": "关闭导航",
+    "@astryx.mobileNav.navigation": "导航菜单",
+    "@astryx.mobileNav.toggle.open": "打开导航",
+    "@astryx.toast.dismiss": "关闭通知",
+  },
 };
 
 const phaseLabels: Record<string, string> = {
@@ -93,7 +117,7 @@ function InfoRows({ rows }: { rows: Array<[string, unknown]> }) {
   return (
     <>
       {rows.map(([label, value]) => (
-        <div className="info-row" key={label}><span>{label}</span><strong>{String(value || "-")}</strong></div>
+        <div className="info-row" key={label}><span>{label}</span><strong className="technical-value" title={String(value || "-")}>{String(value || "-")}</strong></div>
       ))}
     </>
   );
@@ -110,6 +134,51 @@ function MetricRows({ rows }: { rows: Array<[string, unknown]> }) {
 }
 
 export function App() {
+  return (
+    <InternationalizationProvider locale="zh-Hans" overrides={VENUS_I18N_OVERRIDES}>
+      <AppContent />
+    </InternationalizationProvider>
+  );
+}
+
+function VenusNavigationItems({
+  activeTab,
+  pendingCount,
+  setActiveTab,
+  tabs,
+}: {
+  activeTab: TabId;
+  pendingCount: number;
+  setActiveTab: (tab: TabId) => void;
+  tabs: Array<[TabId, string]>;
+}) {
+  const { isMobileNavOpen } = useAppShellMobile();
+  const contentRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (isMobileNavOpen) {
+      contentRef.current?.scrollIntoView({ block: "start" });
+    }
+  }, [isMobileNavOpen]);
+
+  return (
+    <div className="venus-navigation-items" ref={contentRef}>
+      <SideNavSection title="工作台" isHeaderHidden>
+        {tabs.map(([id, label]) => (
+          <SideNavItem
+            endContent={id === "confirmations" && pendingCount > 0 ? <Badge id="confirmationBadge" label={pendingCount} /> : undefined}
+            isSelected={activeTab === id}
+            key={id}
+            label={label}
+            onClick={() => setActiveTab(id)}
+          />
+        ))}
+      </SideNavSection>
+    </div>
+  );
+}
+
+function AppContent() {
   const [activeTab, setActiveTab] = useState<TabId>("clips");
   const [phase, setPhase] = useState("");
   const [snapshot, setSnapshot] = useState<AppSnapshot>(EMPTY_SNAPSHOT);
@@ -246,14 +315,15 @@ export function App() {
     return () => controller.abort();
   }, [notify, pollAiReviewJob, selectedRunId]);
 
-  async function runAction(path: string, payload?: unknown) {
+  async function runAction(path: string, payload?: unknown, showToast = true) {
     try {
       const result = await post<GenericRecord>(path, payload);
       if (result.status === "confirmation_required") setLog(`需要确认: ${String(result.confirmation_id)}`);
+      if (showToast) notify(String(result.message || "操作已完成"));
       await refreshAll();
       return result;
     } catch (error) {
-      notify((error as Error).message);
+      if (showToast) notify((error as Error).message);
       throw error;
     }
   }
@@ -262,7 +332,7 @@ export function App() {
   const tabs: Array<[TabId, string]> = [
     ["clips", "切片结果"],
     ["automation", "自动化"],
-    ["confirmations", "确认"],
+    ["confirmations", "文件清理"],
     ["settings", "设置"],
   ];
   const service = snapshot.service ?? {};
@@ -275,7 +345,7 @@ export function App() {
         className="venus-app-shell"
         contentPadding={0}
         height="fill"
-        mobileNav={{ breakpoint: "none", hasToggle: false }}
+        mobileNav={{ breakpoint: "sm" }}
         sideNav={(
           <SideNav
             aria-label="控制台页面"
@@ -292,8 +362,8 @@ export function App() {
             <small>本机服务</small>
             <strong>{running ? "服务运行中" : labelFor(service.service?.status || "已停止")}</strong>
             <small>PID：{String(service.service?.pid || "无")}</small>
-            <small>下次扫描：{String(service.service?.next_scan_at || "-")}</small>
-            <small>下次定时：{String(schedulerState.next_due_at || "-")}</small>
+            <small>下次扫描：{formatLocalTime(service.service?.next_scan_at)}</small>
+            <small>下次定时：{formatLocalTime(schedulerState.next_due_at)}</small>
                 <div className="sidebar-service-actions">
                   <Button label="立即扫描" size="sm" variant="secondary" onClick={() => void runAction("/api/service/scan-now")} />
                   <Button label={running ? "停止" : "启动"} size="sm" variant="secondary" onClick={() => void runAction(running ? "/api/service/stop" : "/api/service/start")} />
@@ -301,23 +371,18 @@ export function App() {
               </div>
             )}
           >
-            <SideNavSection title="工作台" isHeaderHidden>
-              {tabs.map(([id, label]) => (
-                <SideNavItem
-                  endContent={id === "confirmations" && pending.length > 0 ? <span id="confirmationBadge" className="nav-badge">{pending.length}</span> : undefined}
-                  isSelected={activeTab === id}
-                  key={id}
-                  label={label}
-                  onClick={() => setActiveTab(id)}
-                />
-              ))}
-            </SideNavSection>
+            <VenusNavigationItems
+              activeTab={activeTab}
+              pendingCount={pending.length}
+              setActiveTab={setActiveTab}
+              tabs={tabs}
+            />
           </SideNav>
         )}
         variant="elevated"
       >
         <div className="main-content">
-          {loadError && <div className="notice error" role="alert">初次加载失败：{loadError}</div>}
+          {loadError && <Text as="div" role="alert" type="supporting" xstyle={semanticToneStyles.error}>{`初次加载失败：${loadError}`}</Text>}
           <section className={`page ${activeTab === "clips" ? "active" : ""}`} id="section-clips">
             <Clips
               phase={phase}
@@ -376,7 +441,17 @@ export function App() {
             </div>
       </AppShell>
       <Onboarding notify={notify} />
-      {toast && <div id="toast" className="toast">{toast}</div>}
+      {toast && (
+        <div className="venus-toast" id="toast">
+          <Toast
+            autoHideDuration={3600}
+            body={toast}
+            isAutoHide={false}
+            onDismiss={() => setToast("")}
+            type={/失败|错误|不可用/.test(toast) ? "error" : "info"}
+          />
+        </div>
+      )}
     </>
   );
 }
@@ -393,7 +468,7 @@ interface ClipsProps {
   notify(message: string): void;
   refreshAll(): Promise<void>;
   pollAiReviewJob(runId: string, jobId: string): Promise<void>;
-  runAction(path: string, payload?: unknown): Promise<GenericRecord>;
+  runAction(path: string, payload?: unknown, showToast?: boolean): Promise<GenericRecord>;
 }
 
 function Clips(props: ClipsProps) {
@@ -412,40 +487,55 @@ function Clips(props: ClipsProps) {
       <div className="page-heading">
         <div><h2>切片结果</h2><p id="clipsSubtitle" className="muted">{subtitle}</p></div>
         <div className="button-row">
-          <button id="refreshBtn" className="secondary-button" onClick={() => void refreshAll()} type="button">刷新</button>
-          <button id="scanNowBtn" className="primary-button" onClick={() => void runAction("/api/service/scan-now")} type="button">立即扫描录播</button>
+          <Button id="refreshBtn" label="刷新" onClick={() => void refreshAll()} />
+          <Button id="scanNowBtn" label="立即扫描录播" onClick={() => void runAction("/api/service/scan-now")} variant="primary" />
         </div>
       </div>
-      <div className="segmented" id="phaseFilters" aria-label="任务阶段筛选">
+      <TabList aria-label="任务阶段筛选" className="phase-filters" id="phaseFilters" onChange={setPhase} size="sm" value={phase}>
         {[["", "全部"], ["processing", "处理中"], ["needs_review", "待审阅"], ["rendered", "已成片"], ["failed", "失败"]].map(([id, label]) => (
-          <button className={phase === id ? "active" : ""} data-phase={id} onClick={() => setPhase(id)} key={id} type="button">{label}</button>
+          <Tab key={id} label={label} value={id} />
         ))}
-      </div>
-      <div id="runList" className="run-list">
-        {!runs.length && <div className="empty">还没有录播任务。可以先点击「立即扫描录播」。</div>}
+      </TabList>
+      {!runs.length && <EmptyState description="可以先点击「立即扫描录播」。" title="还没有录播任务" />}
+      <List className="run-list" density="compact" hasDividers id="runList">
         {runs.map((run) => {
           const active = run.run_id === selectedRunId;
           return (
-            <article className={`clip-card ${active ? "active" : ""} ${run.stuck ? "stuck" : ""}`} key={run.run_id}>
-              <button className="clip-card-main" data-run-id={run.run_id} onClick={() => selectRun(run.run_id)} type="button">
-                <span><span className="run-title">{run.source_name || run.run_id}</span><span className="run-meta">{[run.updated_at || run.created_at || "-", `${Number(run.clip_count || 0)} 个成片`, `${Number(run.candidate_count || 0)} 个候选`, labelFor(run.phase)].join(" · ")}</span></span>
-                <span className={`status-pill ${canonicalPhase(run.phase)}`}>{labelFor(run.phase)}</span>
-              </button>
-              {run.stuck && <div className="run-stuck-notice">⚠️ 已处理较长时间仍未完成，可能已卡住。请点击展开后「查看日志」，或重启本机服务后重试。</div>}
-              {active && detail?.ok && (
-                <RunExpanded
-                  detail={detail}
-                  setActiveTab={setActiveTab}
-                  setLog={setLog}
-                  notify={notify}
-                  pollAiReviewJob={pollAiReviewJob}
-                  runAction={runAction}
-                />
+            <ListItem
+              className={`run-row ${run.stuck ? "stuck" : ""}`}
+              data-run-id={run.run_id}
+              description={(
+                <div className="run-row-detail">
+                  <span className="run-meta">
+                    {[formatLocalTime(run.updated_at || run.created_at), `${Number(run.clip_count || 0)} 个成片`, `${Number(run.candidate_count || 0)} 个候选`].join(" · ")}
+                  </span>
+                  {run.stuck && (
+                    <div className="status-copy">
+                      <Text as="div" role="alert" type="supporting" xstyle={semanticToneStyles.warning}>已处理较长时间仍未完成，可能已卡住。</Text>
+                      <Text as="div" type="supporting" xstyle={semanticToneStyles.warning}>请展开查看日志，或重启本机服务后重试。</Text>
+                    </div>
+                  )}
+                  {active && detail?.ok && (
+                    <RunExpanded
+                      detail={detail}
+                      setActiveTab={setActiveTab}
+                      setLog={setLog}
+                      notify={notify}
+                      pollAiReviewJob={pollAiReviewJob}
+                      runAction={runAction}
+                    />
+                  )}
+                </div>
               )}
-            </article>
+              endContent={<Badge label={labelFor(run.phase)} />}
+              isSelected={active}
+              key={run.run_id}
+              label={<span className="run-title">{run.source_name || run.run_id}</span>}
+              onClick={() => selectRun(run.run_id)}
+            />
           );
         })}
-      </div>
+      </List>
       <div id="runDetail" className="visually-hidden" aria-hidden="true">
         {detail?.ok && <InfoRows rows={[
           ["任务", detail.run?.run_id], ["阶段", labelFor(detail.run?.phase)], ["源文件", detail.run?.source_path],
@@ -472,7 +562,7 @@ function RunExpanded({
   setLog(value: string): void;
   notify(message: string): void;
   pollAiReviewJob(runId: string, jobId: string): Promise<void>;
-  runAction(path: string, payload?: unknown): Promise<GenericRecord>;
+  runAction(path: string, payload?: unknown, showToast?: boolean): Promise<GenericRecord>;
 }) {
   const run = detail.run ?? {};
   const phase = canonicalPhase(run.phase);
@@ -489,25 +579,35 @@ function RunExpanded({
     return (
       <div className="clip-card-body">
         <div className="clip-actions">
-          <span className="run-meta">{String(run.run_dir || "-")}</span>
-          <button className="secondary-button small" onClick={() => void copyText(run.run_dir)} type="button">复制目录</button>
-          <button id="cleanupPreviewBtn" className="secondary-button small" disabled={!detail.actions?.can_cleanup_preview} onClick={() => void runAction(`/api/runs/${encodeURIComponent(run.run_id)}/cleanup-preview`).then((result) => { setLog(JSON.stringify(result, null, 2)); setActiveTab("automation"); })} type="button">预览清理</button>
+          <span className="run-meta technical-value" title={String(run.run_dir || "-")}>{String(run.run_dir || "-")}</span>
+          <Button label="复制目录" onClick={() => void copyText(run.run_dir)} size="sm" />
+          <Button id="cleanupPreviewBtn" isDisabled={!detail.actions?.can_cleanup_preview} label="预览清理" onClick={() => void runAction(`/api/runs/${encodeURIComponent(run.run_id)}/cleanup-preview`).then((result) => { setLog(JSON.stringify(result, null, 2)); setActiveTab("automation"); })} size="sm" />
         </div>
-        {detail.clips?.length ? detail.clips.map((clip: GenericRecord) => (
-          <div className="clip-row" key={String(clip.path || clip.title || clip.name)}>
+        {detail.clips?.length ? (
+          <List className="clip-rows" density="compact" hasDividers>
+            {detail.clips.map((clip: GenericRecord) => (
+              <ListItem
+                description={<span className="technical-value" title={String(clip.description || clip.desc || clip.path || "")}>{String(clip.description || clip.desc || clip.path || "")}</span>}
+                endContent={(
+                  <div className="clip-actions">
+                    <Button label="复制标题" onClick={() => void copyText(clip.title || clip.name)} size="sm" />
+                    <Button label="复制简介" onClick={() => void copyText(clip.description || clip.desc || clip.path)} size="sm" />
+                    <span className="run-meta">{formatBytes(clip.bytes)}</span>
+                  </div>
+                )}
+                key={String(clip.path || clip.title || clip.name)}
+                label={String(clip.title || clip.name || "未命名成片")}
+                startContent={(
             <div className="clip-thumb">
               {clip.media_url
                 ? <video src={String(clip.media_url)} aria-label={String(clip.title || clip.name || "成片")} controls preload="metadata" />
-                : "▶"}
+                      : null}
             </div>
-            <div><div className="clip-title">{String(clip.title || clip.name || "未命名成片")}</div><div className="clip-desc">{String(clip.description || clip.desc || clip.path || "")}</div></div>
-            <div className="clip-actions">
-              <button className="secondary-button small" onClick={() => void copyText(clip.title || clip.name)} type="button">复制标题</button>
-              <button className="secondary-button small" onClick={() => void copyText(clip.description || clip.desc || clip.path)} type="button">复制简介</button>
-              <span className="run-meta">{formatBytes(clip.bytes)}</span>
-            </div>
-          </div>
-        )) : <div className="empty">已进入成片阶段，但还没有检测到 clips/*.mp4。</div>}
+                )}
+              />
+            ))}
+          </List>
+        ) : <EmptyState isCompact title="已进入成片阶段，但还没有检测到 clips/*.mp4。" />}
       </div>
     );
   }
@@ -515,18 +615,30 @@ function RunExpanded({
     const reviewing = detail.active_job?.status === "running";
     return (
       <div className="clip-card-body">
-        {detail.ai_review?.status === "failed" && <div className="notice error" style={{ marginBottom: 12 }}>上次 AI 审阅失败：{String(detail.ai_review.error || "未知错误")}</div>}
+        {detail.ai_review?.status === "failed" && <Text as="div" role="alert" type="supporting" xstyle={semanticToneStyles.error}>{`上次 AI 审阅失败：${String(detail.ai_review.error || "未知错误")}`}</Text>}
         <div className="clip-actions">
           <p className="muted" style={{ flex: 1 }}>AI 已找到 <strong>{String(run.candidate_count || detail.candidates_count || 0)}</strong> 个候选片段，审阅后即可渲染成片。</p>
-          <button className="secondary-button small" onClick={() => void copyText(run.run_dir)} type="button">复制审阅包路径</button>
-          <button id="aiReviewRunBtn" className="primary-button small" disabled={reviewing || !detail.actions?.can_ai_review} onClick={() => void post<GenericRecord>(`/api/runs/${encodeURIComponent(run.run_id)}/ai-review`).then((payload) => { notify("AI 审阅已开始，正在后台处理…"); void pollAiReviewJob(String(run.run_id), String(payload.job?.id || "")); }).catch((error) => notify(`AI 审阅启动失败：${(error as Error).message}`))} type="button">{reviewing ? "AI 审阅中…" : "立即 AI 审阅"}</button>
-          <button id="renderRunBtn" className="secondary-button small" disabled={!detail.actions?.can_render} onClick={() => void runAction(`/api/runs/${encodeURIComponent(run.run_id)}/render`)} type="button">渲染</button>
+          <Button label="复制审阅包路径" onClick={() => void copyText(run.run_dir)} size="sm" />
+          <Button
+            data-busy={reviewing ? "true" : undefined}
+            icon={reviewing ? <Spinner aria-hidden="true" aria-label="AI 审阅中…" shade="inherit" size="sm" /> : undefined}
+            id="aiReviewRunBtn"
+            isDisabled={reviewing || !detail.actions?.can_ai_review}
+            label={reviewing ? "AI 审阅中…" : "立即 AI 审阅"}
+            onClick={() => void post<GenericRecord>(`/api/runs/${encodeURIComponent(run.run_id)}/ai-review`).then((payload) => { notify("AI 审阅已开始，正在后台处理…"); void pollAiReviewJob(String(run.run_id), String(payload.job?.id || "")); }).catch((error) => notify(`AI 审阅启动失败：${(error as Error).message}`))}
+            size="sm"
+            variant="primary"
+          />
+          <VisuallyHidden as="div" aria-atomic="true" aria-live="polite" role="status">
+            {reviewing ? "AI 审阅正在进行" : ""}
+          </VisuallyHidden>
+          <Button id="renderRunBtn" isDisabled={!detail.actions?.can_render} label="渲染" onClick={() => void runAction(`/api/runs/${encodeURIComponent(run.run_id)}/render`)} size="sm" />
         </div>
       </div>
     );
   }
   if (phase === "failed") {
-    return <div className="clip-card-body"><div className="notice error">{String(run.last_error || "任务失败，暂无错误详情。")}</div><div className="button-row" style={{ marginTop: 12 }}><button className="secondary-button small" onClick={() => setActiveTab("automation")} type="button">查看日志</button></div></div>;
+    return <div className="clip-card-body"><Text as="div" role="alert" type="supporting" xstyle={semanticToneStyles.error}>{String(run.last_error || "任务失败，暂无错误详情。")}</Text><div className="button-row"><Button label="查看日志" onClick={() => setActiveTab("automation")} size="sm" /></div></div>;
   }
   const steps = detail.steps?.length ? detail.steps : [
     { label: "拉取录像", state: "done" }, { label: "语音转写", state: "active" },
@@ -534,8 +646,8 @@ function RunExpanded({
   ];
   return (
     <div className="clip-card-body"><div className="clip-actions">
-      {steps.map((step: GenericRecord) => <span className={`status-pill ${step.done || step.state === "done" ? "rendered" : step.state === "active" ? "processing" : ""}`} key={String(step.label)}>{String(step.label)}</span>)}
-      <button className="secondary-button small" onClick={() => setActiveTab("automation")} type="button">查看日志</button>
+      {steps.map((step: GenericRecord) => <Badge key={String(step.label)} label={String(step.label)} />)}
+      <Button label="查看日志" onClick={() => setActiveTab("automation")} size="sm" />
     </div></div>
   );
 }
@@ -558,7 +670,7 @@ function Automation({
   log: string;
   setLog(value: string): void;
   notify(message: string): void;
-  runAction(path: string, payload?: unknown): Promise<GenericRecord>;
+  runAction(path: string, payload?: unknown, showToast?: boolean): Promise<GenericRecord>;
   editSchedulerJob(job: GenericRecord): void;
 }) {
   const serviceState = service.service ?? {};
@@ -566,69 +678,86 @@ function Automation({
   const schedulerState = scheduler?.scheduler ?? {};
   const review = reviewAutomation?.review_automation ?? {};
   const environment = reviewAutomation?.environment ?? {};
-  const [actionStatus, setActionStatus] = useState("");
+  const [actionStatus, setActionStatus] = useState<{ message: string; tone: SemanticTone } | null>(null);
   async function reviewAction(path: string) {
-    const result = await runAction(path);
-    if (path.endsWith("/check")) {
-      notify(result.current_mode_available ? "AI 审阅环境可用。" : "当前 AI 审阅环境不可用，请检查 Codex CLI、Claude Code 或 LLM API key。");
-      return;
+    try {
+      const result = await runAction(path, undefined, false);
+      if (path.endsWith("/check")) {
+        setActionStatus(result.current_mode_available
+          ? { message: "AI 审阅环境可用。", tone: "success" }
+          : { message: "当前 AI 审阅环境不可用，请检查 Codex CLI、Claude Code 或 LLM API key。", tone: "warning" });
+        return;
+      }
+      const message = result.skipped_reason === "review_automation_disabled"
+        ? "自动 AI 审阅还没有启用。请到「设置」页打开「启用自动 AI 审阅」，保存配置后再执行。"
+        : result.processed_runs?.length ? `已处理 ${result.processed_runs.length} 个待审阅任务。`
+        : result.results?.length ? `AI 审阅已返回 ${result.results.length} 条结果，请查看运行日志。`
+        : String(result.message || "当前没有待审阅任务。");
+      setActionStatus({
+        message,
+        tone: result.skipped_reason === "review_automation_disabled" ? "warning" : "success",
+      });
+      setLog(JSON.stringify(result, null, 2));
+    } catch (error) {
+      setActionStatus({ message: (error as Error).message, tone: "error" });
     }
-    const message = result.skipped_reason === "review_automation_disabled"
-      ? "自动 AI 审阅还没有启用。请到「设置」页打开「启用自动 AI 审阅」，保存配置后再执行。"
-      : result.processed_runs?.length ? `已处理 ${result.processed_runs.length} 个待审阅任务。`
-      : result.results?.length ? `AI 审阅已返回 ${result.results.length} 条结果，请查看运行日志。`
-      : String(result.message || "当前没有待审阅任务。");
-    setActionStatus(message);
-    setLog(JSON.stringify(result, null, 2));
-    notify(message);
   }
   return (
     <>
       <div className="page-heading">
         <div><h2>自动化</h2><p className="muted">定时任务、AI 审阅与运行日志</p></div>
         <div className="button-row">
-          <button id="startServiceBtn" className="secondary-button" onClick={() => void runAction("/api/service/start")} type="button">恢复自动化</button>
-          <button id="stopServiceBtn" className="secondary-button" onClick={() => void runAction("/api/service/stop")} type="button">暂停自动化</button>
+          <Button id="startServiceBtn" label="恢复自动化" onClick={() => void runAction("/api/service/start")} />
+          <Button id="stopServiceBtn" label="暂停自动化" onClick={() => void runAction("/api/service/stop")} />
         </div>
       </div>
-      <section className="content-card">
+      <Card className="content-card" padding={4}>
         <div className="card-heading"><div><h3>自动化引擎</h3><p className="muted">随 App 一起运行：App 开着（或缩在菜单栏）就会按时间表自动处理新录播。</p></div></div>
         <div id="serviceMetrics" className="metrics-grid"><MetricRows rows={[
           ["状态", labelFor(serviceState.status || "stopped")], ["PID", serviceState.pid || "无"],
           ["待审阅", service.pending_review_runs?.length || 0], ["失败", service.failed_runs?.length || 0],
           ["待确认", service.pending_confirmation_count || 0], ["当前任务", service.active_run || "无"],
         ]} /></div>
-        <div id="serviceSummary" className="info-grid"><InfoRows rows={[
+        <div id="serviceSummary" className="info-grid service-summary-grid"><InfoRows rows={[
           ["最近心跳", serviceState.last_heartbeat_at], ["下次扫描", serviceState.next_scan_at],
           ["录播源", source.source_dir], ["输入目录", source.input_dir], ["输出目录", source.output_root],
           ["最近错误", serviceState.last_error],
         ]} /></div>
-      </section>
-      <section className="content-card">
+      </Card>
+      <Card className="content-card" padding={4}>
         <div className="card-heading"><div><h3>定时任务</h3><p className="muted">默认每周扫描录播，并提醒待审阅任务。</p></div></div>
         <div id="schedulerSummary" className="scheduler-summary"><InfoRows rows={[
           ["Scheduler 状态", schedulerState.enabled ? "运行中" : "未启用"], ["调度时区", schedulerState.timezone],
-          ["当前系统时间", schedulerState.current_time], ["下一次任务", schedulerState.next_due_job_id],
-          ["下次执行", schedulerState.next_due_at],
+          ["当前系统时间", formatLocalTime(schedulerState.current_time)], ["下一次任务", schedulerState.next_due_job_id],
+          ["下次执行", formatLocalTime(schedulerState.next_due_at)],
         ]} /></div>
-        <div id="schedulerJobList" className="scheduler-jobs">
+        <List className="scheduler-jobs" density="compact" hasDividers id="schedulerJobList">
           {scheduler?.jobs?.length ? scheduler.jobs.map((job: GenericRecord) => (
-            <div className="scheduler-job" key={String(job.id)}>
-              <div><strong>{String(job.name || job.id)}</strong><small>{String(job.id)} · {labelFor(job.type)} · {labelFor(job.schedule)}</small><small>下次执行：{String(job.next_run_at || "-")} · 上次结果：{labelFor(job.status)}</small></div>
-              <div className="button-row">
-                <button className="secondary-button small" onClick={() => editSchedulerJob(job)} type="button">编辑</button>
-                <button className="primary-button small" onClick={() => void runAction(`/api/scheduler/jobs/${encodeURIComponent(job.id)}/run-now`)} type="button">立即执行</button>
-                <button className="secondary-button small" onClick={() => void runAction(`/api/scheduler/jobs/${encodeURIComponent(job.id)}/pause`)} type="button">暂停</button>
-                <button className="secondary-button small" onClick={() => void runAction(`/api/scheduler/jobs/${encodeURIComponent(job.id)}/resume`)} type="button">启用</button>
-              </div>
-            </div>
-          )) : <div className="empty">还没有定时任务。</div>}
-        </div>
-      </section>
-      <section className="content-card">
+            <ListItem
+              className="scheduler-job"
+              description={(
+                <span className="scheduler-job-description">
+                  {`${String(job.id)} · ${labelFor(job.type)} · ${labelFor(job.schedule)} · 下次执行：${formatLocalTime(job.next_run_at)} · 上次结果：${labelFor(job.status)}`}
+                </span>
+              )}
+              endContent={(
+                <div className="button-row scheduler-job-actions">
+                  <Button label="编辑" onClick={() => editSchedulerJob(job)} size="sm" />
+                  <Button label="立即执行" onClick={() => void runAction(`/api/scheduler/jobs/${encodeURIComponent(job.id)}/run-now`)} size="sm" variant="primary" />
+                  <Button label="暂停" onClick={() => void runAction(`/api/scheduler/jobs/${encodeURIComponent(job.id)}/pause`)} size="sm" />
+                  <Button label="启用" onClick={() => void runAction(`/api/scheduler/jobs/${encodeURIComponent(job.id)}/resume`)} size="sm" />
+                </div>
+              )}
+              key={String(job.id)}
+              label={String(job.name || job.id)}
+            />
+          )) : <ListItem label="还没有定时任务。" />}
+        </List>
+      </Card>
+      <Card className="content-card" padding={4}>
         <div className="card-heading"><div><h3>AI 自动审阅</h3><p className="muted">默认不会静默开启，需要先在设置中启用。</p></div><div className="button-row">
-          <button id="checkReviewAutomationBtn" className="secondary-button" onClick={() => void reviewAction("/api/review-automation/check")} type="button">测试 AI 审阅环境</button>
-          <button id="runDueReviewAutomationBtn" className="primary-button" onClick={() => void reviewAction("/api/review-automation/run-due")} type="button">立即处理待审阅</button>
+          <Button id="checkReviewAutomationBtn" label="测试 AI 审阅环境" onClick={() => void reviewAction("/api/review-automation/check")} />
+          <Button id="runDueReviewAutomationBtn" label="立即处理待审阅" onClick={() => void reviewAction("/api/review-automation/run-due")} variant="primary" />
         </div></div>
         <div id="reviewAutomationStatus" className="scheduler-summary"><InfoRows rows={[
           ["AI 审阅状态", review.enabled ? "已启用" : "未启用"], ["审阅方式", labelFor(review.mode)],
@@ -637,13 +766,21 @@ function Automation({
           ["LLM API key", environment.llm?.api_key_configured ? "已配置" : "未配置"],
           ["最近结果", labelFor(review.last_status)], ["最近错误", review.last_error],
         ]} /></div>
-        {actionStatus && <div id="reviewAutomationActionStatus" className="notice subtle">{actionStatus}</div>}
-      </section>
-      <section className="content-card">
-        <div className="card-heading"><div><h3>运行日志</h3><p className="muted">最近事件和当前选中任务日志。</p></div><button id="clearLogBtn" className="secondary-button" onClick={() => setLog("")} type="button">清空前端显示</button></div>
-        <div id="eventStream" className="event-list">{events.length ? events.map((event) => <div className="event-row" key={String(event.id || `${event.created_at}-${event.type}`)}><strong>{String(event.type)}</strong><small>{String(event.created_at)} · {String(event.run_id || "-")}</small></div>) : <div className="empty">暂无事件。</div>}</div>
+        {actionStatus && (
+          <Text as="div" id="reviewAutomationActionStatus" role="status" type="supporting" xstyle={semanticToneStyles[actionStatus.tone]}>
+            {actionStatus.message}
+          </Text>
+        )}
+      </Card>
+      <Card className="content-card" padding={4}>
+        <div className="card-heading"><div><h3>运行日志</h3><p className="muted">最近事件和当前选中任务日志。</p></div><Button id="clearLogBtn" label="清空前端显示" onClick={() => setLog("")} /></div>
+        <List className="event-list" density="compact" hasDividers id="eventStream">
+          {events.length
+            ? events.map((event) => <ListItem description={`${formatLocalTime(event.created_at)} · ${String(event.run_id || "-")}`} key={String(event.id || `${event.created_at}-${event.type}`)} label={String(event.type)} />)
+            : <ListItem label="暂无事件。" />}
+        </List>
         <pre id="logOutput" className="log-output">{log}</pre>
-      </section>
+      </Card>
     </>
   );
 }
@@ -659,32 +796,70 @@ function Confirmations({
   selected: string[];
   setSelected(value: string[]): void;
   setLog(value: string): void;
-  runAction(path: string, payload?: unknown): Promise<GenericRecord>;
+  runAction(path: string, payload?: unknown, showToast?: boolean): Promise<GenericRecord>;
 }) {
   const toggle = (id: string, checked: boolean) => setSelected(checked ? [...selected, id] : selected.filter((item) => item !== id));
+  const [confirmationAction, setConfirmationAction] = useState<{
+    title: string;
+    description: string;
+    path: string;
+    payload?: unknown;
+    log: string;
+  } | null>(null);
+  async function confirmDangerousAction() {
+    if (!confirmationAction) return;
+    await runAction(confirmationAction.path, confirmationAction.payload);
+    setLog(confirmationAction.log);
+    setConfirmationAction(null);
+  }
   return (
     <>
       <div className="page-heading">
-        <div><h2>确认</h2><p className="muted">以下操作会删除文件，需要你手动确认后才会执行。</p></div>
+        <div><h2>待确认的清理操作</h2><p className="muted">删除成片、中间文件或本地录像副本前，需要你确认。NAS 原始录像不会被删除。</p></div>
         <div className="button-row">
-          <button id="batchApproveBtn" className="danger-button" onClick={() => void runAction("/api/confirmations/batch-approve", { ids: selected }).then(() => setLog(`批量确认: ${selected.join(", ") || "无"}`))} type="button">确认所选</button>
-          <button id="batchRejectBtn" className="secondary-button" onClick={() => void runAction("/api/confirmations/batch-reject", { ids: selected, reason: "在 Web 控制台批量拒绝" }).then(() => setLog(`批量拒绝: ${selected.join(", ") || "无"}`))} type="button">拒绝所选</button>
+          <Button id="batchApproveBtn" isDisabled={!selected.length} label="确认所选" onClick={() => setConfirmationAction({ title: "确认执行所选操作？", description: "这些操作可能删除本地文件，执行后无法从 Venus 撤销。", path: "/api/confirmations/batch-approve", payload: { ids: selected }, log: `批量确认: ${selected.join(", ") || "无"}` })} variant="destructive" />
+          <Button id="batchRejectBtn" isDisabled={!selected.length} label="拒绝所选" onClick={() => void runAction("/api/confirmations/batch-reject", { ids: selected, reason: "在 Web 控制台批量拒绝" }).then(() => setLog(`批量拒绝: ${selected.join(", ") || "无"}`))} />
         </div>
       </div>
-      <div id="confirmationList" className="confirmation-list">
-        {!pending.length && <div className="empty">没有待确认的操作</div>}
+      {!pending.length && <EmptyState title="没有待确认的清理操作" />}
+      <List className="confirmation-list" density="compact" hasDividers id="confirmationList">
         {pending.map((item) => (
-          <article className="confirmation-row" key={String(item.id)}>
-            <input type="checkbox" checked={selected.includes(String(item.id))} onChange={(event) => toggle(String(item.id), event.target.checked)} />
-            <div><strong>{labelFor(item.action)}</strong><small>{String(item.id)} · 任务 {String(item.run_id)}</small><small>{String(item.target_path || "")}</small><small>{String(item.reason || item.message || "")}</small></div>
-            <span className={`risk ${String(item.risk_level)}`}>{labelFor(item.risk_level)}</span>
-            <div className="button-row">
-              <button className="secondary-button small" onClick={() => void runAction(`/api/confirmations/${item.id}/reject`, { reason: "在 Web 控制台拒绝" })} type="button">拒绝</button>
-              <button className="danger-button small" onClick={() => void runAction(`/api/confirmations/${item.id}/approve`)} type="button">确认执行</button>
-            </div>
-          </article>
+          <ListItem
+            description={(
+              <div className="confirmation-description">
+                <span>{String(item.id)} · 任务 {String(item.run_id)}</span>
+                <span className="technical-value" title={String(item.target_path || "")}>{String(item.target_path || "")}</span>
+                <span>{String(item.reason || item.message || "")}</span>
+              </div>
+            )}
+            endContent={(
+              <div className="button-row">
+                <Badge label={labelFor(item.risk_level)} />
+                <Button label="拒绝" onClick={() => void runAction(`/api/confirmations/${item.id}/reject`, { reason: "在 Web 控制台拒绝" })} size="sm" />
+                <Button label="确认执行" onClick={() => setConfirmationAction({ title: "确认执行该操作？", description: `${labelFor(item.action)}：${String(item.target_path || "未提供目标路径")}`, path: `/api/confirmations/${item.id}/approve`, log: `确认执行: ${String(item.id)}` })} size="sm" variant="destructive" />
+              </div>
+            )}
+            key={String(item.id)}
+            label={(
+              <CheckboxInput
+                label={labelFor(item.action)}
+                onChange={(checked) => toggle(String(item.id), checked)}
+                value={selected.includes(String(item.id))}
+              />
+            )}
+          />
         ))}
-      </div>
+      </List>
+      <AlertDialog
+        actionLabel="确认执行"
+        actionVariant="destructive"
+        cancelLabel="取消"
+        description={confirmationAction?.description || ""}
+        isOpen={Boolean(confirmationAction)}
+        onAction={() => void confirmDangerousAction()}
+        onOpenChange={(open) => { if (!open) setConfirmationAction(null); }}
+        title={confirmationAction?.title || "确认操作"}
+      />
     </>
   );
 }

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from live_clipper import onboarding
@@ -182,8 +183,24 @@ def test_onboarding_react_never_renders_or_logs_secret_values():
     assert "console." not in source
     assert "data-api-key" not in source
     assert "已填写（只保存在本机 .env）" in source
-    assert "llmKey ? " in source
-    assert "asrKey ? " in source
+    assert 'llmKeyRef = useRef("")' in source
+    assert 'asrKeyRef = useRef("")' in source
+    assert "llmKeyRef.current" in source
+    assert "asrKeyRef.current" in source
+    assert 'from "@astryxdesign/core/Field"' in source
+    secret_inputs = re.findall(r"<input\b[\s\S]*?/>", source)
+    assert len(secret_inputs) == 2
+    for input_id, input_source in zip(
+        ["onboardingAsrKey", "onboardingLlmKey"], secret_inputs, strict=True
+    ):
+        assert f'id="{input_id}"' in input_source
+        assert 'type="password"' in input_source
+        assert 'className="onboarding-secret-input"' in input_source
+        assert " value=" not in input_source
+        assert "defaultValue=" not in input_source
+        assert "data-" not in input_source
+        assert "name=" not in input_source
+        assert f'inputID="{input_id}"' in source
 
 
 def test_onboarding_styles_remain_scoped_and_keep_hidden_guard():
@@ -200,3 +217,40 @@ def test_onboarding_styles_remain_scoped_and_keep_hidden_guard():
     assert 'from "@astryxdesign/core/Selector"' in source
     assert 'className="onboarding-source-selector"' in source
     assert "#onboardingAsrSource" not in styles
+
+
+def test_onboarding_browse_button_has_positive_spacing():
+    styles = Path("frontend/src/styles.css").read_text(encoding="utf-8")
+    source = _react()
+    browse_rule = re.search(r"\.onboarding-browse\s*\{([^}]+)\}", styles, flags=re.DOTALL)
+
+    assert 'className="onboarding-browse"' in source
+    assert browse_rule
+    assert not re.search(r"margin(?:-top)?:\s*-", browse_rule.group(1))
+    margin = re.search(r"margin:\s*([0-9.]+)px\s+0\s+([0-9.]+)px", browse_rule.group(1))
+    assert margin
+    assert float(margin.group(1)) > 0
+    assert float(margin.group(2)) > 0
+
+
+def test_onboarding_source_error_is_unique_and_not_field_status_message():
+    onboarding = _react()
+
+    assert 'id="onboardingSourceError"' in onboarding
+    assert 'aria-errormessage={sourceError ? "onboardingSourceError" : undefined}' in onboarding
+    assert "aria-invalid={Boolean(sourceError)}" in onboarding
+    assert 'status={sourceError ? { type: "error" } : undefined}' in onboarding
+    assert "message: sourceResult.message" not in onboarding
+
+
+def test_onboarding_busy_buttons_use_chinese_live_status_without_loading_props():
+    source = _react()
+
+    assert 'from "@astryxdesign/core/Spinner"' in source
+    assert 'from "@astryxdesign/core/VisuallyHidden"' in source
+    assert "isLoading=" not in source
+    assert "aria-busy=" not in source
+    assert source.count("data-busy=") == 4
+    assert source.count("<VisuallyHidden") == 3
+    for message in ["正在检查录播文件夹", "正在测试 AI 服务连接", "正在保存设置"]:
+        assert message in source

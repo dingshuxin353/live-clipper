@@ -165,9 +165,11 @@ def test_styles_use_misans_default_stack_without_forbidden_sources() -> None:
 def test_astryx_theme_uses_local_misans_and_system_code_fonts() -> None:
     theme = THEME_PATH.read_text(encoding="utf-8")
 
-    assert f"--font-body: {EXPECTED_FONT_STACK};" in theme
-    assert f"--font-heading: {EXPECTED_FONT_STACK};" in theme
-    assert '--font-code: "SF Mono", Monaco, Consolas, monospace;' in theme
+    assert f"--font-family-body: {EXPECTED_FONT_STACK};" in theme
+    assert f"--font-family-heading: {EXPECTED_FONT_STACK};" in theme
+    assert '--font-family-code: "SF Mono", Monaco, Consolas, monospace;' in theme
+    for obsolete in ["--font-body:", "--font-heading:", "--font-code:"]:
+        assert obsolete not in theme
     assert "http://" not in theme and "https://" not in theme
 
 
@@ -181,6 +183,11 @@ def test_production_build_preserves_misans_contract() -> None:
         assert f"/static/fonts/{name}" in styles
     compact_stack = EXPECTED_FONT_STACK.replace('"', "").replace(" ", "")
     assert compact_stack in styles.replace('"', "").replace(" ", "")
+    assert "--font-family-body:" in styles
+    assert "--font-family-heading:" in styles
+    assert "--font-family-code:" in styles
+    for obsolete in ["--font-body:", "--font-heading:", "--font-code:"]:
+        assert obsolete not in styles
 
 
 def test_package_data_includes_misans_assets() -> None:

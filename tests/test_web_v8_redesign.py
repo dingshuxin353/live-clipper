@@ -147,10 +147,129 @@ def test_v8_astryx_shell_and_misans_contract():
     assert "max-width: 100vw" in mobile_styles
     assert "min-width: max-content" not in mobile_styles
     assert "<AppShell" in app
-    assert 'mobileNav={{ breakpoint: "none", hasToggle: false }}' in app
+    assert 'mobileNav={{ breakpoint: "sm" }}' in app
+    assert 'mobileNav={{ breakpoint: "none"' not in app
+    assert "hasToggle: false" not in app
     assert root_match
     assert (
         'font-family: "MiSans", "SF Pro Text", "PingFang SC", "Microsoft YaHei", '
         "system-ui, -apple-system, BlinkMacSystemFont, sans-serif;"
     ) in root_match.group(1)
     assert not re.search(r"button,\s*input,\s*select\s*\{", styles)
+
+
+def test_v8_automation_service_grids_have_positive_spacing():
+    styles = _styles()
+    app = _source("App.tsx")
+    summary_rule = re.search(r"\.service-summary-grid\s*\{([^}]+)\}", styles, flags=re.DOTALL)
+
+    assert 'id="serviceMetrics" className="metrics-grid"' in app
+    assert 'id="serviceSummary" className="info-grid service-summary-grid"' in app
+    assert summary_rule
+    margin = re.search(r"margin-top:\s*([0-9.]+)px", summary_rule.group(1))
+    assert margin
+    assert float(margin.group(1)) > 0
+
+
+def test_v8_automation_nested_grids_can_shrink_without_clipping():
+    styles = _styles()
+    mobile_styles = styles.split("@media (max-width: 920px)", 1)[1]
+    responsive_grid_rule = re.search(
+        r"\.metrics-grid,\s*\.info-grid,\s*\.scheduler-summary,\s*\.health-grid,\s*\.env-grid,[^}]*\{([^}]+)\}",
+        mobile_styles,
+        flags=re.DOTALL,
+    )
+    content_rule = re.search(r"\.content-card\s*\{([^}]+)\}", styles, flags=re.DOTALL)
+    grids_rule = re.search(
+        r"\.info-grid,\s*\.metrics-grid,\s*\.scheduler-summary,\s*\.health-grid,\s*\.env-grid\s*\{([^}]+)\}",
+        styles,
+        flags=re.DOTALL,
+    )
+    direct_items_rule = re.search(
+        r"\.info-grid\s*>\s*\*,\s*\.metrics-grid\s*>\s*\*,\s*\.scheduler-summary\s*>\s*\*,\s*\.health-grid\s*>\s*\*,\s*\.env-grid\s*>\s*\*\s*\{([^}]+)\}",
+        styles,
+        flags=re.DOTALL,
+    )
+    row_rule = re.search(r"\.metric,\s*\.info-row\s*\{([^}]+)\}", styles, flags=re.DOTALL)
+    technical_row_rule = re.search(
+        r"\.info-row\s*>\s*\.technical-value\s*\{([^}]+)\}", styles, flags=re.DOTALL
+    )
+    technical_rule = re.search(r"\.technical-value\s*\{([^}]+)\}", styles, flags=re.DOTALL)
+
+    for rule in [content_rule, grids_rule, direct_items_rule, row_rule]:
+        assert rule
+        assert "min-width: 0" in rule.group(1)
+        assert "max-width: 100%" in rule.group(1)
+    assert technical_row_rule
+    assert "min-width: 0" in technical_row_rule.group(1)
+    assert responsive_grid_rule
+    assert "grid-template-columns: minmax(0, 1fr)" in responsive_grid_rule.group(1)
+    assert not re.search(r"grid-template-columns:\s*1fr", responsive_grid_rule.group(1))
+    assert technical_rule
+    assert "overflow: hidden" in technical_rule.group(1)
+    assert "text-overflow: ellipsis" in technical_rule.group(1)
+    assert "white-space: nowrap" in technical_rule.group(1)
+    assert "word-break: break-all" not in technical_rule.group(1)
+    assert not re.search(r"overflow-x:\s*(hidden|clip)", styles)
+
+
+def test_v8_settings_sections_span_the_outer_grid():
+    styles = _styles()
+    settings = _source("Settings.tsx")
+    content_rule = re.search(
+        r"\.settings-section\s*>\s*\.settings-field-grid\s*\{([^}]+)\}",
+        styles,
+        flags=re.DOTALL,
+    )
+    description_rule = re.search(r"\.field-note\s*\{([^}]+)\}", styles, flags=re.DOTALL)
+
+    assert '<FormLayout className="settings-field-grid">' in settings
+    assert 'description && <p className="muted field-note">' in settings
+    assert content_rule
+    assert "grid-column: 1 / -1" in content_rule.group(1)
+    assert "min-width: 0" in content_rule.group(1)
+    assert description_rule
+    assert "grid-column: 1 / -1" in description_rule.group(1)
+    assert "margin: 0 0 4px" in description_rule.group(1)
+
+
+def test_v8_status_text_uses_only_stone_semantic_colors():
+    sources = _source("App.tsx", "Onboarding.tsx", "Settings.tsx")
+    presentation = _source("ui/presentation.ts")
+
+    assert "@astryxdesign/core/Banner" not in sources
+    assert "<Banner" not in sources
+    assert 'from "@astryxdesign/core/theme"' in presentation
+    assert "colorVars" in presentation
+    for token in [
+        "--color-text-secondary",
+        "--color-text-green",
+        "--color-text-yellow",
+        "--color-text-red",
+    ]:
+        assert token in presentation
+    assert not re.search(
+        r"(background|border|radius|shadow|padding|width|display)\s*:",
+        presentation,
+    )
+
+
+def test_v8_busy_and_toast_accessibility_use_supported_astryx_contracts():
+    app = _source("App.tsx")
+    onboarding = _source("Onboarding.tsx")
+    settings = _source("Settings.tsx")
+
+    assert app.count("@astryx.") == 6
+    assert '"@astryx.toast.dismiss": "关闭通知"' in app
+    assert 'from "@astryxdesign/core/Spinner"' in app
+    assert 'from "@astryxdesign/core/VisuallyHidden"' in app
+    assert "AI 审阅正在进行" in app
+    assert "isLoading=" not in app + onboarding
+    assert "isActionLoading=" not in settings
+    assert "aria-busy=" not in app + onboarding + settings
+    assert app.count("data-busy=") == 1
+    assert onboarding.count("data-busy=") == 4
+    assert app.count("<VisuallyHidden") == 1
+    assert onboarding.count("<VisuallyHidden") == 3
+    assert "setDeleteModel(null);" in settings
+    assert 'void act(model, "delete")' in settings

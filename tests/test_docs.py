@@ -94,7 +94,7 @@ def test_advanced_usage_documents_mcp_tools_and_confirmation_safety():
 def test_web_static_exposes_v3_console_sections():
     app = _frontend_source("App.tsx", "Settings.tsx")
 
-    for label in ["服务", "任务", "确认", "日志", "配置"]:
+    for label in ["服务", "任务", "文件清理", "日志", "配置"]:
         assert label in app
     assert "/api/confirmations/batch-approve" in app
     assert "/api/service/scan-now" in app
@@ -126,9 +126,11 @@ def test_web_static_exposes_v5_scheduler_config_section():
 
 def test_advanced_usage_documents_v3_web_console_confirmation_flow():
     text = Path("docs/advanced-usage.md").read_text(encoding="utf-8")
+    workbench = Path("docs/mcp-workbench-user-guide.md").read_text(encoding="utf-8")
 
     assert "V3 Web 控制台" in text
-    assert "`确认`" in text
+    assert "`文件清理`" in text
+    assert "Web 控制台 `文件清理` 页" in workbench
     assert "批量确认/拒绝" in text
     assert "work/service/confirmations.json" in text
     assert "NAS 原始录播不会被 Web 直接删除" in text

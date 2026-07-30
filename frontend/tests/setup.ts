@@ -1,7 +1,7 @@
 import "@testing-library/dom";
 import "@testing-library/jest-dom/vitest";
 import { cleanup } from "@testing-library/react";
-import { afterEach } from "vitest";
+import { afterEach, vi } from "vitest";
 
 if (!HTMLDialogElement.prototype.showModal) {
   HTMLDialogElement.prototype.showModal = function showModal() {
@@ -29,6 +29,16 @@ if (!window.matchMedia) {
 }
 
 window.scrollTo = () => undefined;
+HTMLCanvasElement.prototype.getContext = vi.fn(() => ({
+  arc: () => undefined,
+  beginPath: () => undefined,
+  globalAlpha: 1,
+  lineCap: "round",
+  lineWidth: 1,
+  measureText: () => ({ width: 0 }),
+  stroke: () => undefined,
+  strokeStyle: "",
+})) as unknown as typeof HTMLCanvasElement.prototype.getContext;
 
 afterEach(() => {
   cleanup();
