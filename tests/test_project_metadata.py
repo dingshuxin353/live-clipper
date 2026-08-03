@@ -90,12 +90,55 @@ def test_react_renderer_package_and_frozen_build_contract():
 
     assert {"web_static/react/*.html", "web_static/react/assets/*"}.issubset(package_data)
     assert package["engines"] == {"node": ">=24 <25", "npm": ">=11 <12"}
-    assert set(package["dependencies"]) == {"react", "react-dom"}
+    assert package["dependencies"] == {
+        "@astryxdesign/core": "0.1.9",
+        "@astryxdesign/theme-stone": "0.1.9",
+        "@stylexjs/stylex": "0.19.0",
+        "react": "19.2.8",
+        "react-dom": "19.2.8",
+    }
+    assert package["scripts"]["theme:build"] == "node scripts/build-venus-stone-overrides.mjs"
+    assert package["scripts"]["build"].startswith("npm run theme:build")
     assert lock["lockfileVersion"] == 3
+    for dependency, version in package["dependencies"].items():
+        assert lock["packages"][""]["dependencies"][dependency] == version
     assert "npm --prefix frontend ci" in build_script
     assert "npm --prefix frontend run check" in build_script
     assert "git diff --exit-code -- src/live_clipper/web_static/react" in build_script
     assert build_script.index("npm --prefix frontend ci") < build_script.index(".venv/bin/pyinstaller")
+
+
+def test_astryx_stone_theme_is_generated_offline_and_not_recompiled():
+    package = json.loads(Path("frontend/package.json").read_text(encoding="utf-8"))
+    main = Path("frontend/src/main.tsx").read_text(encoding="utf-8")
+    script = Path("frontend/scripts/build-venus-stone-overrides.mjs").read_text(
+        encoding="utf-8"
+    )
+    generated = Path("frontend/src/theme/venus-stone-overrides.css").read_text(
+        encoding="utf-8"
+    )
+    notice = Path("THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
+
+    imports = [
+        '@astryxdesign/core/reset.css"',
+        '@astryxdesign/core/astryx.css"',
+        '@astryxdesign/theme-stone/theme.css"',
+        './theme/venus-stone-overrides.css"',
+        './styles.css"',
+    ]
+    assert [main.index(item) for item in imports] == sorted(main.index(item) for item in imports)
+    assert 'stoneTheme } from "@astryxdesign/theme-stone/built"' in main
+    assert '<Theme theme={stoneTheme} mode="light">' in main
+    assert 'from "@astryxdesign/core/theme"' in script
+    assert 'accent: "#4A3A72"' in script
+    assert "defineTheme" not in script
+    assert generated.count('[data-astryx-theme="stone"]') == 1
+    assert len(re.findall(r"^\s+--color-[a-z-]+:", generated, flags=re.MULTILINE)) == 5
+    assert len(re.findall(r"^\s+--font-[a-z-]+:", generated, flags=re.MULTILINE)) == 3
+    assert "http://" not in generated and "https://" not in generated
+    for dependency, version in package["dependencies"].items():
+        assert dependency in notice or dependency in {"react", "react-dom"}
+        assert version not in {"latest", "next", "canary"}
 
 
 def test_project_pins_lightweight_model_hub_dependencies_and_freezes_them():

@@ -17,3 +17,24 @@ Venus 内置以下四个未经修改的原版 WOFF2 文件：
 
 完整许可副本随字体保留在应用资源目录的相对路径
 `web_static/fonts/MiSans-Font-License.pdf`。
+
+## Astryx Design System 与 StyleX
+
+Venus 的 React 界面使用以下精确版本：
+
+- `@astryxdesign/core` 0.1.9 — MIT License
+- `@astryxdesign/theme-stone` 0.1.9 — MIT License
+- `@stylexjs/stylex` 0.19.0 — MIT License
+
+正式前端包还包含这些运行时传递依赖：
+
+- `intl-messageformat` — BSD-3-Clause
+- `@formatjs/fast-memoize`、`@formatjs/icu-messageformat-parser`、
+  `@formatjs/icu-skeleton-parser` — MIT License
+- `lucide-react` — ISC License
+- `css-mediaquery` — BSD License
+- `invariant`、`js-tokens`、`loose-envify`、`styleq`、`scheduler` —
+  MIT License
+- `react`、`react-dom` — MIT License
+
+这些第三方组件分别遵循其上游许可证，不适用 Venus 自身代码的许可证声明。

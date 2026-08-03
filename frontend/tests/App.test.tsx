@@ -10,17 +10,181 @@ describe("React application shell", () => {
     });
     render(<App />);
     const navigation = await screen.findByRole("navigation", { name: "控制台页面" });
-    expect(within(navigation).getAllByRole("button").map((button) => button.textContent)).toEqual([
-      "▶切片结果", "◷自动化", "✓确认1", "☰设置",
+    expect(within(navigation).getAllByRole("button").slice(0, 4).map((button) => button.textContent)).toEqual([
+      "切片结果", "自动化", "文件清理1", "设置",
     ]);
+    expect(within(navigation).getByRole("button", { name: /文件清理.*1/ })).toBeVisible();
+    expect(within(navigation).queryByRole("button", { name: /^确认1?$/ })).not.toBeInTheDocument();
+    expect(document.querySelector(".astryx-app-shell")).toBeInTheDocument();
+    expect(navigation.closest(".astryx-side-nav")).toBeInTheDocument();
     fireEvent.click(within(navigation).getByRole("button", { name: /自动化/ }));
     expect(screen.getByRole("heading", { name: "自动化" })).toBeVisible();
+  });
+
+  it("uses the upstream mobile navigation below the 640px CSS breakpoint", async () => {
+    const scrollIntoView = vi.fn();
+    const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    const matchMedia = vi.spyOn(window, "matchMedia").mockImplementation((query: string) => ({
+      matches: query === "(max-width: 640px)",
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(() => true),
+    }));
+    try {
+      installFetchMock();
+      render(<App />);
+
+      const toggle = await screen.findByRole("button", { name: "打开导航" });
+      expect(toggle).toHaveAttribute("aria-expanded", "false");
+      fireEvent.click(toggle);
+      await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ block: "start" }));
+
+      const drawer = screen.getByRole("dialog", { name: "导航菜单" });
+      const items = ["切片结果", "自动化", "文件清理", "设置"].map(
+        (label) => within(drawer).getByRole("button", { name: label }),
+      );
+      expect(items.map((button) => button.textContent)).toEqual(["切片结果", "自动化", "文件清理", "设置"]);
+      items[1].focus();
+      expect(items[1]).toHaveFocus();
+      fireEvent.click(items[1]);
+
+      await waitFor(() => expect(screen.queryByRole("dialog", { name: "导航菜单" })).not.toBeInTheDocument());
+      expect(screen.getByRole("heading", { name: "自动化" })).toBeVisible();
+      fireEvent.click(toggle);
+      await waitFor(() => expect(scrollIntoView).toHaveBeenCalledTimes(2));
+      expect(within(screen.getByRole("dialog", { name: "导航菜单" })).getByRole("button", { name: "切片结果" })).toBeVisible();
+    } finally {
+      if (originalScrollIntoView) {
+        HTMLElement.prototype.scrollIntoView = originalScrollIntoView;
+      } else {
+        delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
+      }
+      matchMedia.mockRestore();
+    }
+  });
+
+  it("keeps scheduler actions in one reflow group for narrow layouts", async () => {
+    installFetchMock({
+      "/api/scheduler": {
+        ok: true,
+        scheduler: { enabled: true },
+        jobs: [{
+          id: "weekly_recording_scan",
+          name: "每周录播扫描",
+          type: "scan_recordings",
+          schedule: "weekly",
+        }],
+      },
+    });
+    render(<App />);
+    const navigation = await screen.findByRole("navigation", { name: "控制台页面" });
+    fireEvent.click(within(navigation).getByRole("button", { name: "自动化" }));
+
+    const row = (await screen.findByText("每周录播扫描")).closest("li");
+    expect(row).toHaveClass("scheduler-job");
+    expect(row?.querySelector(".scheduler-job-description")).toHaveTextContent(
+      "weekly_recording_scan · 扫描录播 · 每周",
+    );
+    const actions = row?.querySelector(".scheduler-job-actions") as HTMLElement;
+    expect(actions).toBeInTheDocument();
+    expect(within(actions).getAllByRole("button").map((button) => button.textContent)).toEqual([
+      "编辑", "立即执行", "暂停", "启用",
+    ]);
+  });
+
+  it("separates the adjacent service metric grids", async () => {
+    installFetchMock();
+    render(<App />);
+    const navigation = await screen.findByRole("navigation", { name: "控制台页面" });
+    fireEvent.click(within(navigation).getByRole("button", { name: "自动化" }));
+
+    const metrics = document.getElementById("serviceMetrics");
+    const summary = document.getElementById("serviceSummary");
+    expect(summary?.previousElementSibling).toBe(metrics);
+    expect(summary).toHaveClass("service-summary-grid");
+    expect(metrics?.closest(".content-card")).toContainElement(summary);
+    for (const row of Array.from(summary?.children ?? [])) {
+      expect(row).toHaveClass("info-row");
+      const value = row.querySelector(".technical-value");
+      expect(value).toHaveAttribute("title", value?.textContent);
+    }
   });
 
   it("reports initial API failure with the existing user-facing boundary", async () => {
     installFetchMock({ "/api/service": new Error("offline") });
     render(<App />);
-    expect(await screen.findByRole("alert")).toHaveTextContent("初次加载失败：网络连接失败");
+    const error = await screen.findByText("初次加载失败：网络连接失败");
+    expect(error).toBeVisible();
+    expect(error).toHaveAttribute("role", "alert");
+    expect(document.querySelector(".astryx-banner")).not.toBeInTheDocument();
+  });
+
+  it("keeps stuck, AI review, and run failures visible as compact alerts", async () => {
+    installFetchMock({
+      "/api/runs": {
+        ok: true,
+        runs: [{
+          run_id: "run-review",
+          source_name: "review.mp4",
+          phase: "needs_review",
+          stuck: true,
+        }],
+      },
+      "/api/runs/run-review": {
+        ok: true,
+        run: { run_id: "run-review", phase: "needs_review" },
+        ai_review: { status: "failed", error: "审阅器离线" },
+        actions: {},
+      },
+    });
+    const review = render(<App />);
+    const stuck = await screen.findByText("已处理较长时间仍未完成，可能已卡住。");
+    const aiReview = await screen.findByText("上次 AI 审阅失败：审阅器离线");
+    expect(stuck).toHaveAttribute("role", "alert");
+    expect(aiReview).toHaveAttribute("role", "alert");
+    expect(document.querySelector(".astryx-banner")).not.toBeInTheDocument();
+    review.unmount();
+
+    installFetchMock({
+      "/api/runs": {
+        ok: true,
+        runs: [{ run_id: "run-failed", source_name: "failed.mp4", phase: "failed" }],
+      },
+      "/api/runs/run-failed": {
+        ok: true,
+        run: { run_id: "run-failed", phase: "failed", last_error: "转写失败" },
+      },
+    });
+    render(<App />);
+    const failed = await screen.findByText("转写失败");
+    expect(failed).toHaveAttribute("role", "alert");
+    expect(document.querySelector(".astryx-banner")).not.toBeInTheDocument();
+  });
+
+  it("uses one persistent status and no toast for review automation results", async () => {
+    installFetchMock({
+      "/api/review-automation/run-due": {
+        ok: true,
+        skipped_reason: "review_automation_disabled",
+      },
+    });
+    render(<App />);
+    const navigation = await screen.findByRole("navigation", { name: "控制台页面" });
+    fireEvent.click(within(navigation).getByRole("button", { name: /自动化/ }));
+    fireEvent.click(screen.getByRole("button", { name: "立即处理待审阅" }));
+
+    const statusMessage = await screen.findByText(/自动 AI 审阅还没有启用/);
+    const status = document.getElementById("reviewAutomationActionStatus");
+    expect(status).toBe(statusMessage);
+    expect(status).toHaveAttribute("role", "status");
+    expect(screen.getAllByText(/自动 AI 审阅还没有启用/)).toHaveLength(1);
+    expect(document.querySelector(".astryx-toast")).not.toBeInTheDocument();
+    expect(document.querySelector(".astryx-banner")).not.toBeInTheDocument();
   });
 
   it("loads config, marks edits dirty, discards, and submits all configured values", async () => {
@@ -52,6 +216,8 @@ describe("React application shell", () => {
     ]);
     expect(list.closest(".asr-model-row")).not.toHaveTextContent("删除");
     expect(screen.getAllByRole("button", { name: "下载" })).toHaveLength(2);
+    expect(rows[0].closest(".astryx-list")).toContainElement(rows[0] as HTMLElement);
+    expect(rows[1].querySelector(".astryx-button")).toBeInTheDocument();
   });
 
   it("selects and deletes only non-current installed models through the model APIs", async () => {
@@ -61,13 +227,13 @@ describe("React application shell", () => {
       { ...MODELS[2] },
     ];
     const calls = installFetchMock({ "/api/asr/models": { ok: true, models, download_source: "modelscope" } });
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: /设置/ }));
     const medium = (await screen.findByText("Medium")).closest(".asr-model-row") as HTMLElement;
     fireEvent.click(within(medium).getByRole("button", { name: "设为当前模型" }));
     await waitFor(() => expect(calls.some(([path, options]) => path === "/api/asr/models/select" && options?.method === "POST")).toBe(true));
     fireEvent.click(within(medium).getByRole("button", { name: "删除" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
     await waitFor(() => expect(calls.some(([path, options]) => path === "/api/asr/models/delete" && options?.method === "POST")).toBe(true));
   });
 
@@ -82,8 +248,9 @@ describe("React application shell", () => {
     fireEvent.click(within(navigation).getByRole("button", { name: /自动化/ }));
     fireEvent.click(await screen.findByRole("button", { name: "立即处理待审阅" }));
     expect((await screen.findAllByText(/自动 AI 审阅还没有启用/))[0]).toBeVisible();
-    fireEvent.click(within(navigation).getByRole("button", { name: /确认1/ }));
+    fireEvent.click(within(navigation).getByRole("button", { name: /文件清理1/ }));
     fireEvent.click(await screen.findByRole("button", { name: "确认执行" }));
+    fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "确认执行" }));
     await waitFor(() => {
       const posted = calls.filter(([, options]) => options?.method === "POST").map(([path]) => path);
       expect(posted).toEqual(expect.arrayContaining([
@@ -92,6 +259,81 @@ describe("React application shell", () => {
         "/api/confirmations/c1/approve",
       ]));
     });
+  });
+
+  it("uses Astryx controls and status surfaces across clips, automation, and confirmations", async () => {
+    installFetchMock();
+    render(<App />);
+    await screen.findByRole("heading", { name: "切片结果" });
+    expect(document.querySelector(".astryx-tab-list")).toBeInTheDocument();
+    expect(document.querySelector(".astryx-empty-state")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "立即扫描录播" })).toHaveClass("astryx-button");
+
+    const navigation = screen.getByRole("navigation", { name: "控制台页面" });
+    fireEvent.click(within(navigation).getByRole("button", { name: /^自动化$/ }));
+    expect(await screen.findByRole("heading", { name: "自动化" })).toBeVisible();
+    expect(document.querySelector(".astryx-card")).toBeInTheDocument();
+    expect(document.querySelector(".astryx-list")).toBeInTheDocument();
+
+    fireEvent.click(within(navigation).getByRole("button", { name: /^文件清理$/ }));
+    expect(await screen.findByRole("heading", { name: "待确认的清理操作" })).toBeVisible();
+    expect(screen.getByText("删除成片、中间文件或本地录像副本前，需要你确认。NAS 原始录像不会被删除。")).toBeVisible();
+    expect(screen.getByText("没有待确认的清理操作")).toBeVisible();
+    expect(within(navigation).queryByRole("button", { name: /^确认$/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /^确认$/ })).not.toBeInTheDocument();
+    expect(document.querySelector(".astryx-empty-state")).toBeInTheDocument();
+  });
+
+  it("renders transient feedback with the Astryx Toast surface", async () => {
+    installFetchMock();
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "立即扫描录播" }));
+    expect(await screen.findByText("操作已完成")).toBeInTheDocument();
+    expect(document.querySelector(".astryx-toast")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "关闭通知" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Dismiss notification" })).not.toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent(/\bLoading\b/);
+  });
+
+  it("announces AI review busy state in Chinese without Astryx loading text", async () => {
+    installFetchMock({
+      "/api/runs": {
+        ok: true,
+        runs: [{ run_id: "run-reviewing", source_name: "reviewing.mp4", phase: "needs_review" }],
+      },
+      "/api/runs/run-reviewing": {
+        ok: true,
+        run: { run_id: "run-reviewing", phase: "needs_review" },
+        active_job: { id: "job-reviewing", status: "running" },
+        actions: { can_ai_review: true },
+      },
+    });
+    render(<App />);
+
+    const button = await screen.findByRole("button", { name: "AI 审阅中…" });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("data-busy", "true");
+    expect(button).not.toHaveAttribute("aria-busy");
+    const announcements = screen.getAllByRole("status").filter(
+      (status) => status.textContent === "AI 审阅正在进行",
+    );
+    expect(announcements).toHaveLength(1);
+    expect(document.body).not.toHaveTextContent(/\bLoading\b/);
+  });
+
+  it("localizes the root skip dialog close button through Astryx i18n", async () => {
+    installFetchMock({
+      "/api/onboarding": {
+        needs_onboarding: true,
+        initial_local_model: MODELS[0].id,
+        initial_asr_mode: "local",
+        presets: [],
+      },
+    });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "稍后设置" }));
+    expect(screen.getByRole("button", { name: "关闭" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Close" })).not.toBeInTheDocument();
   });
 
   it("adds the Electron safe-area class only when the existing bridge is present", async () => {
