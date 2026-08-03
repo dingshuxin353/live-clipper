@@ -17,7 +17,7 @@ def _styles() -> str:
 def test_v8_console_contract_moved_to_react_dom_tests():
     app = _source("App.tsx")
 
-    expected_tabs = ['["clips", "切片结果"]', '["automation", "自动化"]', '["confirmations", "确认"]', '["settings", "设置"]']
+    expected_tabs = ['["clips", "切片结果"]', '["automation", "自动化"]', '["confirmations", "文件清理"]', '["settings", "设置"]']
     assert [app.index(tab) for tab in expected_tabs] == sorted(app.index(tab) for tab in expected_tabs)
     for component in ["AppShell", "SideNav", "SideNavHeading", "SideNavItem", "SideNavSection"]:
         assert component in app
@@ -30,7 +30,7 @@ def test_v8_console_contract_moved_to_react_dom_tests():
         assert old_tab not in app
     for legacy_tab in ['"service"', '"runs"', '"logs"', '"config"']:
         assert f"data-tab={legacy_tab}" not in app
-    for label in ["立即扫描录播", "运行日志", "AI 自动审阅", "没有待确认的操作"]:
+    for label in ["立即扫描录播", "运行日志", "AI 自动审阅", "没有待确认的清理操作"]:
         assert label in app
     for endpoint in ["/api/service/scan-now", "/api/review-automation/run-due", "/api/runs/", "/ai-review"]:
         assert endpoint in app
