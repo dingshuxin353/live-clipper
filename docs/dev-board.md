@@ -25,7 +25,7 @@ cd /Users/gouzi/dingshuxinRepo/live-clipper/lanes/<lane> && python3.11 -m venv .
 | 顺序 | 车道 | Spec | 依赖 | 状态 |
 |---:|---|---|---|---|
 | 1 | 0.3.1-local-mlx-release-operation · Provider 修复后重新制包 | `specs/2026-07-26-0.3.1-local-mlx-release-operation.md` | `0.3.1-updater-provider-config` 已合入；现有 candidate、finalize App 与 release assets 均已 superseded | 等待规划者读取本次合并与看板提交后的精确 master HEAD，修订发布 Spec 后另行派发 |
-| 2 | 0.3.2-release-metadata-freeze | 待规划任务输出 | `0.3.2-astryx-stone-ui-system` 已验收并合入 | 待规划；未启动。等待规划任务读取本次合并与看板提交后的最终 master HEAD，输出精确基线 Spec |
+| 2 | 0.3.2-local-release-operation | 待规划任务输出 | `0.3.2-release-metadata-freeze` 已验收并合入 | 待规划；未启动。等待规划任务读取本次合并与看板提交后的最终 master HEAD，另行输出精确发布 Spec |
 
 ## 当前发布操作
 
@@ -35,7 +35,7 @@ cd /Users/gouzi/dingshuxinRepo/live-clipper/lanes/<lane> && python3.11 -m venv .
 ## 产品版本路线
 
 - **0.3.1 · 本地模型与首次使用闭环**：Qwen3 不进入本版本；下载基础设施、MiSans 默认字体、macOS 菜单栏图标修复、Whisper 三档/当前模型闭环、首启向导、统一逐次运行工作区、ASR 静音幻觉与模型列表 UI 修复、首次引导与 Electron 壳层体验修复、版本与发布文档冻结，以及自动更新 Provider 配置源修复均已合入，tag 自动发布工作流已停用；现有 0.3.1 candidate、finalize App 与 release assets 均已 superseded，下一步等待从最终 master HEAD 重新冻结 release source、差量重建与验收，尚未完成新的 Apple 公证或正式发布。
-- **0.3.2 · UI 组件系统统一**：React + TypeScript + Vite renderer 等价迁移与 Astryx Stone UI 系统均已验收并合入；下一步仅为 `0.3.2-release-metadata-freeze` 待规划、未启动。
+- **0.3.2 · UI 组件系统统一**：React + TypeScript + Vite renderer 等价迁移、Astryx Stone UI 系统及 0.3.2 版本与发布文档冻结均已验收并合入；下一步仅为 `0.3.2-local-release-operation` 待规划、未启动，尚未创建 v0.3.2 tag 或执行打包发布。
 - **0.4.0 · Project 工作台**：原 V11 方向；原 V10c“切片偏好 + 提示词编辑器”并入 Project、场景模板和关注点预设。
 
 版本与 Spec 统一规则见项目根：
@@ -43,6 +43,7 @@ cd /Users/gouzi/dingshuxinRepo/live-clipper/lanes/<lane> && python3.11 -m venv .
 
 ## 已合入
 
+- 0.3.2-release-metadata-freeze（冻结 0.3.2 版本与发布文档；lane `8a4cfd253ea52fd1d485ac9584dfc9bbfebf2954`；merge `e857405e4f1c24a2adf53804398e3b148ed86c45`；七个版本字段均为 0.3.2，desktop/frontend 两个 package 仅根版本变化、双 lockfile 依赖图与 baseline 一致；定向 pytest 37 passed、Vitest 50 passed、全量 pytest 433 passed；Ruff、frontend/desktop npm ci、frontend build 与 committed renderer 零差异、两项运行时 audit 0 vulnerabilities、两个 Node 语法及十文件边界均通过；MLX 未安装、v0.3.2 tag 不存在；下一项 `0.3.2-local-release-operation` 待规划、未启动）
 - 0.3.2-astryx-stone-ui-system（Astryx Stone UI 系统迁移；lane `4c45517835be9c2101b5ae20eb30cc6e8c5128aa`；merge `fcb33c352f31d785e8ec62a903e18367b1b0831f`；v1.15 测试合同同步 `003682f5301d30009f2429ed88c4cd8eb32f4723`；Node 24.14.0 / npm 11.9.0，npm ci 通过；Vitest 全量 50 passed、App 17 passed、App + Onboarding 39 passed；docs pytest 26 passed、静态合同单文件 12 passed、合并后联合定向 pytest 70 passed、全量 pytest 431 passed；TypeScript、theme/build、committed assets 零差异、Ruff、两个 Node 语法及 npm audit 0 vulnerabilities 均通过；下一项 `0.3.2-release-metadata-freeze` 待规划、未启动）
 - 0.3.2-react-renderer-migration（React Renderer 等价迁移；lane `f0946c8608ce823f3183c000a90ae5b9e017ff27`；merge `99d453a0a7d45512579feb019f3a46a4ed7605d2`；Vitest 21 passed；定向 pytest 72 passed；全量 pytest 421 passed；TypeScript、Vite build、committed build 一致性、Ruff、两个 Node 语法、37 文件白名单及旧 runtime 禁入门通过；下一步等待规划任务输出组件系统 Spec）
 - 0.3.1-updater-provider-config（自动更新 Provider 配置发布阻断修复；lane `4028f49455e5ace7a502136b471c91ceaed721d3`；merge `adcf3906257514a44a5ef900071521a9d0295365`；定向 7 passed；全量 426 passed；Ruff、两个 Node 语法、单提交与三文件边界通过；现有本地正式资产已标记为 superseded，等待从最终 master HEAD 重新冻结 release source）
