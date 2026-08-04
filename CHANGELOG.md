@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.2 - 2026-08-04
+
+### Changed
+
+- Migrated the desktop renderer to React 19, TypeScript, and Vite while preserving the existing local APIs and workflows.
+- Unified navigation, forms, dialogs, lists, model controls, and status feedback on Astryx Stone with Venus brand tokens and MiSans.
+- Added responsive navigation and layout behavior for minimum window sizes and increased zoom.
+
+### Fixed
+
+- Fixed onboarding validation so blocked actions explain the problem and focus the relevant field.
+- Fixed inconsistent disabled and busy states, oversized notice banners, narrow-layout clipping, and the ambiguous file-cleanup navigation.
+- Localized built-in accessibility labels and restored the MiSans heading theme tokens.
+- Prevented onboarding API keys from being serialized into page HTML during React rerenders.
+
 ## 0.3.1 - 2026-07-26
 
 ### Added

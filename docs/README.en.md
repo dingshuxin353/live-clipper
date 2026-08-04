@@ -16,6 +16,8 @@ Venus is a macOS app for streamers and content teams. It finds recordings, trans
 
 ## Interface
 
+Version 0.3.2 unifies controls, status feedback, and responsive layouts. Blocked actions explain what is missing and focus the relevant field, while primary navigation and actions remain reachable at minimum window sizes or increased zoom.
+
 ![Venus clip results](assets/readme/venus-overview.png)
 
 | Automation center | Local speech models |
