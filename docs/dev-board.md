@@ -25,17 +25,18 @@ cd /Users/gouzi/dingshuxinRepo/live-clipper/lanes/<lane> && python3.11 -m venv .
 | 顺序 | 车道 | Spec | 依赖 | 状态 |
 |---:|---|---|---|---|
 | 1 | 0.3.1-local-mlx-release-operation · Provider 修复后重新制包 | `specs/2026-07-26-0.3.1-local-mlx-release-operation.md` | `0.3.1-updater-provider-config` 已合入；现有 candidate、finalize App 与 release assets 均已 superseded | 等待规划者读取本次合并与看板提交后的精确 master HEAD，修订发布 Spec 后另行派发 |
-| 2 | 0.3.2-local-release-operation | 待规划任务输出 | `0.3.2-release-metadata-freeze` 已验收并合入 | 待规划；未启动。等待规划任务读取本次合并与看板提交后的最终 master HEAD，另行输出精确发布 Spec |
+| 2 | 0.3.2-local-release-operation | 待规划任务输出 | `0.3.2-release-metadata-freeze` 与 `0.3.2-electron-security-upgrade` 已验收并合入；旧 `release-1062371c` 永久 superseded | 待规划；未启动。等待规划任务读取本次合并与看板提交后的最终 master HEAD，更新发布 Spec 并建立唯一新发布根 |
 
 ## 当前发布操作
 
 - **v9f2-local-async-notarization**：已完成。从不可变 `v0.3.0` 标签在本机完成正式构建、Developer ID 签名、异步公证、票据装订、制包和 GitHub Release 发布；原始 Apple 提交包与发布证据保存在 `release-work/v0.3.0/`，等待 v0.3.1 自动更新真机演练完成后再申请清理。
 - **0.3.1 本地正式资产（SUPERSEDED）**：基于旧 release source `7a2e4291e59105e9d66eca7deefbdeba0b8d2500`、`0782bf74cbb42a606e054c3e485cca04744b0012` 的 candidate，以及基于 `327a8de61386496c588b9e50f451ee9ad985c053` 已完成签名、公证和制包但缺少 `app-update.yml` 的 candidate、finalize App 与四类 release assets，均只保留为历史证据，禁止发布或原地修改；Updater Provider 配置源修复已合入，下一步等待规划者从最终 master HEAD 重新冻结 release source 并派发差量重建。
+- **0.3.2 R1（SUPERSEDED）**：旧发布 source `1062371cca4b21fdb33719176de1c44db1c9a4a0` 与 `release-work/v0.3.2/release-1062371c/` 只读保留为 Electron 35 安全审计失败证据，禁止恢复执行或复用产物；Electron 43 安全升级已合入，下一次发布必须从最终 master HEAD、空目录和全新 detached source 重新开始。
 
 ## 产品版本路线
 
 - **0.3.1 · 本地模型与首次使用闭环**：Qwen3 不进入本版本；下载基础设施、MiSans 默认字体、macOS 菜单栏图标修复、Whisper 三档/当前模型闭环、首启向导、统一逐次运行工作区、ASR 静音幻觉与模型列表 UI 修复、首次引导与 Electron 壳层体验修复、版本与发布文档冻结，以及自动更新 Provider 配置源修复均已合入，tag 自动发布工作流已停用；现有 0.3.1 candidate、finalize App 与 release assets 均已 superseded，下一步等待从最终 master HEAD 重新冻结 release source、差量重建与验收，尚未完成新的 Apple 公证或正式发布。
-- **0.3.2 · UI 组件系统统一**：React + TypeScript + Vite renderer 等价迁移、Astryx Stone UI 系统及 0.3.2 版本与发布文档冻结均已验收并合入；下一步仅为 `0.3.2-local-release-operation` 待规划、未启动，尚未创建 v0.3.2 tag 或执行打包发布。
+- **0.3.2 · UI 组件系统统一**：React + TypeScript + Vite renderer 等价迁移、Astryx Stone UI 系统、版本与发布文档冻结及 Electron 43 安全升级均已验收并合入，`SEC-002` 已关闭；下一步仅为 `0.3.2-local-release-operation` 待规划、未启动，尚未创建 v0.3.2 tag 或执行正式发布。
 - **0.4.0 · Project 工作台**：原 V11 方向；原 V10c“切片偏好 + 提示词编辑器”并入 Project、场景模板和关注点预设。
 
 版本与 Spec 统一规则见项目根：
@@ -43,6 +44,7 @@ cd /Users/gouzi/dingshuxinRepo/live-clipper/lanes/<lane> && python3.11 -m venv .
 
 ## 已合入
 
+- 0.3.2-electron-security-upgrade（Electron 运行时安全升级并关闭 `SEC-002`；lane `2c08dfc2e585b296845d06162cf846d75bb0371a`；merge `4c071897420906dadeb2efcd9157715b081e254b`；Electron 43.2.0、electron-builder 26.15.3、electron-updater 6.8.9、ffmpeg-static 5.3.0 精确；desktop/frontend 完整 audit 均为 0 vulnerabilities；定向 pytest 38 passed、Vitest 50 passed、全量 pytest 434 passed；Ruff、frontend build 与 committed renderer 零差异、三个 Node 语法、三文件边界和禁用词门均通过；旧 `release-1062371c` 永久 superseded，等待从最终 master HEAD 重新规划发布）
 - 0.3.2-release-metadata-freeze（冻结 0.3.2 版本与发布文档；lane `8a4cfd253ea52fd1d485ac9584dfc9bbfebf2954`；merge `e857405e4f1c24a2adf53804398e3b148ed86c45`；七个版本字段均为 0.3.2，desktop/frontend 两个 package 仅根版本变化、双 lockfile 依赖图与 baseline 一致；定向 pytest 37 passed、Vitest 50 passed、全量 pytest 433 passed；Ruff、frontend/desktop npm ci、frontend build 与 committed renderer 零差异、两项运行时 audit 0 vulnerabilities、两个 Node 语法及十文件边界均通过；MLX 未安装、v0.3.2 tag 不存在；下一项 `0.3.2-local-release-operation` 待规划、未启动）
 - 0.3.2-astryx-stone-ui-system（Astryx Stone UI 系统迁移；lane `4c45517835be9c2101b5ae20eb30cc6e8c5128aa`；merge `fcb33c352f31d785e8ec62a903e18367b1b0831f`；v1.15 测试合同同步 `003682f5301d30009f2429ed88c4cd8eb32f4723`；Node 24.14.0 / npm 11.9.0，npm ci 通过；Vitest 全量 50 passed、App 17 passed、App + Onboarding 39 passed；docs pytest 26 passed、静态合同单文件 12 passed、合并后联合定向 pytest 70 passed、全量 pytest 431 passed；TypeScript、theme/build、committed assets 零差异、Ruff、两个 Node 语法及 npm audit 0 vulnerabilities 均通过；下一项 `0.3.2-release-metadata-freeze` 待规划、未启动）
 - 0.3.2-react-renderer-migration（React Renderer 等价迁移；lane `f0946c8608ce823f3183c000a90ae5b9e017ff27`；merge `99d453a0a7d45512579feb019f3a46a4ed7605d2`；Vitest 21 passed；定向 pytest 72 passed；全量 pytest 421 passed；TypeScript、Vite build、committed build 一致性、Ruff、两个 Node 语法、37 文件白名单及旧 runtime 禁入门通过；下一步等待规划任务输出组件系统 Spec）
