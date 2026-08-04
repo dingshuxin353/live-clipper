@@ -5,6 +5,7 @@
   "description": "Desktop shell for Venus (live-clipper).",
   "main": "main.js",
   "scripts": {
+    "postinstall": "install-electron",
     "start": "electron .",
     "build:backend": "bash scripts/build-backend.sh",
     "dist": "npm run build:backend && electron-builder --mac dmg"
@@ -13,7 +14,7 @@
     "electron-updater": "^6.3.0"
   },
   "devDependencies": {
-    "electron": "^35.0.0",
+    "electron": "43.2.0",
     "electron-builder": "^26.0.0",
     "ffmpeg-static": "^5.2.0"
   }

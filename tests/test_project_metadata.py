@@ -173,6 +173,31 @@ def test_release_versions_are_frozen_at_0_3_2():
     assert versions == {"0.3.2"}
 
 
+def test_electron_runtime_is_supported_secure_release():
+    package = json.loads(Path("desktop/package.json").read_text(encoding="utf-8"))
+    lock = json.loads(Path("desktop/package-lock.json").read_text(encoding="utf-8"))
+    root = lock["packages"][""]
+
+    assert package["version"] == lock["version"] == root["version"] == "0.3.2"
+    assert package["scripts"]["postinstall"] == "install-electron"
+    assert package["dependencies"] == {"electron-updater": "^6.3.0"}
+    assert package["devDependencies"] == {
+        "electron": "43.2.0",
+        "electron-builder": "^26.0.0",
+        "ffmpeg-static": "^5.2.0",
+    }
+    assert root["dependencies"] == package["dependencies"]
+    assert root["devDependencies"] == package["devDependencies"]
+    assert lock["packages"]["node_modules/electron"]["version"] == "43.2.0"
+    assert lock["packages"]["node_modules/electron-builder"]["version"] == "26.15.3"
+    assert lock["packages"]["node_modules/electron-updater"]["version"] == "6.8.9"
+    assert lock["packages"]["node_modules/ffmpeg-static"]["version"] == "5.3.0"
+    assert not any(
+        marker in package["devDependencies"]["electron"].lower()
+        for marker in ("alpha", "beta", "nightly")
+    )
+
+
 def test_automatic_tag_release_workflow_is_disabled():
     workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
 
