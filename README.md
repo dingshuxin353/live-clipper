@@ -39,6 +39,8 @@
 
 在“切片结果”中集中查看处理中、待审阅、已成片和失败任务。
 
+0.3.2 统一了界面控件、状态反馈和响应式布局。操作被阻断时会说明缺少什么并聚焦对应字段；在最小窗口或放大界面时，主要导航和操作仍然可达。
+
 ![Venus 切片结果界面](docs/assets/readme/venus-overview.png)
 
 | 自动化中心 | 本地语音模型 |
@@ -189,7 +191,7 @@ Venus 支持应用内自动更新。你也可以随时到 [GitHub Releases](http
 - Apple Silicon Mac；
 - macOS 14 或更高版本；
 - Python 3.11；
-- Node.js 20；
+- Node.js 24；
 - Git；
 - 可从终端调用的 `ffmpeg`。
 

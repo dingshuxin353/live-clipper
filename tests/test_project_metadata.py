@@ -153,16 +153,24 @@ def test_project_pins_lightweight_model_hub_dependencies_and_freezes_them():
     assert "--collect-all modelscope_hub" in build_script
 
 
-def test_desktop_version_matches_python_version():
-    import json
-    import tomllib
-    from pathlib import Path
-
+def test_release_versions_are_frozen_at_0_3_2():
     pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
-    package = json.loads(Path("desktop/package.json").read_text(encoding="utf-8"))
-    package_lock = json.loads(Path("desktop/package-lock.json").read_text(encoding="utf-8"))
-    assert package["version"] == pyproject["project"]["version"]
-    assert package_lock["packages"][""]["version"] == package["version"]
+    desktop_package = json.loads(Path("desktop/package.json").read_text(encoding="utf-8"))
+    desktop_lock = json.loads(Path("desktop/package-lock.json").read_text(encoding="utf-8"))
+    frontend_package = json.loads(Path("frontend/package.json").read_text(encoding="utf-8"))
+    frontend_lock = json.loads(Path("frontend/package-lock.json").read_text(encoding="utf-8"))
+
+    versions = {
+        pyproject["project"]["version"],
+        desktop_package["version"],
+        desktop_lock["version"],
+        desktop_lock["packages"][""]["version"],
+        frontend_package["version"],
+        frontend_lock["version"],
+        frontend_lock["packages"][""]["version"],
+    }
+
+    assert versions == {"0.3.2"}
 
 
 def test_automatic_tag_release_workflow_is_disabled():

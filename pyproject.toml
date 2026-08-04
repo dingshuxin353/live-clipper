@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "live-clipper"
-version = "0.3.1"
+version = "0.3.2"
 description = "Venus: CLI pipeline for extracting highlight clips from livestream recordings."
 readme = "README.md"
 requires-python = ">=3.11"

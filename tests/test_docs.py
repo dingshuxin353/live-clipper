@@ -265,6 +265,48 @@ def test_english_readme_explains_current_local_model_choices():
     assert "Hugging Face or a mirror" not in text
 
 
+def test_changelog_documents_only_verified_0_3_2_changes():
+    text = Path("CHANGELOG.md").read_text(encoding="utf-8")
+    section = text.split("## 0.3.2 - 2026-08-04", 1)[1].split("## 0.3.1", 1)[0]
+
+    for expected in [
+        "Migrated the desktop renderer to React 19, TypeScript, and Vite while preserving the existing local APIs and workflows.",
+        "Unified navigation, forms, dialogs, lists, model controls, and status feedback on Astryx Stone with Venus brand tokens and MiSans.",
+        "Added responsive navigation and layout behavior for minimum window sizes and increased zoom.",
+        "Fixed onboarding validation so blocked actions explain the problem and focus the relevant field.",
+        "Fixed inconsistent disabled and busy states, oversized notice banners, narrow-layout clipping, and the ambiguous file-cleanup navigation.",
+        "Localized built-in accessibility labels and restored the MiSans heading theme tokens.",
+        "Prevented onboarding API keys from being serialized into page HTML during React rerenders.",
+    ]:
+        assert f"- {expected}" in section
+
+    for forbidden in [
+        "Python backend migrated to Node.js",
+        "ASR Simplified/Traditional Chinese",
+        "automatic update verified",
+        "Apple notarization completed",
+        "0.3.2 has been released",
+    ]:
+        assert forbidden not in section
+
+
+def test_readmes_document_0_3_2_interface_improvements():
+    chinese = Path("README.md").read_text(encoding="utf-8")
+    english = Path("docs/README.en.md").read_text(encoding="utf-8")
+
+    assert (
+        "0.3.2 统一了界面控件、状态反馈和响应式布局。操作被阻断时会说明缺少什么并聚焦对应字段；"
+        "在最小窗口或放大界面时，主要导航和操作仍然可达。"
+    ) in chinese
+    assert "Node.js 24" in chinese
+    assert "Node.js 20" not in chinese
+    assert (
+        "Version 0.3.2 unifies controls, status feedback, and responsive layouts. Blocked actions explain "
+        "what is missing and focus the relevant field, while primary navigation and actions remain reachable "
+        "at minimum window sizes or increased zoom."
+    ) in english
+
+
 def test_advanced_usage_documents_model_source_details():
     text = Path("docs/advanced-usage.md").read_text(encoding="utf-8")
 
