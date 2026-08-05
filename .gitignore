@@ -47,6 +47,10 @@ _系统/
 .agents/
 .claude/
 .pytest_cache/
+/AGENTS.md
+/CLAUDE.md
+/docs/dev-board.md
+/docs/polish-backlog.md
 
 # Internal development specs/plans — process artifacts, not product docs.
 docs/superpowers/
