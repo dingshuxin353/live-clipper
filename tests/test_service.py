@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -235,6 +236,72 @@ def test_run_service_once_deduplicates_renamed_copy_by_full_content_id(tmp_path,
     assert report["duplicate_files"] == 2
     assert runs[0]["first_source_path"] == str(source)
     assert runs[0]["last_source_path"] == str(renamed)
+
+
+def test_run_service_once_serializes_concurrent_scans_for_same_content(tmp_path, monkeypatch):
+    source_dir = tmp_path / "nas"
+    source_dir.mkdir()
+    source = source_dir / "recording.mkv"
+    source.write_bytes(b"same-video")
+    service_dir = tmp_path / "service"
+    settings = Settings(
+        cheap_model_api_key="test-key",
+        recording_source_default=RecordingSourceDefaultConfig(
+            source_dir=source_dir,
+            min_age_minutes=0,
+            stable_check_seconds=0,
+        ),
+    )
+    first_identity_started = threading.Event()
+    second_identity_started = threading.Event()
+    identity_calls_lock = threading.Lock()
+    identity_calls = 0
+    launch_calls = []
+
+    def fake_content_identity(path, *, service_dir):
+        nonlocal identity_calls
+        with identity_calls_lock:
+            identity_calls += 1
+            call_number = identity_calls
+        if call_number == 1:
+            first_identity_started.set()
+            second_identity_started.wait(timeout=1)
+        else:
+            second_identity_started.set()
+        return {"content_id": "a" * 64, "bytes": path.stat().st_size, "cache_hit": False}
+
+    def fake_launch(run, *, settings, service_dir):
+        launch_calls.append(run["run_id"])
+        run["phase"] = "processing"
+        run["pid"] = 4321
+        return run
+
+    monkeypatch.setattr(service, "content_identity", fake_content_identity)
+    monkeypatch.setattr(service, "_launch_queued_run", fake_launch)
+    monkeypatch.setattr(service, "append_event", lambda *args, **kwargs: None)
+    reports = []
+    errors = []
+
+    def scan():
+        try:
+            reports.append(service.run_service_once(settings, service_dir=service_dir))
+        except Exception as exc:  # pragma: no cover - asserted below for thread failures
+            errors.append(exc)
+
+    first = threading.Thread(target=scan)
+    second = threading.Thread(target=scan)
+    first.start()
+    assert first_identity_started.wait(timeout=1)
+    second.start()
+    first.join(timeout=3)
+    second.join(timeout=3)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert errors == []
+    assert len(service.load_runs(service_dir)) == 1
+    assert len(launch_calls) == 1
+    assert sum(report["discovered_runs"] for report in reports) == 1
 
 
 def test_run_service_once_migrates_legacy_run_content_id_without_restarting(tmp_path, monkeypatch):

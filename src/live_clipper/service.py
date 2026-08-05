@@ -28,6 +28,7 @@ MAX_CONCURRENT_PIPELINES = 1
 
 _EMBEDDED_LOCK = threading.Lock()
 _EMBEDDED: dict[str, Any] = {"thread": None, "stop_event": None, "enabled_event": None, "service_dir": None}
+_RUN_STATE_LOCK = threading.RLock()
 
 
 class PipelineConfigurationError(ValueError):
@@ -1009,6 +1010,16 @@ def start_run_for_source(
     settings: Settings,
     service_dir: Path = DEFAULT_SERVICE_DIR,
 ) -> dict[str, Any]:
+    with _RUN_STATE_LOCK:
+        return _start_run_for_source_locked(source_path, settings=settings, service_dir=service_dir)
+
+
+def _start_run_for_source_locked(
+    source_path: Path,
+    *,
+    settings: Settings,
+    service_dir: Path,
+) -> dict[str, Any]:
     validate_service_settings(settings)
     require_pipeline_configuration(settings)
     runs = load_runs(service_dir)
@@ -1033,6 +1044,16 @@ def retry_failed_run(
     *,
     settings: Settings,
     service_dir: Path = DEFAULT_SERVICE_DIR,
+) -> dict[str, Any]:
+    with _RUN_STATE_LOCK:
+        return _retry_failed_run_locked(run_id, settings=settings, service_dir=service_dir)
+
+
+def _retry_failed_run_locked(
+    run_id: str,
+    *,
+    settings: Settings,
+    service_dir: Path,
 ) -> dict[str, Any]:
     runs = load_runs(service_dir)
     run = next((item for item in runs if item.get("run_id") == run_id), None)
@@ -1077,6 +1098,11 @@ def retry_failed_run(
 
 
 def run_service_once(settings: Settings, *, service_dir: Path = DEFAULT_SERVICE_DIR) -> dict[str, Any]:
+    with _RUN_STATE_LOCK:
+        return _run_service_once_locked(settings, service_dir=service_dir)
+
+
+def _run_service_once_locked(settings: Settings, *, service_dir: Path) -> dict[str, Any]:
     validate_service_settings(settings)
     ensure_dir(service_dir)
     runs = load_runs(service_dir)
@@ -1168,6 +1194,11 @@ def run_service_once(settings: Settings, *, service_dir: Path = DEFAULT_SERVICE_
 
 
 def run_service_tick(settings: Settings, *, service_dir: Path = DEFAULT_SERVICE_DIR) -> dict[str, Any]:
+    with _RUN_STATE_LOCK:
+        return _run_service_tick_locked(settings, service_dir=service_dir)
+
+
+def _run_service_tick_locked(settings: Settings, *, service_dir: Path) -> dict[str, Any]:
     validate_service_settings(settings)
     ensure_dir(service_dir)
     runs = load_runs(service_dir)
