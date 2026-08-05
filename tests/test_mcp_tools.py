@@ -267,6 +267,7 @@ def test_scan_now_and_start_run_for_source_use_service_core(tmp_path, monkeypatc
 
     assert scan["ok"] is True
     assert scan["started_runs"] == 1
+    assert scan["message"] == "发现 1 个未处理录像，已开始 1 个，排队 0 个。"
     assert duplicate["ok"] is False
     assert duplicate["error_code"] == "duplicate_run"
 

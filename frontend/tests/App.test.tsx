@@ -206,6 +206,36 @@ describe("React application shell", () => {
     expect(await screen.findByText("请先到「设置 → AI 服务」配置 AI API Key，再开始处理录播。")).toBeVisible();
   });
 
+  it("labels queued recordings and reports precise no-new-recording feedback", async () => {
+    installFetchMock({
+      "/api/runs": {
+        ok: true,
+        runs: [{ run_id: "run-queued", source_name: "queued.mkv", phase: "queued" }],
+      },
+      "/api/runs/run-queued": {
+        ok: true,
+        run: { run_id: "run-queued", phase: "queued" },
+      },
+      "/api/service/scan-now": {
+        ok: true,
+        discovered_runs: 0,
+        started_runs: 0,
+        queued_runs: 1,
+        duplicate_files: 1,
+        message: "没有发现未处理录像：已处理或已排队 1 个，过新 0 个，写入中 0 个。",
+      },
+    });
+    render(<App />);
+
+    const queuedRow = (await screen.findByText("queued.mkv")).closest<HTMLElement>(".run-row");
+    expect(queuedRow).not.toBeNull();
+    expect(within(queuedRow as HTMLElement).getAllByText("排队中").length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: "立即扫描录播" }));
+
+    expect(await screen.findByText("没有发现未处理录像：已处理或已排队 1 个，过新 0 个，写入中 0 个。")).toBeVisible();
+    expect(screen.queryByText("操作已完成")).not.toBeInTheDocument();
+  });
+
   it("uses one persistent status and no toast for review automation results", async () => {
     installFetchMock({
       "/api/review-automation/run-due": {

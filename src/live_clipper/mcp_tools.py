@@ -412,7 +412,8 @@ def retry_run(
         if str(exc) == "invalid_phase":
             return _error("invalid_phase", "只有失败任务可以重试。")
         return _error("internal_error", str(exc))
-    return _ok(run=run, message="任务已重新开始处理。")
+    message = "任务已重新开始处理。" if run.get("phase") == "processing" else "任务已加入处理队列。"
+    return _ok(run=run, message=message)
 
 
 def write_selected_clips(

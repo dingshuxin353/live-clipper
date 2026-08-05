@@ -49,6 +49,7 @@ const VENUS_I18N_OVERRIDES = {
 };
 
 const phaseLabels: Record<string, string> = {
+  queued: "排队中",
   processing: "处理中",
   rendering: "渲染中",
   needs_review: "待审阅",
@@ -474,10 +475,12 @@ interface ClipsProps {
 function Clips(props: ClipsProps) {
   const { phase, setPhase, runs, detail, selectedRunId, selectRun, setActiveTab, setLog, notify, refreshAll, pollAiReviewJob, runAction } = props;
   const clipCount = runs.reduce((total, run) => total + Number(run.clip_count || 0), 0);
+  const queuedCount = runs.filter((run) => String(run.phase) === "queued").length;
   const processingCount = runs.filter((run) => ["processing", "rendering", "running", "ready_to_render"].includes(String(run.phase))).length;
   const reviewCount = runs.filter((run) => canonicalPhase(run.phase) === "needs_review").length;
   const parts = [
     clipCount ? `生成 ${clipCount} 个成片` : "",
+    queuedCount ? `${queuedCount} 场排队中` : "",
     processingCount ? `${processingCount} 场正在处理` : "",
     reviewCount ? `${reviewCount} 场待审阅` : "",
   ].filter(Boolean);
@@ -492,7 +495,7 @@ function Clips(props: ClipsProps) {
         </div>
       </div>
       <TabList aria-label="任务阶段筛选" className="phase-filters" id="phaseFilters" onChange={setPhase} size="sm" value={phase}>
-        {[["", "全部"], ["processing", "处理中"], ["needs_review", "待审阅"], ["rendered", "已成片"], ["failed", "失败"]].map(([id, label]) => (
+        {[["", "全部"], ["queued", "排队中"], ["processing", "处理中"], ["needs_review", "待审阅"], ["rendered", "已成片"], ["failed", "失败"]].map(([id, label]) => (
           <Tab key={id} label={label} value={id} />
         ))}
       </TabList>
@@ -639,6 +642,9 @@ function RunExpanded({
   }
   if (phase === "failed") {
     return <div className="clip-card-body"><Text as="div" role="alert" type="supporting" xstyle={semanticToneStyles.error}>{String(run.last_error || "任务失败，暂无错误详情。")}</Text><div className="button-row"><Button label="重试处理" onClick={() => void runAction(`/api/runs/${encodeURIComponent(run.run_id)}/retry`).catch(() => undefined)} size="sm" variant="primary" /><Button label="查看日志" onClick={() => setActiveTab("automation")} size="sm" /></div></div>;
+  }
+  if (phase === "queued") {
+    return <div className="clip-card-body"><Text as="div" type="supporting" xstyle={semanticToneStyles.info}>已进入处理队列，将在当前任务完成后自动开始。</Text></div>;
   }
   const steps = detail.steps?.length ? detail.steps : [
     { label: "拉取录像", state: "done" }, { label: "语音转写", state: "active" },
