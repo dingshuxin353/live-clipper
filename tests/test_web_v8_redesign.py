@@ -254,6 +254,35 @@ def test_v8_status_text_uses_only_stone_semantic_colors():
     )
 
 
+def test_v8_configuration_health_cards_use_stone_semantic_surfaces():
+    settings = _source("Settings.tsx")
+    styles = _styles()
+
+    assert 'data-tone={tone}' in settings
+    assert 'aria-label={`${label}：${status}`}' in settings
+    for tone, suffix in [
+        ("success", "green"),
+        ("warning", "yellow"),
+        ("neutral", "gray"),
+    ]:
+        rule = re.search(
+            rf'\.health-card\[data-tone="{tone}"\]\s*\{{([^}}]+)\}}',
+            styles,
+            flags=re.DOTALL,
+        )
+        assert rule
+        assert f"background: var(--color-background-{suffix})" in rule.group(1)
+        assert f"border-color: var(--color-border-{suffix})" in rule.group(1)
+        text_rule = re.search(
+            rf'\.health-card\[data-tone="{tone}"\]\s+strong\s*\{{([^}}]+)\}}',
+            styles,
+            flags=re.DOTALL,
+        )
+        assert text_rule
+        assert f"color: var(--color-text-{suffix})" in text_rule.group(1)
+    assert ".health-card .astryx-banner" not in styles
+
+
 def test_v8_busy_and_toast_accessibility_use_supported_astryx_contracts():
     app = _source("App.tsx")
     onboarding = _source("Onboarding.tsx")

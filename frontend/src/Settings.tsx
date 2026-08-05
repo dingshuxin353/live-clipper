@@ -426,7 +426,14 @@ export function Settings(props: SettingsProps) {
           <div className="layer-heading"><div><h3>配置体检</h3><p className="muted">先看状态，再决定要改哪里。</p></div></div>
           <div id="configHealth" className="health-grid">
             {healthCards.map(([label, status, detail, tone]) => (
-              <Card className="health-card" key={label} padding={3} variant="muted">
+              <Card
+                aria-label={`${label}：${status}`}
+                className="health-card"
+                data-tone={tone}
+                key={label}
+                padding={3}
+                variant="muted"
+              >
                 <span>{label}</span>
                 <strong><StatusDot label={status} variant={tone === "neutral" ? "neutral" : tone} /> {status}</strong>
                 <small className="technical-value" title={detail}>{detail}</small>
@@ -494,7 +501,11 @@ export function Settings(props: SettingsProps) {
               <FormLayout>
                 {control("paths.work_dir", "应用内部状态目录")}
                 {control("paths.glossary_path", "术语表路径")}
-                {control("recording_source_default.since_hours", "只处理最近多少小时的录像", { type: "number" })}
+                {control("recording_source_default.since_hours", "历史扫描时间范围（仅兼容旧配置）", {
+                  description: "不再按录像日期过滤，所有稳定且未处理的录像都会进入队列。",
+                  readOnly: true,
+                  type: "number",
+                })}
                 {control("recording_source_default.min_age_minutes", "录像多少分钟没变化才开始处理", { type: "number" })}
                 {control("recording_source_default.stable_check_seconds", "稳定性检查秒数", { type: "number" })}
                 {control("service.enabled", "启用自动处理引擎", { type: "checkbox" })}
