@@ -188,6 +188,34 @@ def test_handle_api_request_returns_json_payloads(tmp_path):
     assert body["runs"][0]["run_id"] == "recording"
 
 
+def test_scan_and_retry_configuration_errors_use_http_409(tmp_path, monkeypatch):
+    paths = WebPaths(
+        output_root=tmp_path / "output",
+        input_dir=tmp_path / "input",
+        service_dir=tmp_path / "service",
+        config_path=tmp_path / "missing.toml",
+    )
+    run_dir = tmp_path / "workspace" / "runs" / "run-failed" / "output"
+    write_json(paths.service_dir / "runs.json", {"runs": [{
+        "run_id": "run-failed",
+        "phase": "failed",
+        "run_dir": str(run_dir),
+        "input_dir": str(run_dir.parent / "input"),
+        "source_path": str(tmp_path / "source.mkv"),
+        "local_source_path": str(run_dir.parent / "input" / "source.mkv"),
+        "last_error": "old error",
+    }]})
+    monkeypatch.setattr(web, "_settings_for_paths", lambda request_paths: web.Settings())
+
+    scan_status, _headers, scan = handle_api_request("POST", "/api/service/scan-now", paths)
+    retry_status, _headers, retry = handle_api_request("POST", "/api/runs/run-failed/retry", paths)
+
+    assert scan_status == 409
+    assert retry_status == 409
+    assert scan["error_code"] == retry["error_code"] == "pipeline_configuration_required"
+    assert "设置 → AI 服务" in scan["message"]
+
+
 def test_static_assets_disable_cache_and_serve_hashed_react_js(tmp_path):
     class TestHandler(LiveClipperRequestHandler):
         paths = WebPaths(output_root=tmp_path / "output", state_dir=tmp_path / "state", log_dir=tmp_path / "logs")

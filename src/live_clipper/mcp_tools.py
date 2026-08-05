@@ -50,6 +50,11 @@ TOOL_SCHEMAS = {
         "properties": {"source_path": {"type": "string"}, "source_id": {"type": "string"}},
         "required": ["source_path"],
     },
+    "retry_run": {
+        "type": "object",
+        "properties": {"run_id": {"type": "string"}},
+        "required": ["run_id"],
+    },
     "write_selected_clips": {
         "type": "object",
         "properties": {
@@ -147,6 +152,8 @@ def call_tool(
             settings=settings,
             service_dir=service_dir,
         )
+    if tool_name == "retry_run":
+        return retry_run(str(arguments["run_id"]), settings=settings, service_dir=service_dir)
     if tool_name == "write_selected_clips":
         return write_selected_clips(
             str(arguments["run_id"]),
@@ -345,6 +352,8 @@ def scan_now(
 ) -> dict[str, Any]:
     try:
         report = service.run_service_once(_settings(settings), service_dir=service_dir)
+    except service.PipelineConfigurationError as exc:
+        return _error("pipeline_configuration_required", str(exc))
     except Exception as exc:  # pragma: no cover - defensive adapter boundary
         return _error("internal_error", str(exc))
     service.append_event(service_dir, "mcp_scan_now", report=report)
@@ -365,17 +374,45 @@ def start_run_for_source(
     path = Path(source_path)
     if source_config.source_dir is None or not _path_is_relative_to(path, source_config.source_dir):
         return _error("path_rejected", f"Source path is outside configured source_dir: {source_path}")
+    try:
+        service.require_pipeline_configuration(resolved_settings)
+    except service.PipelineConfigurationError as exc:
+        service.append_event(service_dir, "pipeline_configuration_blocked", trigger="start_run")
+        return _error("pipeline_configuration_required", str(exc))
     stable_sources = {candidate.resolve() for candidate in service.scan_recording_source(source_config)}
     if path.resolve() not in stable_sources:
         return _error("source_not_stable", f"Source is not stable or not eligible for processing: {source_path}")
     try:
         run = service.start_run_for_source(path, settings=resolved_settings, service_dir=service_dir)
+    except service.PipelineConfigurationError as exc:
+        return _error("pipeline_configuration_required", str(exc))
     except ValueError as exc:
         if str(exc) == "duplicate_run":
             return _error("duplicate_run", f"Run already exists for source: {source_path}")
         return _error("internal_error", str(exc))
     service.append_event(service_dir, "mcp_start_run_for_source", run_id=run["run_id"], source_path=str(path))
     return _ok(run=run)
+
+
+def retry_run(
+    run_id: str,
+    *,
+    settings: Settings | None = None,
+    service_dir: Path = service.DEFAULT_SERVICE_DIR,
+) -> dict[str, Any]:
+    try:
+        run = service.retry_failed_run(run_id, settings=_settings(settings), service_dir=service_dir)
+    except service.PipelineConfigurationError as exc:
+        return _error("pipeline_configuration_required", str(exc))
+    except FileNotFoundError:
+        return _error("source_unavailable", "原录像和本地副本均不可用，无法重试该任务。")
+    except ValueError as exc:
+        if str(exc) == "run_not_found":
+            return _error("run_not_found", f"任务不存在: {run_id}")
+        if str(exc) == "invalid_phase":
+            return _error("invalid_phase", "只有失败任务可以重试。")
+        return _error("internal_error", str(exc))
+    return _ok(run=run, message="任务已重新开始处理。")
 
 
 def write_selected_clips(

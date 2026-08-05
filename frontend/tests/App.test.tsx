@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import { App } from "../src/App";
-import { installFetchMock, MODELS } from "./helpers";
+import { installFetchMock, jsonResponse, MODELS } from "./helpers";
 
 describe("React application shell", () => {
   it("renders tabs in product order, switches pages, and shows the confirmation badge", async () => {
@@ -164,6 +164,46 @@ describe("React application shell", () => {
     const failed = await screen.findByText("转写失败");
     expect(failed).toHaveAttribute("role", "alert");
     expect(document.querySelector(".astryx-banner")).not.toBeInTheDocument();
+  });
+
+  it("offers failed runs an actionable retry and shows configuration guidance", async () => {
+    const calls = installFetchMock({
+      "/api/runs": {
+        ok: true,
+        runs: [{ run_id: "run-failed", source_name: "failed.mkv", phase: "failed" }],
+      },
+      "/api/runs/run-failed": {
+        ok: true,
+        run: { run_id: "run-failed", phase: "failed", last_error: "流水线失败" },
+      },
+      "/api/runs/run-failed/retry": () => jsonResponse({
+        ok: false,
+        error_code: "pipeline_configuration_required",
+        message: "请先到「设置 → AI 服务」配置 AI API Key，再开始处理录播。",
+      }, 409),
+    });
+    render(<App />);
+
+    expect(await screen.findByText("流水线失败")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "重试处理" }));
+
+    expect(await screen.findByText("请先到「设置 → AI 服务」配置 AI API Key，再开始处理录播。")).toBeVisible();
+    expect(calls.some(([path, options]) => path === "/api/runs/run-failed/retry" && options?.method === "POST")).toBe(true);
+  });
+
+  it("shows the same configuration guidance when manual scan is blocked", async () => {
+    installFetchMock({
+      "/api/service/scan-now": () => jsonResponse({
+        ok: false,
+        error_code: "pipeline_configuration_required",
+        message: "请先到「设置 → AI 服务」配置 AI API Key，再开始处理录播。",
+      }, 409),
+    });
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "立即扫描录播" }));
+
+    expect(await screen.findByText("请先到「设置 → AI 服务」配置 AI API Key，再开始处理录播。")).toBeVisible();
   });
 
   it("uses one persistent status and no toast for review automation results", async () => {

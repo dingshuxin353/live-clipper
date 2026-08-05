@@ -22,9 +22,19 @@ from .render_clips import render_selected_clips
 from .utils import ensure_dir, read_json, self_command, write_json
 
 DEFAULT_SERVICE_DIR = Path("work") / "service"
+PIPELINE_CONFIGURATION_MESSAGE = "请先到「设置 → AI 服务」配置 AI API Key，再开始处理录播。"
 
 _EMBEDDED_LOCK = threading.Lock()
 _EMBEDDED: dict[str, Any] = {"thread": None, "stop_event": None, "enabled_event": None, "service_dir": None}
+
+
+class PipelineConfigurationError(ValueError):
+    """Raised before a pipeline can create user-visible work without required configuration."""
+
+
+def require_pipeline_configuration(settings: Settings) -> None:
+    if not settings.cheap_model_api_key:
+        raise PipelineConfigurationError(PIPELINE_CONFIGURATION_MESSAGE)
 
 
 def embedded_service_active() -> bool:
@@ -779,6 +789,7 @@ def _start_run_for_source(
     settings: Settings,
     service_dir: Path,
 ) -> dict[str, Any]:
+    require_pipeline_configuration(settings)
     source_config = settings.recording_source_default
     identity = build_run_identity(
         source_config.source_id,
@@ -846,6 +857,52 @@ def start_run_for_source(
     return run
 
 
+def retry_failed_run(
+    run_id: str,
+    *,
+    settings: Settings,
+    service_dir: Path = DEFAULT_SERVICE_DIR,
+) -> dict[str, Any]:
+    runs = load_runs(service_dir)
+    run = next((item for item in runs if item.get("run_id") == run_id), None)
+    if run is None:
+        raise ValueError("run_not_found")
+    if run.get("phase") != "failed":
+        raise ValueError("invalid_phase")
+    try:
+        require_pipeline_configuration(settings)
+    except PipelineConfigurationError:
+        append_event(service_dir, "pipeline_configuration_blocked", trigger="retry", run_id=run_id)
+        raise
+
+    local_source = Path(str(run.get("local_source_path") or ""))
+    original_source = Path(str(run.get("source_path") or ""))
+    if local_source.is_file():
+        source_path = local_source
+    elif original_source.is_file():
+        source_path = original_source
+    else:
+        raise FileNotFoundError("source_unavailable")
+
+    input_dir = input_dir_for_run(run, settings)
+    run_dir = Path(str(run["run_dir"]))
+    log_path = Path(str(run.get("log_path") or service_dir / "runs" / f"{run_id}.log"))
+    pid = _start_pipeline_process(
+        source_path,
+        input_dir=input_dir,
+        run_dir=run_dir,
+        log_path=log_path,
+    )
+    run["phase"] = "processing"
+    run["pid"] = pid
+    run["last_error"] = None
+    run["retry_count"] = int(run.get("retry_count") or 0) + 1
+    run["updated_at"] = now_utc()
+    save_runs(runs, service_dir)
+    append_event(service_dir, "pipeline_retried", run_id=run_id, pid=pid, run_dir=str(run_dir))
+    return run
+
+
 def run_service_once(settings: Settings, *, service_dir: Path = DEFAULT_SERVICE_DIR) -> dict[str, Any]:
     validate_service_settings(settings)
     ensure_dir(service_dir)
@@ -854,7 +911,13 @@ def run_service_once(settings: Settings, *, service_dir: Path = DEFAULT_SERVICE_
         reconcile_run(run, settings, service_dir=service_dir)
     # 先把 reconcile 结果落盘：即使随后扫描录播源失败（如 NAS 未挂载），
     # 也不能丢掉状态推进。
-    save_runs(runs, service_dir)
+    if runs:
+        save_runs(runs, service_dir)
+    try:
+        require_pipeline_configuration(settings)
+    except PipelineConfigurationError:
+        append_event(service_dir, "pipeline_configuration_blocked", trigger="scan")
+        raise
 
     started = []
     scan_error: str | None = None

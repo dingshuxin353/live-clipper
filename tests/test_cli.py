@@ -597,6 +597,7 @@ def test_run_pipeline_stages_source_scans_refines_and_builds_brief(tmp_path, mon
     source.write_bytes(b"video")
     calls = []
 
+    monkeypatch.setattr(cli, "load_settings", lambda: Settings(cheap_model_api_key="test-key"))
     monkeypatch.setattr(cli, "stage_source_file", lambda source_path, input_dir: calls.append(("stage", source_path, input_dir)) or input_dir / "recording.mkv")
     monkeypatch.setattr(
         cli,
@@ -685,6 +686,18 @@ def test_run_scan_fails_before_audio_extraction_when_cheap_model_key_missing(tmp
         cli.run_scan(video_path, tmp_path / "run")
 
     assert calls == []
+
+
+def test_run_pipeline_fails_before_staging_when_cheap_model_key_missing(tmp_path, monkeypatch):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"video")
+    monkeypatch.setattr(cli, "load_settings", lambda: Settings(cheap_model_api_key=None))
+    monkeypatch.setattr(cli, "stage_source_file", lambda *args, **kwargs: pytest.fail("must not stage"))
+
+    with pytest.raises(ValueError, match="设置 → AI 服务"):
+        cli.run_pipeline(source, input_dir=tmp_path / "input", output_dir=tmp_path / "output")
+
+    assert not (tmp_path / "input").exists()
 
 
 def test_run_scan_fails_before_creating_run_dir_when_video_is_missing(tmp_path, monkeypatch):

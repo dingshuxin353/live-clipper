@@ -365,7 +365,7 @@ function AppContent() {
             <small>下次扫描：{formatLocalTime(service.service?.next_scan_at)}</small>
             <small>下次定时：{formatLocalTime(schedulerState.next_due_at)}</small>
                 <div className="sidebar-service-actions">
-                  <Button label="立即扫描" size="sm" variant="secondary" onClick={() => void runAction("/api/service/scan-now")} />
+                  <Button label="立即扫描" size="sm" variant="secondary" onClick={() => void runAction("/api/service/scan-now").catch(() => undefined)} />
                   <Button label={running ? "停止" : "启动"} size="sm" variant="secondary" onClick={() => void runAction(running ? "/api/service/stop" : "/api/service/start")} />
                 </div>
               </div>
@@ -488,7 +488,7 @@ function Clips(props: ClipsProps) {
         <div><h2>切片结果</h2><p id="clipsSubtitle" className="muted">{subtitle}</p></div>
         <div className="button-row">
           <Button id="refreshBtn" label="刷新" onClick={() => void refreshAll()} />
-          <Button id="scanNowBtn" label="立即扫描录播" onClick={() => void runAction("/api/service/scan-now")} variant="primary" />
+          <Button id="scanNowBtn" label="立即扫描录播" onClick={() => void runAction("/api/service/scan-now").catch(() => undefined)} variant="primary" />
         </div>
       </div>
       <TabList aria-label="任务阶段筛选" className="phase-filters" id="phaseFilters" onChange={setPhase} size="sm" value={phase}>
@@ -638,7 +638,7 @@ function RunExpanded({
     );
   }
   if (phase === "failed") {
-    return <div className="clip-card-body"><Text as="div" role="alert" type="supporting" xstyle={semanticToneStyles.error}>{String(run.last_error || "任务失败，暂无错误详情。")}</Text><div className="button-row"><Button label="查看日志" onClick={() => setActiveTab("automation")} size="sm" /></div></div>;
+    return <div className="clip-card-body"><Text as="div" role="alert" type="supporting" xstyle={semanticToneStyles.error}>{String(run.last_error || "任务失败，暂无错误详情。")}</Text><div className="button-row"><Button label="重试处理" onClick={() => void runAction(`/api/runs/${encodeURIComponent(run.run_id)}/retry`).catch(() => undefined)} size="sm" variant="primary" /><Button label="查看日志" onClick={() => setActiveTab("automation")} size="sm" /></div></div>;
   }
   const steps = detail.steps?.length ? detail.steps : [
     { label: "拉取录像", state: "done" }, { label: "语音转写", state: "active" },

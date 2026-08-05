@@ -99,6 +99,7 @@ def test_run_service_once_stages_and_launches_pipeline(tmp_path, monkeypatch):
 
     monkeypatch.setattr(service.subprocess, "Popen", fake_popen)
     settings = Settings(
+        cheap_model_api_key="test-key",
         service=ServiceConfig(scan_interval_minutes=30),
         recording_source_default=RecordingSourceDefaultConfig(
             source_dir=source_dir,
@@ -123,6 +124,35 @@ def test_run_service_once_stages_and_launches_pipeline(tmp_path, monkeypatch):
     assert "pipeline_started" in events
 
 
+def test_run_service_once_blocks_before_scan_stage_or_process_when_ai_key_missing(tmp_path, monkeypatch):
+    source_dir = tmp_path / "nas"
+    source_dir.mkdir()
+    (source_dir / "recording.mkv").write_bytes(b"video")
+    calls = []
+    monkeypatch.setattr(service, "scan_recording_source", lambda config: calls.append("scan") or [])
+    monkeypatch.setattr(service, "stage_source_file", lambda *args, **kwargs: calls.append("stage"))
+    monkeypatch.setattr(service, "_start_pipeline_process", lambda *args, **kwargs: calls.append("process"))
+    settings = Settings(
+        recording_source_default=RecordingSourceDefaultConfig(
+            source_dir=source_dir,
+            input_dir=tmp_path / "input",
+            output_root=tmp_path / "output",
+            stable_check_seconds=0,
+        ),
+    )
+    service_dir = tmp_path / "service"
+
+    with pytest.raises(service.PipelineConfigurationError, match="设置 → AI 服务"):
+        service.run_service_once(settings, service_dir=service_dir)
+
+    assert calls == []
+    assert not (service_dir / "runs.json").exists()
+    assert not (tmp_path / "input").exists()
+    events = (service_dir / "events.jsonl").read_text(encoding="utf-8")
+    assert "pipeline_configuration_blocked" in events
+    assert "test-key" not in events
+
+
 def test_start_run_workspace_stages_into_own_input_and_persists_absolute_paths(tmp_path, monkeypatch):
     source = tmp_path / "nas" / "recording.mkv"
     source.parent.mkdir()
@@ -138,6 +168,7 @@ def test_start_run_workspace_stages_into_own_input_and_persists_absolute_paths(t
     )
     workspace = tmp_path / "workspace"
     settings = Settings(
+        cheap_model_api_key="test-key",
         paths=PathsConfig(workspace_root=workspace),
         recording_source_default=RecordingSourceDefaultConfig(
             source_dir=source.parent,
@@ -172,6 +203,7 @@ def test_workspace_runs_with_same_filename_keep_independent_inputs(tmp_path, mon
     monkeypatch.setattr(service, "_start_pipeline_process", lambda *args, **kwargs: 4321)
     workspace = tmp_path / "workspace"
     settings = Settings(
+        cheap_model_api_key="test-key",
         paths=PathsConfig(workspace_root=workspace),
         recording_source_default=RecordingSourceDefaultConfig(
             input_dir=tmp_path / "legacy-input",
@@ -189,6 +221,78 @@ def test_workspace_runs_with_same_filename_keep_independent_inputs(tmp_path, mon
     assert Path(first_run["local_source_path"]).read_bytes() == b"first"
     assert Path(second_run["local_source_path"]).read_bytes() == b"second"
     assert not list(workspace.rglob("*.part"))
+
+
+def test_retry_failed_run_reuses_local_input_when_original_source_is_unavailable(tmp_path, monkeypatch):
+    service_dir = tmp_path / "service"
+    workspace_dir = tmp_path / "workspace" / "runs" / "recording__abc123"
+    input_dir = workspace_dir / "input"
+    run_dir = workspace_dir / "output"
+    local_source = input_dir / "recording.mkv"
+    local_source.parent.mkdir(parents=True)
+    local_source.write_bytes(b"video")
+    original_source = tmp_path / "missing-nas" / "recording.mkv"
+    run = {
+        "run_id": "recording__abc123",
+        "source_id": "default",
+        "source_path": str(original_source),
+        "local_source_path": str(local_source),
+        "workspace_dir": str(workspace_dir),
+        "input_dir": str(input_dir),
+        "run_dir": str(run_dir),
+        "fingerprint": "abc123",
+        "phase": "failed",
+        "pid": None,
+        "log_path": str(service_dir / "runs" / "recording__abc123.log"),
+        "created_at": "2026-08-05T00:00:00+00:00",
+        "updated_at": "2026-08-05T00:00:00+00:00",
+        "last_error": "Pipeline stopped before codex_brief.json was created",
+    }
+    write_json(service_dir / "runs.json", {"runs": [run]})
+    calls = []
+    monkeypatch.setattr(
+        service,
+        "_start_pipeline_process",
+        lambda source_path, *, input_dir, run_dir, log_path: calls.append(
+            (source_path, input_dir, run_dir, log_path)
+        ) or 9876,
+    )
+
+    retried = service.retry_failed_run(
+        "recording__abc123",
+        settings=Settings(cheap_model_api_key="test-key"),
+        service_dir=service_dir,
+    )
+
+    assert calls == [(local_source, input_dir, run_dir, Path(run["log_path"]))]
+    assert retried["run_id"] == run["run_id"]
+    assert retried["fingerprint"] == run["fingerprint"]
+    assert retried["phase"] == "processing"
+    assert retried["pid"] == 9876
+    assert retried["last_error"] is None
+    assert retried["retry_count"] == 1
+
+
+def test_retry_failed_run_missing_ai_key_preserves_failed_run(tmp_path, monkeypatch):
+    service_dir = tmp_path / "service"
+    run = {
+        "run_id": "run-failed",
+        "source_path": str(tmp_path / "source.mkv"),
+        "local_source_path": str(tmp_path / "input" / "source.mkv"),
+        "input_dir": str(tmp_path / "input"),
+        "run_dir": str(tmp_path / "output"),
+        "phase": "failed",
+        "pid": None,
+        "last_error": "old error",
+        "updated_at": "2026-08-05T00:00:00+00:00",
+    }
+    write_json(service_dir / "runs.json", {"runs": [run]})
+    monkeypatch.setattr(service, "_start_pipeline_process", lambda *args, **kwargs: pytest.fail("must not start"))
+
+    with pytest.raises(service.PipelineConfigurationError, match="设置 → AI 服务"):
+        service.retry_failed_run("run-failed", settings=Settings(), service_dir=service_dir)
+
+    assert read_json(service_dir / "runs.json")["runs"] == [run]
 
 
 def test_reconcile_marks_needs_review_when_brief_exists(tmp_path, monkeypatch):
@@ -536,7 +640,7 @@ def test_run_service_once_persists_reconcile_when_scan_source_missing(tmp_path, 
 
     monkeypatch.setattr(service, "scan_recording_source", fake_scan)
 
-    report = service.run_service_once(Settings(), service_dir=service_dir)
+    report = service.run_service_once(Settings(cheap_model_api_key="test-key"), service_dir=service_dir)
 
     assert report["ok"] is True
     assert report["scan_error"] == "/Volumes/nas/missing"
