@@ -16,7 +16,7 @@ Venus is a macOS app for streamers and content teams. It finds recordings, trans
 
 ## Interface
 
-Version 0.3.2 unifies controls, status feedback, and responsive layouts. Blocked actions explain what is missing and focus the relevant field, while primary navigation and actions remain reachable at minimum window sizes or increased zoom.
+Version 0.3.3 improves recording reliability: missing AI configuration blocks work before run creation, failed runs can be retried manually, and stable recordings are deduplicated by complete content identity before entering a single-concurrency queue. Scan feedback distinguishes discovered, queued, duplicate, too-new, and still-changing files, while configuration health cards use Stone semantic colors for healthy, needs-configuration, and neutral states.
 
 ![Venus clip results](assets/readme/venus-overview.png)
 

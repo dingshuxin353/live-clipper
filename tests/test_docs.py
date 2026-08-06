@@ -290,21 +290,52 @@ def test_changelog_documents_only_verified_0_3_2_changes():
         assert forbidden not in section
 
 
-def test_readmes_document_0_3_2_interface_improvements():
+def test_changelog_documents_only_implemented_0_3_3_changes():
+    text = Path("CHANGELOG.md").read_text(encoding="utf-8")
+    section = text.split("## 0.3.3 - 2026-08-06", 1)[1].split("## 0.3.2", 1)[0]
+
+    for expected in [
+        "complete streaming SHA-256",
+        "single-concurrency queue",
+        "newly discovered, queued, duplicate, too-new, and still-changing recordings",
+        "before creating a run, copying a recording, or starting the pipeline",
+        "Failed runs can now be retried manually",
+        "concurrent scans serialize run-state mutations",
+        "Stone semantic colors",
+    ]:
+        assert expected in section
+
+    for forbidden in [
+        "has been released",
+        "long recording verified",
+        "zero collisions",
+        "collision-free",
+    ]:
+        assert forbidden not in section
+
+
+def test_readmes_document_0_3_3_processing_reliability():
     chinese = Path("README.md").read_text(encoding="utf-8")
     english = Path("docs/README.en.md").read_text(encoding="utf-8")
 
-    assert (
-        "0.3.2 统一了界面控件、状态反馈和响应式布局。操作被阻断时会说明缺少什么并聚焦对应字段；"
-        "在最小窗口或放大界面时，主要导航和操作仍然可达。"
-    ) in chinese
+    for expected in [
+        "0.3.3 提升了录播处理可靠性",
+        "失败任务可人工重试",
+        "完整内容身份去重",
+        "单并发队列",
+        "Stone 语义颜色",
+    ]:
+        assert expected in chinese
     assert "Node.js 24" in chinese
     assert "Node.js 20" not in chinese
-    assert (
-        "Version 0.3.2 unifies controls, status feedback, and responsive layouts. Blocked actions explain "
-        "what is missing and focus the relevant field, while primary navigation and actions remain reachable "
-        "at minimum window sizes or increased zoom."
-    ) in english
+    for expected in [
+        "Version 0.3.3 improves recording reliability",
+        "failed runs can be retried manually",
+        "complete content identity",
+        "single-concurrency queue",
+        "Stone semantic colors",
+    ]:
+        assert expected in english
 
 
 def test_advanced_usage_documents_model_source_details():
