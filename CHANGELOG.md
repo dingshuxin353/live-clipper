@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.3 - 2026-08-06
+
+### Changed
+
+- Scans now consider every stable recording regardless of its date, identify content with a complete streaming SHA-256, persist run identities, and process new recordings through a single-concurrency queue.
+- Scan results now distinguish newly discovered, queued, duplicate, too-new, and still-changing recordings.
+- Configuration health cards now use Stone semantic colors to distinguish healthy, needs-configuration, and neutral states while retaining visible status text.
+
+### Fixed
+
+- Scanning and retrying without an AI API key now stop before creating a run, copying a recording, or starting the pipeline, with a direct path to the relevant settings.
+- Failed runs can now be retried manually and wait in the queue when another recording is processing.
+- Renamed or copied recordings with identical content are deduplicated, and concurrent scans serialize run-state mutations.
+
 ## 0.3.2 - 2026-08-04
 
 ### Changed
