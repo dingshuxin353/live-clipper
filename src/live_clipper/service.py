@@ -22,9 +22,74 @@ from .render_clips import render_selected_clips
 from .utils import ensure_dir, read_json, self_command, write_json
 
 DEFAULT_SERVICE_DIR = Path("work") / "service"
+PIPELINE_CONFIGURATION_MESSAGE = "请先到「设置 → AI 服务」配置 AI API Key，再开始处理录播。"
+CONTENT_HASH_CHUNK_SIZE = 16 * 1024 * 1024
+MAX_CONCURRENT_PIPELINES = 1
 
 _EMBEDDED_LOCK = threading.Lock()
 _EMBEDDED: dict[str, Any] = {"thread": None, "stop_event": None, "enabled_event": None, "service_dir": None}
+_RUN_STATE_LOCK = threading.RLock()
+
+
+class PipelineConfigurationError(ValueError):
+    """Raised before a pipeline can create user-visible work without required configuration."""
+
+
+class SourceChangedDuringHash(RuntimeError):
+    """Raised when a recording changes while its content identity is being calculated."""
+
+
+def require_pipeline_configuration(settings: Settings) -> None:
+    if not settings.cheap_model_api_key:
+        raise PipelineConfigurationError(PIPELINE_CONFIGURATION_MESSAGE)
+
+
+def _content_hash_cache_path(service_dir: Path) -> Path:
+    return service_dir / "content-hash-cache.json"
+
+
+def _load_content_hash_cache(service_dir: Path) -> dict[str, Any]:
+    path = _content_hash_cache_path(service_dir)
+    if not path.exists():
+        return {"version": 1, "entries": {}}
+    data = read_json(path)
+    entries = data.get("entries", {}) if isinstance(data, dict) else {}
+    return {"version": 1, "entries": entries if isinstance(entries, dict) else {}}
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(CONTENT_HASH_CHUNK_SIZE):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def content_identity(source_path: Path, *, service_dir: Path = DEFAULT_SERVICE_DIR) -> dict[str, Any]:
+    path = source_path.resolve()
+    before = path.stat()
+    cache = _load_content_hash_cache(service_dir)
+    cache_key = str(path)
+    cached = cache["entries"].get(cache_key, {})
+    if (
+        cached.get("size") == before.st_size
+        and cached.get("mtime_ns") == before.st_mtime_ns
+        and isinstance(cached.get("content_id"), str)
+        and len(cached["content_id"]) == 64
+    ):
+        return {"content_id": cached["content_id"], "bytes": before.st_size, "cache_hit": True}
+
+    content_id = _sha256_file(path)
+    after = path.stat()
+    if before.st_size != after.st_size or before.st_mtime_ns != after.st_mtime_ns:
+        raise SourceChangedDuringHash(path)
+    cache["entries"][cache_key] = {
+        "size": after.st_size,
+        "mtime_ns": after.st_mtime_ns,
+        "content_id": content_id,
+    }
+    write_json(_content_hash_cache_path(ensure_dir(service_dir)), cache)
+    return {"content_id": content_id, "bytes": after.st_size, "cache_hit": False}
 
 
 def embedded_service_active() -> bool:
@@ -176,10 +241,14 @@ def build_run_identity(
     output_root: Path,
     input_dir: Path = Path("input"),
     workspace_root: Path | None = None,
+    content_id: str | None = None,
 ) -> dict[str, Any]:
-    stat = source_path.stat()
-    raw = f"{source_id}|{source_path}|{stat.st_size}|{stat.st_mtime_ns}"
-    fingerprint = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:8]
+    if content_id is None:
+        stat = source_path.stat()
+        raw = f"{source_id}|{source_path}|{stat.st_size}|{stat.st_mtime_ns}"
+        fingerprint = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:8]
+    else:
+        fingerprint = content_id[:16]
     run_id = f"{source_path.stem}__{fingerprint}"
     if workspace_root is not None:
         workspace_dir = (workspace_root.expanduser() / "runs" / run_id).resolve()
@@ -215,25 +284,41 @@ def _is_stable_file(path: Path, stable_check_seconds: int) -> bool:
 
 
 def scan_recording_source(config: RecordingSourceDefaultConfig) -> list[Path]:
+    return scan_recording_source_report(config)["eligible"]
+
+
+def scan_recording_source_report(config: RecordingSourceDefaultConfig) -> dict[str, Any]:
     if config.source_dir is None:
-        return []
+        return {"eligible": [], "unsupported_files": 0, "too_new_files": 0, "unstable_files": 0}
     if not config.source_dir.exists():
         raise FileNotFoundError(config.source_dir)
 
     now = datetime.now()
-    earliest_mtime = now - timedelta(hours=config.since_hours)
     latest_allowed_mtime = now - timedelta(minutes=config.min_age_minutes)
     candidates = []
+    unsupported_files = 0
+    too_new_files = 0
+    unstable_files = 0
     for path in sorted(config.source_dir.iterdir()):
-        if not path.is_file() or path.suffix.lower() not in SUPPORTED_VIDEO_EXTENSIONS:
+        if not path.is_file():
+            continue
+        if path.suffix.lower() not in SUPPORTED_VIDEO_EXTENSIONS:
+            unsupported_files += 1
             continue
         mtime = datetime.fromtimestamp(path.stat().st_mtime)
-        if not (earliest_mtime <= mtime <= latest_allowed_mtime):
+        if mtime > latest_allowed_mtime:
+            too_new_files += 1
             continue
         if not _is_stable_file(path, config.stable_check_seconds):
+            unstable_files += 1
             continue
         candidates.append(path)
-    return candidates
+    return {
+        "eligible": candidates,
+        "unsupported_files": unsupported_files,
+        "too_new_files": too_new_files,
+        "unstable_files": unstable_files,
+    }
 
 
 def _runs_path(service_dir: Path) -> Path:
@@ -646,8 +731,36 @@ def _service_state(status: str, pid: int | None, settings: Settings) -> dict[str
     }
 
 
-def _known_fingerprints(runs: list[dict[str, Any]]) -> set[str]:
-    return {str(run.get("fingerprint")) for run in runs if run.get("fingerprint")}
+def _known_content_ids(runs: list[dict[str, Any]]) -> set[str]:
+    return {str(run.get("content_id")) for run in runs if run.get("content_id")}
+
+
+def migrate_run_content_ids(
+    runs: list[dict[str, Any]],
+    *,
+    service_dir: Path = DEFAULT_SERVICE_DIR,
+) -> int:
+    migrated = 0
+    for run in runs:
+        if run.get("content_id"):
+            continue
+        local_source = Path(str(run.get("local_source_path") or ""))
+        original_source = Path(str(run.get("source_path") or ""))
+        source_path = local_source if local_source.is_file() else original_source
+        if not source_path.is_file():
+            continue
+        try:
+            identity = content_identity(source_path, service_dir=service_dir)
+        except SourceChangedDuringHash:
+            continue
+        run["content_id"] = identity["content_id"]
+        run["source_bytes"] = identity["bytes"]
+        run["first_source_path"] = str(run.get("source_path") or source_path)
+        run["last_source_path"] = str(run.get("source_path") or source_path)
+        run["discovered_at"] = run.get("created_at") or now_utc()
+        migrated += 1
+        append_event(service_dir, "run_content_id_migrated", run_id=run.get("run_id"))
+    return migrated
 
 
 def _start_pipeline_process(
@@ -773,46 +886,69 @@ def reconcile_run(run: dict[str, Any], settings: Settings, *, service_dir: Path 
     return changed
 
 
-def _start_run_for_source(
+def _create_queued_run(
     source_path: Path,
     *,
+    identity: dict[str, Any],
     settings: Settings,
     service_dir: Path,
 ) -> dict[str, Any]:
     source_config = settings.recording_source_default
-    identity = build_run_identity(
+    run_identity = build_run_identity(
         source_config.source_id,
         source_path,
         output_root=source_config.output_root,
         input_dir=source_config.input_dir,
         workspace_root=settings.paths.workspace_root,
+        content_id=str(identity["content_id"]),
     )
     created_at = now_utc()
     run = {
-        "run_id": identity["run_id"],
+        "run_id": run_identity["run_id"],
         "source_id": source_config.source_id,
         "source_path": str(source_path),
+        "first_source_path": str(source_path),
+        "last_source_path": str(source_path),
         "local_source_path": None,
-        "workspace_dir": str(identity["workspace_dir"]) if identity["workspace_dir"] else None,
-        "input_dir": str(Path(identity["input_dir"]).resolve()),
-        "run_dir": str(identity["run_dir"]),
-        "fingerprint": identity["fingerprint"],
-        "phase": "discovered",
+        "workspace_dir": str(run_identity["workspace_dir"]) if run_identity["workspace_dir"] else None,
+        "input_dir": str(Path(run_identity["input_dir"]).resolve()),
+        "run_dir": str(run_identity["run_dir"]),
+        "fingerprint": run_identity["fingerprint"],
+        "content_id": identity["content_id"],
+        "source_bytes": identity["bytes"],
+        "phase": "queued",
         "pid": None,
-        "log_path": str(service_dir / "runs" / f"{identity['run_id']}.log"),
+        "log_path": str(service_dir / "runs" / f"{run_identity['run_id']}.log"),
+        "discovered_at": created_at,
         "created_at": created_at,
         "updated_at": created_at,
         "last_error": None,
     }
     append_event(service_dir, "recording_discovered", run_id=run["run_id"], source_path=str(source_path))
+    append_event(service_dir, "recording_queued", run_id=run["run_id"])
+    return run
+
+
+def _launch_queued_run(
+    run: dict[str, Any],
+    *,
+    settings: Settings,
+    service_dir: Path,
+) -> dict[str, Any]:
+    require_pipeline_configuration(settings)
+    local_source = Path(str(run.get("local_source_path") or ""))
+    original_source = Path(str(run.get("source_path") or ""))
+    source_path = local_source if local_source.is_file() else original_source
+    if not source_path.is_file():
+        raise FileNotFoundError("source_unavailable")
     run["phase"] = "staging"
     run["updated_at"] = now_utc()
     append_event(service_dir, "staging_started", run_id=run["run_id"], source_path=str(source_path))
-    local_source_path = stage_source_file(source_path, input_dir=Path(identity["input_dir"]))
+    local_source_path = stage_source_file(source_path, input_dir=Path(str(run["input_dir"])))
     run["local_source_path"] = str(local_source_path)
     pid = _start_pipeline_process(
         source_path,
-        input_dir=Path(identity["input_dir"]),
+        input_dir=Path(str(run["input_dir"])),
         run_dir=Path(str(run["run_dir"])),
         log_path=Path(str(run["log_path"])),
     )
@@ -823,75 +959,246 @@ def _start_run_for_source(
     return run
 
 
+def dispatch_queued_runs(
+    runs: list[dict[str, Any]],
+    *,
+    settings: Settings,
+    service_dir: Path = DEFAULT_SERVICE_DIR,
+) -> list[dict[str, Any]]:
+    require_pipeline_configuration(settings)
+    active_count = sum(1 for run in runs if run.get("phase") == "processing")
+    capacity = max(0, MAX_CONCURRENT_PIPELINES - active_count)
+    started: list[dict[str, Any]] = []
+    queued = sorted(
+        (run for run in runs if run.get("phase") == "queued"),
+        key=lambda run: str(run.get("discovered_at") or run.get("created_at") or ""),
+    )
+    for run in queued[:capacity]:
+        try:
+            _launch_queued_run(run, settings=settings, service_dir=service_dir)
+        except FileNotFoundError:
+            run["phase"] = "failed"
+            run["pid"] = None
+            run["last_error"] = "原录像和本地副本均不可用，无法启动该任务。"
+            run["updated_at"] = now_utc()
+            append_event(service_dir, "queued_source_unavailable", run_id=run.get("run_id"))
+            continue
+        started.append(run)
+    return started
+
+
+def _start_run_for_source(
+    source_path: Path,
+    *,
+    settings: Settings,
+    service_dir: Path,
+) -> dict[str, Any]:
+    require_pipeline_configuration(settings)
+    identity = content_identity(source_path, service_dir=service_dir)
+    run = _create_queued_run(
+        source_path,
+        identity=identity,
+        settings=settings,
+        service_dir=service_dir,
+    )
+    return _launch_queued_run(run, settings=settings, service_dir=service_dir)
+
+
 def start_run_for_source(
     source_path: Path,
     *,
     settings: Settings,
     service_dir: Path = DEFAULT_SERVICE_DIR,
 ) -> dict[str, Any]:
+    with _RUN_STATE_LOCK:
+        return _start_run_for_source_locked(source_path, settings=settings, service_dir=service_dir)
+
+
+def _start_run_for_source_locked(
+    source_path: Path,
+    *,
+    settings: Settings,
+    service_dir: Path,
+) -> dict[str, Any]:
     validate_service_settings(settings)
+    require_pipeline_configuration(settings)
     runs = load_runs(service_dir)
-    identity = build_run_identity(
-        settings.recording_source_default.source_id,
-        source_path,
-        output_root=settings.recording_source_default.output_root,
-        input_dir=settings.recording_source_default.input_dir,
-        workspace_root=settings.paths.workspace_root,
-    )
-    if identity["fingerprint"] in _known_fingerprints(runs):
+    migrate_run_content_ids(runs, service_dir=service_dir)
+    identity = content_identity(source_path, service_dir=service_dir)
+    if identity["content_id"] in _known_content_ids(runs):
         raise ValueError("duplicate_run")
-    run = _start_run_for_source(source_path, settings=settings, service_dir=service_dir)
+    run = _create_queued_run(
+        source_path,
+        identity=identity,
+        settings=settings,
+        service_dir=service_dir,
+    )
     runs.append(run)
+    dispatch_queued_runs(runs, settings=settings, service_dir=service_dir)
     save_runs(runs, service_dir)
     return run
 
 
+def retry_failed_run(
+    run_id: str,
+    *,
+    settings: Settings,
+    service_dir: Path = DEFAULT_SERVICE_DIR,
+) -> dict[str, Any]:
+    with _RUN_STATE_LOCK:
+        return _retry_failed_run_locked(run_id, settings=settings, service_dir=service_dir)
+
+
+def _retry_failed_run_locked(
+    run_id: str,
+    *,
+    settings: Settings,
+    service_dir: Path,
+) -> dict[str, Any]:
+    runs = load_runs(service_dir)
+    run = next((item for item in runs if item.get("run_id") == run_id), None)
+    if run is None:
+        raise ValueError("run_not_found")
+    if run.get("phase") != "failed":
+        raise ValueError("invalid_phase")
+    try:
+        require_pipeline_configuration(settings)
+    except PipelineConfigurationError:
+        append_event(service_dir, "pipeline_configuration_blocked", trigger="retry", run_id=run_id)
+        raise
+
+    local_source = Path(str(run.get("local_source_path") or ""))
+    original_source = Path(str(run.get("source_path") or ""))
+    if local_source.is_file():
+        source_path = local_source
+    elif original_source.is_file():
+        source_path = original_source
+    else:
+        raise FileNotFoundError("source_unavailable")
+
+    run["source_path"] = str(run.get("source_path") or source_path)
+    if local_source.is_file():
+        run["local_source_path"] = str(local_source)
+    run["phase"] = "queued"
+    run["pid"] = None
+    run["last_error"] = None
+    run["retry_count"] = int(run.get("retry_count") or 0) + 1
+    run["updated_at"] = now_utc()
+    run["discovered_at"] = run.get("discovered_at") or run.get("created_at") or run["updated_at"]
+    started = dispatch_queued_runs(runs, settings=settings, service_dir=service_dir)
+    save_runs(runs, service_dir)
+    append_event(
+        service_dir,
+        "pipeline_retried" if run in started else "pipeline_retry_queued",
+        run_id=run_id,
+        pid=run.get("pid"),
+        run_dir=str(run.get("run_dir")),
+    )
+    return run
+
+
 def run_service_once(settings: Settings, *, service_dir: Path = DEFAULT_SERVICE_DIR) -> dict[str, Any]:
+    with _RUN_STATE_LOCK:
+        return _run_service_once_locked(settings, service_dir=service_dir)
+
+
+def _run_service_once_locked(settings: Settings, *, service_dir: Path) -> dict[str, Any]:
     validate_service_settings(settings)
     ensure_dir(service_dir)
     runs = load_runs(service_dir)
     for run in runs:
         reconcile_run(run, settings, service_dir=service_dir)
+    migrated_runs = migrate_run_content_ids(runs, service_dir=service_dir)
     # 先把 reconcile 结果落盘：即使随后扫描录播源失败（如 NAS 未挂载），
     # 也不能丢掉状态推进。
-    save_runs(runs, service_dir)
-
-    started = []
-    scan_error: str | None = None
-    known = _known_fingerprints(runs)
+    if runs:
+        save_runs(runs, service_dir)
     try:
-        sources = scan_recording_source(settings.recording_source_default)
+        require_pipeline_configuration(settings)
+    except PipelineConfigurationError:
+        append_event(service_dir, "pipeline_configuration_blocked", trigger="scan")
+        raise
+
+    discovered: list[dict[str, Any]] = []
+    scan_error: str | None = None
+    scan_report: dict[str, Any] = {
+        "eligible": [],
+        "unsupported_files": 0,
+        "too_new_files": 0,
+        "unstable_files": 0,
+    }
+    try:
+        scan_report = scan_recording_source_report(settings.recording_source_default)
     except FileNotFoundError as exc:
-        sources = []
         scan_error = str(exc)
         append_event(service_dir, "recording_source_unavailable", source_dir=str(exc))
-    for source_path in sources:
-        identity = build_run_identity(
-            settings.recording_source_default.source_id,
-            source_path,
-            output_root=settings.recording_source_default.output_root,
-            input_dir=settings.recording_source_default.input_dir,
-            workspace_root=settings.paths.workspace_root,
-        )
-        if identity["fingerprint"] in known:
+    known_by_content = {str(run["content_id"]): run for run in runs if run.get("content_id")}
+    duplicate_files = 0
+    hash_cache_hits = 0
+    hashes_computed = 0
+    for source_path in scan_report["eligible"]:
+        try:
+            identity = content_identity(source_path, service_dir=service_dir)
+        except SourceChangedDuringHash:
+            scan_report["unstable_files"] += 1
             continue
-        run = _start_run_for_source(source_path, settings=settings, service_dir=service_dir)
+        if identity["cache_hit"]:
+            hash_cache_hits += 1
+        else:
+            hashes_computed += 1
+        existing = known_by_content.get(str(identity["content_id"]))
+        if existing is not None:
+            existing["last_source_path"] = str(source_path)
+            duplicate_files += 1
+            continue
+        run = _create_queued_run(
+            source_path,
+            identity=identity,
+            settings=settings,
+            service_dir=service_dir,
+        )
         runs.append(run)
-        started.append(run)
-        known.add(run["fingerprint"])
+        discovered.append(run)
+        known_by_content[str(identity["content_id"])] = run
 
-    if started:
+    started = dispatch_queued_runs(runs, settings=settings, service_dir=service_dir)
+    if runs:
         save_runs(runs, service_dir)
+    queued_runs = sum(1 for run in runs if run.get("phase") == "queued")
+    if scan_error:
+        message = f"录像目录不可用：{scan_error}"
+    elif discovered:
+        message = f"发现 {len(discovered)} 个未处理录像，已开始 {len(started)} 个，排队 {queued_runs} 个。"
+    else:
+        message = (
+            f"没有发现未处理录像：已处理或已排队 {duplicate_files} 个，"
+            f"过新 {scan_report['too_new_files']} 个，写入中 {scan_report['unstable_files']} 个。"
+        )
     return {
         "ok": True,
         "known_runs": len(runs),
+        "discovered_runs": len(discovered),
         "started_runs": len(started),
+        "queued_runs": queued_runs,
+        "duplicate_files": duplicate_files,
+        "too_new_files": scan_report["too_new_files"],
+        "unstable_files": scan_report["unstable_files"],
+        "unsupported_files": scan_report["unsupported_files"],
+        "hash_cache_hits": hash_cache_hits,
+        "hashes_computed": hashes_computed,
+        "migrated_runs": migrated_runs,
         "scan_error": scan_error,
+        "message": message,
         "service_dir": str(service_dir),
     }
 
 
 def run_service_tick(settings: Settings, *, service_dir: Path = DEFAULT_SERVICE_DIR) -> dict[str, Any]:
+    with _RUN_STATE_LOCK:
+        return _run_service_tick_locked(settings, service_dir=service_dir)
+
+
+def _run_service_tick_locked(settings: Settings, *, service_dir: Path) -> dict[str, Any]:
     validate_service_settings(settings)
     ensure_dir(service_dir)
     runs = load_runs(service_dir)
@@ -899,6 +1206,12 @@ def run_service_tick(settings: Settings, *, service_dir: Path = DEFAULT_SERVICE_
     for run in runs:
         if reconcile_run(run, settings, service_dir=service_dir):
             changed_runs += 1
+    queued_started: list[dict[str, Any]] = []
+    if any(run.get("phase") == "queued" for run in runs):
+        try:
+            queued_started = dispatch_queued_runs(runs, settings=settings, service_dir=service_dir)
+        except PipelineConfigurationError:
+            append_event(service_dir, "pipeline_configuration_blocked", trigger="queue_dispatch")
     save_runs(runs, service_dir)
 
     from . import scheduler
@@ -908,6 +1221,8 @@ def run_service_tick(settings: Settings, *, service_dir: Path = DEFAULT_SERVICE_
         "ok": True,
         "known_runs": len(runs),
         "changed_runs": changed_runs,
+        "started_queued_runs": len(queued_started),
+        "queued_runs": sum(1 for run in runs if run.get("phase") == "queued"),
         "scheduler": scheduler_report,
         "service_dir": str(service_dir),
     }
@@ -1037,6 +1352,7 @@ def get_service_status(*, service_dir: Path = DEFAULT_SERVICE_DIR) -> dict[str, 
         "runs": runs,
         "phase_counts": counts,
         "active_run": next((run["run_id"] for run in runs if run.get("phase") == "processing"), None),
+        "queued_runs": [run["run_id"] for run in runs if run.get("phase") == "queued"],
         "pending_review_runs": [run["run_id"] for run in runs if run.get("phase") == "needs_review"],
         "rendered_runs": [run["run_id"] for run in runs if run.get("phase") == "rendered"],
         "failed_runs": [run["run_id"] for run in runs if run.get("phase") == "failed"],

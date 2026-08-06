@@ -110,6 +110,20 @@ def _structured_error(error_code: str, message: str) -> dict[str, Any]:
     return {"ok": False, "error_code": error_code, "message": message, "error": message}
 
 
+def _action_status(payload: dict[str, Any]) -> int:
+    if payload.get("ok", True):
+        return 200
+    if payload.get("error_code") == "run_not_found":
+        return 404
+    if payload.get("error_code") in {
+        "pipeline_configuration_required",
+        "invalid_phase",
+        "source_unavailable",
+    }:
+        return 409
+    return 500
+
+
 def _load_state(paths: WebPaths, run_id: str) -> dict[str, Any]:
     state = _safe_read_json(paths.state_dir / f"{run_id}.json")
     return state if isinstance(state, dict) else {}
@@ -414,7 +428,8 @@ def handle_api_request(
                 return _json_response(service.pause_embedded_service())
             return _json_response(service.stop_service(service_dir=paths.service_dir))
         if method == "POST" and parts == ["api", "service", "scan-now"]:
-            return _json_response(mcp_tools.scan_now(settings=_settings_for_paths(paths), service_dir=paths.service_dir))
+            payload = mcp_tools.scan_now(settings=_settings_for_paths(paths), service_dir=paths.service_dir)
+            return _json_response(payload, status=_action_status(payload))
         if method == "GET" and parts == ["api", "runs"]:
             payload = build_runs_index(paths)
             phase = query.get("phase", [None])[0]
@@ -647,6 +662,9 @@ def handle_api_request(
             if service.find_run(parts[2], paths.service_dir):
                 return _json_response(mcp_tools.render_run(parts[2], settings=_settings_for_paths(paths), service_dir=paths.service_dir))
             return _json_response(_render_run(paths.output_root / parts[2]))
+        if method == "POST" and len(parts) == 4 and parts[:2] == ["api", "runs"] and parts[3] == "retry":
+            payload = mcp_tools.retry_run(parts[2], settings=_settings_for_paths(paths), service_dir=paths.service_dir)
+            return _json_response(payload, status=_action_status(payload))
         if method == "POST" and len(parts) == 4 and parts[:2] == ["api", "runs"] and parts[3] == "ai-review":
             run_id = parts[2]
             if service.find_run(run_id, paths.service_dir) is None:

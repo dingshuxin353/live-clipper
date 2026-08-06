@@ -111,6 +111,7 @@ def test_tool_manifest_exposes_v2_tool_names_and_schemas():
         "get_review_package",
         "scan_now",
         "start_run_for_source",
+        "retry_run",
         "write_selected_clips",
         "render_run",
         "preview_cleanup",
@@ -250,6 +251,7 @@ def test_scan_now_and_start_run_for_source_use_service_core(tmp_path, monkeypatc
 
     monkeypatch.setattr(mcp_tools.service.subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
     settings = Settings(
+        cheap_model_api_key="test-key",
         service=ServiceConfig(scan_interval_minutes=30),
         recording_source_default=RecordingSourceDefaultConfig(
             source_dir=source_dir,
@@ -265,8 +267,38 @@ def test_scan_now_and_start_run_for_source_use_service_core(tmp_path, monkeypatc
 
     assert scan["ok"] is True
     assert scan["started_runs"] == 1
+    assert scan["message"] == "发现 1 个未处理录像，已开始 1 个，排队 0 个。"
     assert duplicate["ok"] is False
     assert duplicate["error_code"] == "duplicate_run"
+
+
+def test_scan_and_retry_return_actionable_configuration_error(tmp_path):
+    service_dir = tmp_path / "service"
+    run_dir = tmp_path / "workspace" / "runs" / "run-failed" / "output"
+    _write_run(service_dir, run_dir, phase="failed", run_id="run-failed")
+
+    scan = mcp_tools.scan_now(settings=Settings(), service_dir=service_dir)
+    retry = mcp_tools.retry_run("run-failed", settings=Settings(), service_dir=service_dir)
+
+    for result in (scan, retry):
+        assert result["ok"] is False
+        assert result["error_code"] == "pipeline_configuration_required"
+        assert result["message"] == "请先到「设置 → AI 服务」配置 AI API Key，再开始处理录播。"
+
+
+def test_retry_rejects_missing_run_wrong_phase_and_missing_sources(tmp_path):
+    service_dir = tmp_path / "service"
+    settings = Settings(cheap_model_api_key="test-key")
+
+    missing = mcp_tools.retry_run("missing", settings=settings, service_dir=service_dir)
+    _write_run(service_dir, tmp_path / "review", phase="needs_review", run_id="run-review")
+    wrong_phase = mcp_tools.retry_run("run-review", settings=settings, service_dir=service_dir)
+    _write_run(service_dir, tmp_path / "failed", phase="failed", run_id="run-failed")
+    unavailable = mcp_tools.retry_run("run-failed", settings=settings, service_dir=service_dir)
+
+    assert missing["error_code"] == "run_not_found"
+    assert wrong_phase["error_code"] == "invalid_phase"
+    assert unavailable["error_code"] == "source_unavailable"
 
 
 def test_start_run_for_source_rejects_unstable_or_out_of_scope_source(tmp_path):
@@ -276,6 +308,7 @@ def test_start_run_for_source_rejects_unstable_or_out_of_scope_source(tmp_path):
     recent = source_dir / "recent.mkv"
     recent.write_bytes(b"video")
     settings = Settings(
+        cheap_model_api_key="test-key",
         recording_source_default=RecordingSourceDefaultConfig(
             source_dir=source_dir,
             input_dir=tmp_path / "input",

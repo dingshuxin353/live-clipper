@@ -459,12 +459,40 @@ h4 {
 .health-card {
   display: grid;
   gap: 4px;
+  border: 1px solid transparent;
 }
 
 .health-card strong {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.health-card[data-tone="success"] {
+  border-color: var(--color-border-green);
+  background: var(--color-background-green);
+}
+
+.health-card[data-tone="success"] strong {
+  color: var(--color-text-green);
+}
+
+.health-card[data-tone="warning"] {
+  border-color: var(--color-border-yellow);
+  background: var(--color-background-yellow);
+}
+
+.health-card[data-tone="warning"] strong {
+  color: var(--color-text-yellow);
+}
+
+.health-card[data-tone="neutral"] {
+  border-color: var(--color-border-gray);
+  background: var(--color-background-gray);
+}
+
+.health-card[data-tone="neutral"] strong {
+  color: var(--color-text-gray);
 }
 
 .dirty-bar {

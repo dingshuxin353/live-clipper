@@ -47,6 +47,39 @@ describe("Astryx settings migration", () => {
     expect(document.querySelector(".astryx-banner")).not.toBeInTheDocument();
   });
 
+  it("distinguishes configuration health states with semantic card tones", async () => {
+    installFetchMock();
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: /设置/ }));
+
+    const health = document.getElementById("configHealth");
+    expect(health).not.toBeNull();
+    const cards = [...(health as HTMLElement).querySelectorAll<HTMLElement>(".health-card")];
+    expect(cards.map((card) => card.dataset.tone)).toEqual([
+      "warning", "success", "warning", "warning", "neutral", "success", "neutral",
+    ]);
+    expect(cards.map((card) => card.getAttribute("aria-label"))).toEqual([
+      "录播源：未配置",
+      "本地项目库：正常",
+      "LLM：未配置",
+      "ASR：未配置",
+      "服务：未运行",
+      "定时任务：已启用",
+      "AI 审阅：未启用",
+    ]);
+  });
+
+  it("marks the legacy time-window setting as informational only", async () => {
+    installFetchMock();
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: /设置/ }));
+    fireEvent.click(screen.getByText("高级设置（一般不需要改）"));
+
+    const legacyField = screen.getByLabelText("历史扫描时间范围（仅兼容旧配置）");
+    expect(legacyField).toHaveAttribute("readonly");
+    expect(screen.getByText("不再按录像日期过滤，所有稳定且未处理的录像都会进入队列。")).toBeVisible();
+  });
+
   it("uses an Astryx AlertDialog instead of window.confirm for restoring defaults", async () => {
     installFetchMock();
     const confirmSpy = vi.spyOn(window, "confirm");

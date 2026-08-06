@@ -27,7 +27,14 @@ from .prompt_loader import export_prompts
 from .refine_candidates import refine_candidates_file
 from .render_clips import render_selected_clips
 from .scan_windows import scan_windows_file
-from .service import get_service_status, read_service_logs, start_embedded_service, start_service, stop_service
+from .service import (
+    get_service_status,
+    read_service_logs,
+    require_pipeline_configuration,
+    start_embedded_service,
+    start_service,
+    stop_service,
+)
 from .smoke import run_local_smoke
 from .status import build_run_status
 from .transcribe import transcribe_audio, transcript_sentences_from_raw
@@ -558,6 +565,7 @@ def run_pipeline(
     top_n: int = 25,
     prompt_dir: Path | None = None,
 ) -> Path:
+    require_pipeline_configuration(load_settings())
     local_source_path = stage_source_file(source_path, input_dir=input_dir)
     scan_kwargs = {"prompt_dir": prompt_dir} if prompt_dir else {}
     run_dir = run_scan(
