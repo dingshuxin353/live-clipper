@@ -31,7 +31,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
 
       - name: Validate immutable release ref
         env:
@@ -115,10 +115,16 @@ jobs:
         run: |
           python -m venv .venv
           .venv/bin/pip install --upgrade pip
-          .venv/bin/pip install "." "pyinstaller>=6.10"
+          .venv/bin/pip install ".[mlx]" "pyinstaller>=6.10"
 
       - name: Install desktop dependencies
         run: cd desktop && npm ci
+
+      - name: Build backend
+        run: cd desktop && npm run build:backend
+
+      - name: Require packaged MLX runtime and exclude model weights
+        run: .venv/bin/python scripts/ci/assert_backend_bundle.py
 
       - name: Build, sign, notarize, publish
         env:
@@ -129,7 +135,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DEBUG: electron-notarize:*
-        run: cd desktop && npm run build:backend && npx electron-builder --mac --publish always
+        run: cd desktop && npx electron-builder --mac --publish always
 
       - name: Verify published release assets
         env:
