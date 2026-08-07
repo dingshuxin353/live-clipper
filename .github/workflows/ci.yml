@@ -15,7 +15,7 @@ jobs:
           python-version: "3.11"
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
       - name: Install ffmpeg
         run: brew install ffmpeg
       - name: Install package
@@ -26,6 +26,5 @@ jobs:
         run: |
           node --check desktop/main.js
           node --check desktop/preload.js
-          node --check src/live_clipper/web_static/onboarding.js
       - name: Build package
         run: python -m build

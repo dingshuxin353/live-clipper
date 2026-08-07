@@ -11,4 +11,5 @@ for var in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_
 done
 npm ci
 npm run build:backend
+../.venv/bin/python ../scripts/ci/assert_backend_bundle.py
 npx electron-builder --mac --publish always

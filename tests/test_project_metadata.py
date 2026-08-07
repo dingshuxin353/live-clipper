@@ -223,6 +223,15 @@ def test_automatic_tag_release_workflow_is_disabled():
         assert forbidden not in workflow
 
 
+def test_ci_workflow_checks_current_desktop_entrypoints_with_node_24():
+    workflow = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+
+    assert 'node-version: "24"' in workflow
+    assert "node --check desktop/main.js" in workflow
+    assert "node --check desktop/preload.js" in workflow
+    assert "src/live_clipper/web_static/onboarding.js" not in workflow
+
+
 def test_release_recovery_workflow_contract():
     import re
 
@@ -240,8 +249,13 @@ def test_release_recovery_workflow_contract():
     assert '["git", "describe", "--tags", "--exact-match"]' in workflow
     assert "pyproject.toml" in workflow
     assert "desktop/package.json" in workflow
+    assert 'node-version: "24"' in workflow
+    assert '.venv/bin/pip install ".[mlx]" "pyinstaller>=6.10"' in workflow
+    assert ".venv/bin/python scripts/ci/assert_backend_bundle.py" in workflow
     assert "DEBUG: electron-notarize:*" in workflow
     assert "gh release view" in workflow
+    assert workflow.index("npm run build:backend") < workflow.index("scripts/ci/assert_backend_bundle.py")
+    assert workflow.index("scripts/ci/assert_backend_bundle.py") < workflow.index("npx electron-builder --mac --publish always")
     for suffix in ("-arm64.dmg", "-arm64-mac.zip", "-arm64-mac.zip.blockmap", "latest-mac.yml"):
         assert suffix in workflow
 
@@ -254,3 +268,11 @@ def test_release_recovery_workflow_contract():
         "APPLE_TEAM_ID",
     ):
         assert f"{secret_name}: ${{{{ secrets.{secret_name} }}}}" in workflow
+
+
+def test_local_release_requires_backend_bundle_contract_before_publish():
+    script = Path("desktop/scripts/release-local.sh").read_text(encoding="utf-8")
+
+    assert "../.venv/bin/python ../scripts/ci/assert_backend_bundle.py" in script
+    assert script.index("npm run build:backend") < script.index("assert_backend_bundle.py")
+    assert script.index("assert_backend_bundle.py") < script.index("npx electron-builder --mac --publish always")
