@@ -2,6 +2,7 @@
 
 interface Window {
   liveClipperShell?: {
-    selectFolder(title: string): Promise<string | null>;
+    selectFolder?(title: string): Promise<string | null>;
+    readClipboardText?(): Promise<string>;
   };
 }

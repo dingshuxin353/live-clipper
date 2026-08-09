@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from live_clipper import service
@@ -127,6 +128,51 @@ def test_post_api_config_saves_backup_and_loadable_file(tmp_path):
     assert load_editable_config(config_path=config_path)["config"]["paths"]["workspace_root"] == str(
         tmp_path / "workspace"
     )
+
+
+def test_post_api_config_llm_key_saves_to_env_without_echo(monkeypatch, tmp_path):
+    source_dir = tmp_path / "nas"
+    source_dir.mkdir()
+    config_path = tmp_path / "live-clipper.toml"
+    _write_config(config_path, source_dir)
+    paths = _paths(tmp_path)
+
+    status, _headers, payload = handle_api_request(
+        "POST",
+        "/api/config/llm-key",
+        paths,
+        body={"api_key": "  sk-settings-secret  "},
+    )
+
+    assert status == 200
+    assert payload["ok"] is True
+    assert payload["api_key_env"] == "SECRET_LLM_KEY"
+    assert "sk-settings-secret" not in str(payload)
+    assert (tmp_path / ".env").read_text(encoding="utf-8") == "SECRET_LLM_KEY=sk-settings-secret\n"
+    assert os.environ["SECRET_LLM_KEY"] == "sk-settings-secret"
+
+    status, _headers, config = handle_api_request("GET", "/api/config", paths)
+    assert status == 200
+    assert config["env_status"]["SECRET_LLM_KEY"] is True
+    assert "sk-settings-secret" not in str(config)
+
+
+def test_post_api_config_llm_key_rejects_empty_value(tmp_path):
+    source_dir = tmp_path / "nas"
+    source_dir.mkdir()
+    _write_config(tmp_path / "live-clipper.toml", source_dir)
+
+    status, _headers, payload = handle_api_request(
+        "POST",
+        "/api/config/llm-key",
+        _paths(tmp_path),
+        body={"api_key": "   "},
+    )
+
+    assert status == 400
+    assert payload["ok"] is False
+    assert payload["error_code"] == "empty_api_key"
+    assert not (tmp_path / ".env").exists()
 
 
 def test_config_api_migrates_legacy_hf_mirror_and_rejects_new_value(tmp_path):

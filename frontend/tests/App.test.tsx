@@ -272,7 +272,32 @@ describe("React application shell", () => {
     const saveCall = calls.find(([path, options]) => path === "/api/config" && options?.method === "POST");
     const body = JSON.parse(String(saveCall?.[1]?.body));
     expect(body.config.recording_source_default.source_dir).toBe("/recordings");
-    expect(document.querySelectorAll("[data-config-field]")).toHaveLength(47);
+    expect(document.querySelectorAll("[data-config-field]")).toHaveLength(46);
+  });
+
+  it("lets skipped-onboarding users paste and save the LLM key without echoing it", async () => {
+    const marker = "settings-clipboard-secret";
+    const readClipboardText = vi.fn(() => Promise.resolve(` ${marker}\n`));
+    window.liveClipperShell = { readClipboardText };
+    const calls = installFetchMock({
+      "/api/config/llm-key": { ok: true, saved: true, api_key_env: "CHEAP_MODEL_API_KEY", message: "AI API key 已保存" },
+    });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: /设置/ }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "粘贴 AI API key" }));
+    await waitFor(() => expect(readClipboardText).toHaveBeenCalledTimes(1));
+    const input = screen.getByLabelText("AI API key") as HTMLInputElement;
+    expect(input.value).toBe(marker);
+    expect(input.getAttribute("value")).toBeNull();
+    expect(document.body.innerHTML).not.toContain(marker);
+
+    fireEvent.click(screen.getByRole("button", { name: "保存 AI API key" }));
+    await screen.findByText("AI API key 已保存");
+    const request = calls.find(([path]) => path === "/api/config/llm-key");
+    expect(JSON.parse(String(request?.[1]?.body)).api_key).toBe(marker);
+    expect(input.value).toBe("");
+    expect(document.body.innerHTML).not.toContain(marker);
   });
 
   it("keeps Small, Medium, Large order and protects current model actions", async () => {

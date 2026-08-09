@@ -614,6 +614,17 @@ def handle_api_request(
                 base_dir=paths.config_path.parent,
             )
             return _json_response(payload, status=200 if payload.get("ok") else 400)
+        if method == "POST" and parts == ["api", "config", "llm-key"]:
+            config_payload = config_editor.load_editable_config(config_path=paths.config_path)
+            if not config_payload.get("ok"):
+                return _json_response(config_payload, status=400)
+            api_key_env = str(config_payload["config"].get("llm", {}).get("api_key_env") or "CHEAP_MODEL_API_KEY")
+            payload = onboarding.save_llm_api_key(
+                str((body or {}).get("api_key") or ""),
+                api_key_env=api_key_env,
+                env_path=paths.config_path.parent / ".env",
+            )
+            return _json_response(payload, status=200 if payload.get("ok") else 400)
         if method == "POST" and parts == ["api", "config", "restart-service"]:
             return _json_response(_restart_service_from_config(paths))
         if method == "GET" and parts == ["api", "onboarding"]:

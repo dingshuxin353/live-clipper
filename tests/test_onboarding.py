@@ -22,7 +22,9 @@ def test_onboarding_status_needs_when_unconfigured(tmp_path):
     assert status["initial_asr_mode"] == "local"
     assert status["initial_local_model"] == "mlx-community/whisper-small-mlx-q4"
     assert status["initial_local_model"] in asr_models.registry_ids()
-    assert any(preset["id"] == "deepseek" for preset in status["presets"])
+    deepseek = next(preset for preset in status["presets"] if preset["id"] == "deepseek")
+    assert deepseek["api_base"] == "https://api.deepseek.com"
+    assert deepseek["model"] == "deepseek-v4-flash"
 
 
 def test_onboarding_status_marker_wins(tmp_path):
@@ -185,6 +187,46 @@ def test_write_env_key_updates_existing_line(tmp_path):
     assert "CHEAP_MODEL_API_KEY=sk-new" in text
     assert "HF_TOKEN=abc" in text
     assert text.count("CHEAP_MODEL_API_KEY") == 1
+
+
+def test_save_llm_api_key_persists_current_env_name_without_echo(monkeypatch, tmp_path):
+    env_path = tmp_path / ".env"
+    env_path.write_text("SECRET_LLM_KEY=old\nHF_TOKEN=keep\n", encoding="utf-8")
+
+    result = onboarding.save_llm_api_key(
+        "  sk-new  ",
+        api_key_env="SECRET_LLM_KEY",
+        env_path=env_path,
+    )
+
+    assert result == {
+        "ok": True,
+        "saved": True,
+        "api_key_env": "SECRET_LLM_KEY",
+        "message": "AI API key 已保存",
+    }
+    assert env_path.read_text(encoding="utf-8") == "SECRET_LLM_KEY=sk-new\nHF_TOKEN=keep\n"
+    assert onboarding.os.environ["SECRET_LLM_KEY"] == "sk-new"
+    assert "sk-new" not in str(result)
+    monkeypatch.delenv("SECRET_LLM_KEY", raising=False)
+
+
+@pytest.mark.parametrize(
+    ("api_key_env", "api_key", "error_code"),
+    [
+        ("bad-name", "sk-valid", "invalid_api_key_env"),
+        ("SECRET_LLM_KEY", "", "empty_api_key"),
+        ("SECRET_LLM_KEY", "sk-first\nsk-injected", "invalid_api_key"),
+    ],
+)
+def test_save_llm_api_key_rejects_unsafe_input(tmp_path, api_key_env, api_key, error_code):
+    env_path = tmp_path / ".env"
+
+    result = onboarding.save_llm_api_key(api_key, api_key_env=api_key_env, env_path=env_path)
+
+    assert result["ok"] is False
+    assert result["error_code"] == error_code
+    assert not env_path.exists()
 
 
 def test_complete_onboarding_writes_config_env_marker(tmp_path, monkeypatch):

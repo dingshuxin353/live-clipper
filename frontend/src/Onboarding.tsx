@@ -62,6 +62,25 @@ function modelStateLabel(model: Model) {
   return "未下载";
 }
 
+async function readClipboardText() {
+  if (window.liveClipperShell?.readClipboardText) return window.liveClipperShell.readClipboardText();
+  if (navigator.clipboard?.readText) return navigator.clipboard.readText();
+  throw new Error("当前环境无法直接读取剪贴板，请使用 Command+V 粘贴");
+}
+
+function applySecretValue(
+  input: HTMLInputElement | null,
+  secretRef: React.MutableRefObject<string>,
+  rawValue: string,
+) {
+  const value = rawValue.trim();
+  if (!value) throw new Error("剪贴板里没有可用的 API key");
+  if (!input) throw new Error("API key 输入框尚未就绪，请重试");
+  input.value = value;
+  secretRef.current = value;
+  input.focus();
+}
+
 export function Onboarding({ notify }: OnboardingProps) {
   const [visible, setVisible] = useState(false);
   const [step, setStep] = useState(1);
@@ -288,7 +307,9 @@ export function Onboarding({ notify }: OnboardingProps) {
 
   async function selectRecordingFolder() {
     try {
-      const selectedPath = await window.liveClipperShell?.selectFolder("选择录播文件夹");
+      const selectFolder = window.liveClipperShell?.selectFolder;
+      if (!selectFolder) return;
+      const selectedPath = await selectFolder("选择录播文件夹");
       if (!selectedPath) return;
       setSourceDir(selectedPath);
       setSourceOk(false);
@@ -353,6 +374,25 @@ export function Onboarding({ notify }: OnboardingProps) {
       setLlmResult({ ok: false, message: (error as Error).message });
     } finally {
       setLlmBusy(false);
+    }
+  }
+
+  async function pasteAsrKey() {
+    try {
+      applySecretValue(asrKeyInputRef.current, asrKeyRef, await readClipboardText());
+      setAsrResult(null);
+    } catch (error) {
+      setAsrResult({ ok: false, message: (error as Error).message });
+    }
+  }
+
+  async function pasteLlmKey() {
+    try {
+      applySecretValue(llmKeyInputRef.current, llmKeyRef, await readClipboardText());
+      setLlmOk(false);
+      setLlmResult(null);
+    } catch (error) {
+      setLlmResult({ ok: false, message: (error as Error).message });
     }
   }
 
@@ -532,7 +572,7 @@ export function Onboarding({ notify }: OnboardingProps) {
                 value={sourceDir}
                 width="100%"
               />
-              {window.liveClipperShell && (
+              {window.liveClipperShell?.selectFolder && (
                 <div className="onboarding-browse">
                   <Button id="onboardingBrowseBtn" isDisabled={sourceBusy} label="选择文件夹" onClick={() => void selectRecordingFolder()} />
                 </div>
@@ -654,18 +694,21 @@ export function Onboarding({ notify }: OnboardingProps) {
                   <TextInput aria-errormessage={asrFieldError === "onboardingAsrBase" ? "onboardingAsrResult" : undefined} aria-invalid={asrFieldError === "onboardingAsrBase"} id="onboardingAsrBase" label="识别服务地址" onChange={(value) => { setAsrBase(value); setAsrResult(null); }} placeholder="https://api.openai.com/v1" ref={asrBaseRef} status={asrFieldError === "onboardingAsrBase" ? { type: "error" } : undefined} value={asrBase} width="100%" />
                   <TextInput aria-errormessage={asrFieldError === "onboardingAsrModel" ? "onboardingAsrResult" : undefined} aria-invalid={asrFieldError === "onboardingAsrModel"} id="onboardingAsrModel" label="识别模型" onChange={(value) => { setAsrModel(value); setAsrResult(null); }} placeholder="whisper-1" ref={asrModelRef} status={asrFieldError === "onboardingAsrModel" ? { type: "error" } : undefined} value={asrModel} width="100%" />
                   <Field inputID="onboardingAsrKey" label="识别 API key" width="100%">
-                    <input
-                      aria-errormessage={asrFieldError === "onboardingAsrKey" ? "onboardingAsrResult" : undefined}
-                      aria-invalid={asrFieldError === "onboardingAsrKey"}
-                      autoComplete="off"
-                      className="onboarding-secret-input"
-                      id="onboardingAsrKey"
-                      onChange={(event) => { asrKeyRef.current = event.currentTarget.value; setAsrResult(null); }}
-                      placeholder="只保存在本机 .env"
-                      ref={asrKeyInputRef}
-                      spellCheck={false}
-                      type="password"
-                    />
+                    <div className="secret-input-row">
+                      <input
+                        aria-errormessage={asrFieldError === "onboardingAsrKey" ? "onboardingAsrResult" : undefined}
+                        aria-invalid={asrFieldError === "onboardingAsrKey"}
+                        autoComplete="off"
+                        className="onboarding-secret-input"
+                        id="onboardingAsrKey"
+                        onChange={(event) => { asrKeyRef.current = event.currentTarget.value; setAsrResult(null); }}
+                        placeholder="直接粘贴，安全保存在本机"
+                        ref={asrKeyInputRef}
+                        spellCheck={false}
+                        type="password"
+                      />
+                      <Button label="粘贴识别 API key" onClick={() => void pasteAsrKey()} />
+                    </div>
                   </Field>
                 </FormLayout>
               )}
@@ -700,16 +743,19 @@ export function Onboarding({ notify }: OnboardingProps) {
                 <TextInput id="onboardingLlmBase" label="服务地址" onChange={(value) => { setLlmBase(value); setLlmOk(false); setLlmResult(null); }} value={llmBase} width="100%" />
                 <TextInput id="onboardingLlmModel" label="模型" onChange={(value) => { setLlmModel(value); setLlmOk(false); setLlmResult(null); }} value={llmModel} width="100%" />
                 <Field inputID="onboardingLlmKey" label="API key" width="100%">
-                  <input
-                    autoComplete="off"
-                    className="onboarding-secret-input"
-                    id="onboardingLlmKey"
-                    onChange={(event) => { llmKeyRef.current = event.currentTarget.value; setLlmOk(false); setLlmResult(null); }}
-                    placeholder="粘贴你的 API key"
-                    ref={llmKeyInputRef}
-                    spellCheck={false}
-                    type="password"
-                  />
+                  <div className="secret-input-row">
+                    <input
+                      autoComplete="off"
+                      className="onboarding-secret-input"
+                      id="onboardingLlmKey"
+                      onChange={(event) => { llmKeyRef.current = event.currentTarget.value; setLlmOk(false); setLlmResult(null); }}
+                      placeholder="直接粘贴，安全保存在本机"
+                      ref={llmKeyInputRef}
+                      spellCheck={false}
+                      type="password"
+                    />
+                    <Button label="粘贴 AI API key" onClick={() => void pasteLlmKey()} />
+                  </div>
                 </Field>
               </FormLayout>
               <Result id="onboardingLlmResult" value={llmResult} />
