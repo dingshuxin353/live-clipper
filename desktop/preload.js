@@ -3,4 +3,5 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("liveClipperShell", {
   selectFolder: (title) => ipcRenderer.invoke("lc:select-folder", title),
+  readClipboardText: () => ipcRenderer.invoke("lc:read-clipboard-text"),
 });

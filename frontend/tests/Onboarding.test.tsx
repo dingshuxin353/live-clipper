@@ -39,6 +39,34 @@ describe("four-step onboarding", () => {
     expect(screen.getByText("选择语音识别方式")).toBeVisible();
   });
 
+  it("pastes a trimmed LLM key through the narrow desktop bridge without serializing it", async () => {
+    const marker = "desktop-clipboard-secret";
+    const readClipboardText = vi.fn(() => Promise.resolve(`  ${marker}\n`));
+    window.liveClipperShell = { readClipboardText };
+    const calls = installFetchMock({
+      "/api/onboarding": onboardingPayload(),
+      "/api/onboarding/test-source": { ok: true },
+      "/api/onboarding/test-llm": { ok: true, message: "连接成功" },
+    });
+    render(<Onboarding notify={vi.fn()} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "下一步" }));
+    await screen.findByText("选择语音识别方式");
+    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
+    await screen.findByText("选一个 AI 服务");
+    fireEvent.click(screen.getByRole("button", { name: "粘贴 AI API key" }));
+
+    await waitFor(() => expect(readClipboardText).toHaveBeenCalledTimes(1));
+    const input = screen.getByLabelText("API key") as HTMLInputElement;
+    expect(input.value).toBe(marker);
+    expect(input.getAttribute("value")).toBeNull();
+    expect(document.body.innerHTML).not.toContain(marker);
+    fireEvent.click(screen.getByRole("button", { name: "测试连接" }));
+    await screen.findByText("连接成功");
+    const request = calls.find(([path]) => path === "/api/onboarding/test-llm");
+    expect(JSON.parse(String(request?.[1]?.body)).api_key).toBe(marker);
+  });
+
   it("uses the onboarding Small default even when the saved model API marks Large current", async () => {
     const models = MODELS.map((model, index) => ({
       ...model,

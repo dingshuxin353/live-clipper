@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, dialog, ipcMain, session, shell, nativeImage } = require("electron");
+const { app, BrowserWindow, Tray, Menu, clipboard, dialog, ipcMain, session, shell, nativeImage } = require("electron");
 const { spawn } = require("child_process");
 const http = require("http");
 const https = require("https");
@@ -124,6 +124,43 @@ ipcMain.handle("lc:select-folder", async (_event, title) => {
   const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
   return result.canceled ? null : result.filePaths[0];
 });
+
+ipcMain.handle("lc:read-clipboard-text", () => clipboard.readText());
+
+function createApplicationMenu() {
+  const template = [];
+  if (process.platform === "darwin") {
+    template.push({
+      label: app.name,
+      submenu: [
+        { role: "about" },
+        { type: "separator" },
+        { role: "services" },
+        { type: "separator" },
+        { role: "hide" },
+        { role: "hideOthers" },
+        { role: "unhide" },
+        { type: "separator" },
+        { role: "quit" },
+      ],
+    });
+  }
+  template.push({
+    label: "编辑",
+    submenu: [
+      { role: "undo", label: "撤销" },
+      { role: "redo", label: "重做" },
+      { type: "separator" },
+      { role: "cut", label: "剪切" },
+      { role: "copy", label: "复制" },
+      { role: "paste", label: "粘贴" },
+      { role: "pasteAndMatchStyle", label: "粘贴并匹配样式" },
+      { role: "delete", label: "删除" },
+      { role: "selectAll", label: "全选" },
+    ],
+  });
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
 
 let updater = null;
 let updateDownloaded = false;
@@ -335,6 +372,7 @@ if (!app.requestSingleInstanceLock()) {
         value: backendToken,
         sameSite: "strict",
       });
+      createApplicationMenu();
       createTray();
       showWindow();
       setTimeout(() => checkForUpdates(false), 5000);

@@ -877,6 +877,34 @@ body.in-app-shell::before {
   transition: border-color var(--duration-fast) var(--ease-standard), box-shadow var(--duration-fast) var(--ease-standard);
 }
 
+.secret-input-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+}
+
+.secret-input-row .onboarding-secret-input {
+  min-width: 0;
+}
+
+.secret-input-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+@media (max-width: 640px) {
+  .secret-input-row {
+    grid-template-columns: 1fr;
+  }
+
+  .secret-input-actions {
+    flex-wrap: wrap;
+  }
+}
+
 .onboarding-secret-input::placeholder {
   color: var(--color-text-secondary);
 }

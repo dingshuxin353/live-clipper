@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -21,8 +22,8 @@ PROVIDER_PRESETS: list[dict[str, str]] = [
     {
         "id": "deepseek",
         "label": "DeepSeek",
-        "api_base": "https://api.deepseek.com/v1",
-        "model": "deepseek-chat",
+        "api_base": "https://api.deepseek.com",
+        "model": "deepseek-v4-flash",
         "signup_url": "https://platform.deepseek.com",
     },
     {
@@ -47,6 +48,8 @@ PROVIDER_PRESETS: list[dict[str, str]] = [
         "signup_url": "",
     },
 ]
+
+ENV_VAR_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 
 
 def _marker_path(service_dir: Path) -> Path:
@@ -179,6 +182,53 @@ def _write_env_key(env_path: Path, key: str, value: str) -> None:
     if not replaced:
         lines.append(f"{key}={value}")
     env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def save_llm_api_key(
+    api_key: str,
+    *,
+    api_key_env: str = "CHEAP_MODEL_API_KEY",
+    env_path: Path = Path(".env"),
+) -> dict[str, Any]:
+    """Persist one LLM secret without returning or logging its value."""
+    api_key_env = (api_key_env or "").strip()
+    raw_api_key = api_key or ""
+    normalized_api_key = raw_api_key.strip()
+    if not ENV_VAR_RE.fullmatch(api_key_env):
+        return {
+            "ok": False,
+            "saved": False,
+            "error_code": "invalid_api_key_env",
+            "message": "API key 环境变量名不合法，请先检查 AI 设置",
+        }
+    if not normalized_api_key:
+        return {
+            "ok": False,
+            "saved": False,
+            "error_code": "empty_api_key",
+            "message": "请粘贴或输入 AI API key",
+        }
+    if any(character in normalized_api_key for character in ("\r", "\n", "\0")):
+        return {
+            "ok": False,
+            "saved": False,
+            "error_code": "invalid_api_key",
+            "message": "API key 包含无效换行，请重新复制后粘贴",
+        }
+
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_env_key(env_path, api_key_env, normalized_api_key)
+    try:
+        env_path.chmod(0o600)
+    except OSError:
+        pass
+    os.environ[api_key_env] = normalized_api_key
+    return {
+        "ok": True,
+        "saved": True,
+        "api_key_env": api_key_env,
+        "message": "AI API key 已保存",
+    }
 
 
 def complete_onboarding(

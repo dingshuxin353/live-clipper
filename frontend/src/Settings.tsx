@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertDialog } from "@astryxdesign/core/AlertDialog";
 import { Button } from "@astryxdesign/core/Button";
 import { Card } from "@astryxdesign/core/Card";
 import { CheckboxInput } from "@astryxdesign/core/CheckboxInput";
+import { Field } from "@astryxdesign/core/Field";
 import { FormLayout } from "@astryxdesign/core/FormLayout";
 import { List, ListItem } from "@astryxdesign/core/List";
 import { NumberInput } from "@astryxdesign/core/NumberInput";
@@ -316,6 +317,9 @@ export function Settings(props: SettingsProps) {
   const [dirty, setDirty] = useState(false);
   const [notice, setNotice] = useState<{ messages: string[]; tone: "success" | "error" | "warning" | "info" } | null>(null);
   const [resetOpen, setResetOpen] = useState(false);
+  const [llmKeyBusy, setLlmKeyBusy] = useState(false);
+  const llmKeyInputRef = useRef<HTMLInputElement>(null);
+  const llmKeyRef = useRef("");
 
   useEffect(() => {
     if (!dirty && configPayload?.config) setDraft(structuredClone(configPayload.config));
@@ -363,6 +367,49 @@ export function Settings(props: SettingsProps) {
     }
   }
 
+  async function pasteLlmKey() {
+    try {
+      let rawValue: string;
+      if (window.liveClipperShell?.readClipboardText) {
+        rawValue = await window.liveClipperShell.readClipboardText();
+      } else if (navigator.clipboard?.readText) {
+        rawValue = await navigator.clipboard.readText();
+      } else {
+        throw new Error("当前环境无法直接读取剪贴板，请使用 Command+V 粘贴");
+      }
+      const value = rawValue.trim();
+      if (!value) throw new Error("剪贴板里没有可用的 API key");
+      if (!llmKeyInputRef.current) throw new Error("API key 输入框尚未就绪，请重试");
+      llmKeyInputRef.current.value = value;
+      llmKeyRef.current = value;
+      llmKeyInputRef.current.focus();
+      setNotice({ messages: ["已粘贴 AI API key，点击“保存 AI API key”即可生效。"], tone: "info" });
+    } catch (error) {
+      setNotice({ messages: [(error as Error).message], tone: "error" });
+    }
+  }
+
+  async function saveLlmKey() {
+    const apiKey = llmKeyRef.current.trim();
+    if (!apiKey) {
+      setNotice({ messages: ["请先粘贴或输入 AI API key。"], tone: "error" });
+      llmKeyInputRef.current?.focus();
+      return;
+    }
+    setLlmKeyBusy(true);
+    try {
+      const result = await post<GenericRecord>("/api/config/llm-key", { api_key: apiKey });
+      llmKeyRef.current = "";
+      if (llmKeyInputRef.current) llmKeyInputRef.current.value = "";
+      setNotice({ messages: [String(result.message || "AI API key 已保存")], tone: "success" });
+      await reloadConfig();
+    } catch (error) {
+      setNotice({ messages: [(error as Error).message], tone: "error" });
+    } finally {
+      setLlmKeyBusy(false);
+    }
+  }
+
   async function action(path: string, message: string) {
     try {
       await post(path);
@@ -387,7 +434,7 @@ export function Settings(props: SettingsProps) {
     return [
       ["录播源", sourceDir ? "已配置" : "未配置", sourceDir || "未填写录播源目录", sourceDir ? "success" : "warning"],
       ["本地项目库", inputDir && outputRoot ? "正常" : "待配置", `输入：${inputDir || "-"} · 输出：${outputRoot || "-"}`, inputDir && outputRoot ? "success" : "warning"],
-      ["LLM", envStatus[llmKey] ? "已配置" : "未配置", llmKey || "未填写 API key 环境变量名", envStatus[llmKey] ? "success" : "warning"],
+      ["LLM", envStatus[llmKey] ? "已配置" : "未配置", envStatus[llmKey] ? "密钥已安全保存在本机" : "请在设置页粘贴 AI API key", envStatus[llmKey] ? "success" : "warning"],
       ["ASR", envStatus[asrKey] ? "已配置" : "未配置", `${config.asr?.backend || "-"} · ${asrKey || "未填写 API key 环境变量名"}`, envStatus[asrKey] ? "success" : "warning"],
       ["服务", service?.running ? "运行中" : "未运行", service?.service?.pid ? `PID ${service.service.pid}` : "可在自动化页启动", service?.running ? "success" : "neutral"],
       ["定时任务", scheduler?.scheduler?.enabled ? "已启用" : "未启用", scheduler?.scheduler?.next_due_at ? `下次：${formatLocalTime(scheduler.scheduler.next_due_at)}` : "暂无下一次任务", scheduler?.scheduler?.enabled ? "success" : "neutral"],
@@ -401,7 +448,7 @@ export function Settings(props: SettingsProps) {
         <div>
           <h2>设置</h2>
           <p className="muted technical-value" id="configMeta" title={String(configPayload?.config_path || "live-clipper.toml")}>
-            {String(configPayload?.config_path || "live-clipper.toml")} · {configPayload?.exists ? "已存在" : "尚未创建"} · API Key 只保存环境变量名{dirty ? " · 有未保存改动" : ""}
+            {String(configPayload?.config_path || "live-clipper.toml")} · {configPayload?.exists ? "已存在" : "尚未创建"} · API Key 明文只保存在本机{dirty ? " · 有未保存改动" : ""}
           </p>
         </div>
         <div className="button-row">
@@ -446,7 +493,7 @@ export function Settings(props: SettingsProps) {
           <legend>基础设置</legend>
           <div className="full-span settings-guidance">
             <Text as="div" color="secondary" type="supporting">配好三件事就能用</Text>
-            <Text as="div" color="secondary" type="supporting">录像在哪、成片放哪、AI 用哪家。API key 只填环境变量名，明文密钥保存在本机 .env 文件里。</Text>
+            <Text as="div" color="secondary" type="supporting">录像在哪、成片放哪、AI 用哪家。API key 可在本页直接粘贴，明文只保存在本机。</Text>
           </div>
           <SettingsSection title="文件位置">
             {control("recording_source_default.source_dir", "录播文件夹", { placeholder: "例如 /Volumes/your-nas/recordings", description: "直播录像所在的文件夹（支持 NAS）。出现新录像会自动切片；留空则不自动扫描。" })}
@@ -455,7 +502,24 @@ export function Settings(props: SettingsProps) {
           <SettingsSection title="AI 服务">
             {control("llm.api_base", "AI 服务地址", { description: "负责选片、写标题的 AI（OpenAI 兼容接口，如 DeepSeek / 通义 / Kimi）。" })}
             {control("llm.model", "AI 模型名")}
-            {control("llm.api_key_env", "API key 环境变量名", { description: "只保存变量名；真正的密钥写在本机 .env 文件里，永远不展示明文。" })}
+            <Field className="full-span" inputID="settingsLlmApiKey" label="AI API key" width="100%">
+              <div className="secret-input-row">
+                <input
+                  autoComplete="off"
+                  className="onboarding-secret-input"
+                  id="settingsLlmApiKey"
+                  onChange={(event) => { llmKeyRef.current = event.currentTarget.value; }}
+                  placeholder={envStatus[String(draft.llm?.api_key_env || "CHEAP_MODEL_API_KEY")] ? "已配置；粘贴新密钥可替换" : "直接粘贴，安全保存在本机"}
+                  ref={llmKeyInputRef}
+                  spellCheck={false}
+                  type="password"
+                />
+                <div className="secret-input-actions">
+                  <Button isDisabled={llmKeyBusy} label="粘贴 AI API key" onClick={() => void pasteLlmKey()} />
+                  <Button isDisabled={llmKeyBusy} label={llmKeyBusy ? "保存中…" : "保存 AI API key"} onClick={() => void saveLlmKey()} variant="primary" />
+                </div>
+              </div>
+            </Field>
             {control("asr.backend", "语音识别方式", { options: [["mlx_whisper", "本机识别（需另行安装本地模型）"], ["openai", "云端识别（桌面版默认）"]], description: "把直播声音转成文字。本机识别首次使用需下载模型；云端更快但按量计费。" })}
           </SettingsSection>
           <SettingsSection title="本地语音模型" description="选「本机识别」时使用。模型下载一次即可离线转写，存放在本机应用数据目录。">
