@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.4 - 2026-08-09
+
+### Changed
+
+- API keys can now be pasted directly in first-run setup and Settings while plaintext remains local and hidden after saving.
+- Updated the built-in DeepSeek preset to the current HTTPS endpoint and `deepseek-v4-flash` model.
+- Release builds now verify that the bundled backend contains the required MLX runtime while excluding downloaded model weights.
+
+### Fixed
+
+- Restored standard macOS edit actions and added explicit paste controls for LLM and cloud ASR password fields.
+- Users who chose “Set up later” can now save or replace the AI API key from Settings without opening hidden folders or editing `.env` manually.
+- Saved API keys take effect immediately, remain configured after restart, and are never echoed by the configuration API or settings UI.
+
 ## 0.3.3 - 2026-08-06
 
 ### Changed
