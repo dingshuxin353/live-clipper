@@ -19,6 +19,25 @@ from live_clipper.config import (
 from live_clipper.utils import read_json, write_json
 
 
+def _candidate() -> dict:
+    return {
+        "id": "clip-1",
+        "start": 10.0,
+        "end": 20.0,
+        "score": 9.0,
+        "clip_type": "highlight",
+        "hook": "hook",
+        "core_value": "value",
+        "reason": "reason",
+        "suggested_context_before": 2.0,
+        "suggested_context_after": 2.0,
+    }
+
+
+def _selection() -> list[dict]:
+    return [{"clip_id": "clip-1", "source_start": 10.0, "source_end": 20.0, "title": "clip", "remove_ranges": []}]
+
+
 def test_validate_service_settings_rejects_non_preview_cleanup():
     settings = Settings(service=ServiceConfig(cleanup_mode="delete_after_render"))
 
@@ -298,10 +317,12 @@ def test_run_service_once_serializes_concurrent_scans_for_same_content(tmp_path,
 
     assert not first.is_alive()
     assert not second.is_alive()
-    assert errors == []
+    assert len(errors) == 1
+    assert isinstance(errors[0], service.ScanBusyError)
     assert len(service.load_runs(service_dir)) == 1
     assert len(launch_calls) == 1
-    assert sum(report["discovered_runs"] for report in reports) == 1
+    assert len(reports) == 1
+    assert reports[0]["discovered_runs"] == 1
 
 
 def test_run_service_once_migrates_legacy_run_content_id_without_restarting(tmp_path, monkeypatch):
@@ -587,7 +608,8 @@ def test_reconcile_auto_renders_and_cleanup_preview_only(tmp_path, monkeypatch):
     run_dir = tmp_path / "output" / "default" / "recording__abc123"
     write_json(run_dir / "run_metadata.json", {"source_name": "recording.mkv"})
     write_json(run_dir / "codex_brief.json", {"candidates": []})
-    write_json(run_dir / "selected_clips.json", [{"clip_id": "clip-1"}])
+    write_json(run_dir / "merged_candidates.json", [_candidate()])
+    write_json(run_dir / "selected_clips.json", _selection())
     calls = []
 
     def fake_render(selection_path):
@@ -631,7 +653,8 @@ def test_reconcile_auto_cleanup_uses_saved_run_input(tmp_path, monkeypatch):
     run_input = run_dir.parent / "input"
     write_json(run_dir / "run_metadata.json", {"source_name": "recording.mkv"})
     write_json(run_dir / "codex_brief.json", {"candidates": []})
-    write_json(run_dir / "selected_clips.json", [{"clip_id": "clip-1"}])
+    write_json(run_dir / "merged_candidates.json", [_candidate()])
+    write_json(run_dir / "selected_clips.json", _selection())
     calls = []
 
     def fake_render(selection_path):
@@ -664,6 +687,182 @@ def test_reconcile_auto_cleanup_uses_saved_run_input(tmp_path, monkeypatch):
     service.reconcile_run(run, settings, service_dir=tmp_path / "service")
 
     assert calls == [(run_dir, run_input, False, False)]
+
+
+def test_empty_legacy_selection_is_recovered_without_blocking_new_scan(tmp_path, monkeypatch):
+    service_dir = tmp_path / "service"
+    old_run_dir = tmp_path / "workspace" / "runs" / "old" / "output"
+    write_json(old_run_dir / "codex_brief.json", {"candidates": []})
+    write_json(old_run_dir / "merged_candidates.json", [])
+    write_json(old_run_dir / "selected_clips.json", [])
+    write_json(
+        service_dir / "runs.json",
+        {
+            "runs": [
+                {
+                    "run_id": "old",
+                    "run_dir": str(old_run_dir),
+                    "phase": "rendering",
+                    "pid": None,
+                    "created_at": "2026-08-01T00:00:00+00:00",
+                    "updated_at": "2026-08-01T00:00:00+00:00",
+                }
+            ]
+        },
+    )
+    source_dir = tmp_path / "nas"
+    source_dir.mkdir()
+    (source_dir / "new.mkv").write_bytes(b"new-video")
+    monkeypatch.setattr(service, "_start_pipeline_process", lambda *args, **kwargs: 4321)
+    monkeypatch.setattr(service, "render_selected_clips", lambda *_args, **_kwargs: pytest.fail("must not render"))
+    monkeypatch.setattr(service, "cleanup_local_artifacts", lambda *_args, **_kwargs: pytest.fail("must not clean"))
+    settings = Settings(
+        cheap_model_api_key="test-key",
+        recording_source_default=RecordingSourceDefaultConfig(
+            source_dir=source_dir,
+            min_age_minutes=0,
+            stable_check_seconds=0,
+        ),
+    )
+
+    report = service.run_service_once(settings, service_dir=service_dir)
+
+    runs = service.load_runs(service_dir)
+    old = next(run for run in runs if run["run_id"] == "old")
+    assert report["discovered_runs"] == 1
+    assert report["started_runs"] == 1
+    assert report["reconcile_failed_runs"] == 0
+    assert report["migration_failed_runs"] == 1
+    assert report["migration_failures"][0]["run_id"] == "old"
+    assert old["phase"] == "needs_review"
+    assert old["selection_result"]["status"] == "selection_empty"
+    assert (old_run_dir / "selected_clips.json").exists()
+
+
+def test_scan_stability_check_waits_once_for_multiple_candidates(tmp_path, monkeypatch):
+    source_dir = tmp_path / "nas"
+    source_dir.mkdir()
+    (source_dir / "one.mkv").write_bytes(b"one")
+    (source_dir / "two.mkv").write_bytes(b"two")
+    waits = []
+    monkeypatch.setattr(service.time, "sleep", lambda seconds: waits.append(seconds))
+
+    report = service.scan_recording_source_report(
+        RecordingSourceDefaultConfig(
+            source_dir=source_dir,
+            min_age_minutes=0,
+            stable_check_seconds=7,
+        )
+    )
+
+    assert report["eligible"] == [source_dir / "one.mkv", source_dir / "two.mkv"]
+    assert waits == [7]
+
+
+def test_scan_feedback_distinguishes_unconfigured_unsupported_and_subdirectories(tmp_path):
+    unconfigured = service.run_service_once(
+        Settings(cheap_model_api_key="test-key"),
+        service_dir=tmp_path / "unconfigured-service",
+    )
+    assert unconfigured["source_unconfigured"] is True
+    assert "设置 → 录像来源" in unconfigured["message"]
+
+    source_dir = tmp_path / "nas"
+    source_dir.mkdir()
+    (source_dir / "note.txt").write_text("not video", encoding="utf-8")
+    (source_dir / "nested").mkdir()
+    classified = service.run_service_once(
+        Settings(
+            cheap_model_api_key="test-key",
+            recording_source_default=RecordingSourceDefaultConfig(
+                source_dir=source_dir,
+                min_age_minutes=0,
+                stable_check_seconds=0,
+            ),
+        ),
+        service_dir=tmp_path / "classified-service",
+    )
+    assert classified["unsupported_files"] == 1
+    assert classified["skipped_subdirectories"] == 1
+    assert "不支持格式 1 个" in classified["message"]
+    assert "跳过子目录 1 个" in classified["message"]
+
+
+def test_queue_start_failure_does_not_consume_capacity_for_next_run(tmp_path, monkeypatch):
+    first = tmp_path / "first.mkv"
+    second = tmp_path / "second.mkv"
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+    runs = [
+        {
+            "run_id": name,
+            "phase": "queued",
+            "source_path": str(path),
+            "input_dir": str(tmp_path / name / "input"),
+            "run_dir": str(tmp_path / name / "output"),
+            "log_path": str(tmp_path / "service" / f"{name}.log"),
+            "discovered_at": f"2026-08-17T00:00:0{index}+00:00",
+        }
+        for index, (name, path) in enumerate((("first", first), ("second", second)))
+    ]
+    calls = []
+
+    def launch(run, *, settings, service_dir):
+        calls.append(run["run_id"])
+        if run["run_id"] == "first":
+            raise OSError("staging failed")
+        run["phase"] = "processing"
+        return run
+
+    monkeypatch.setattr(service, "_launch_queued_run", launch)
+    failures = []
+
+    started = service.dispatch_queued_runs(
+        runs,
+        settings=Settings(cheap_model_api_key="test-key"),
+        service_dir=tmp_path / "service",
+        failures=failures,
+    )
+
+    assert calls == ["first", "second"]
+    assert [run["run_id"] for run in started] == ["second"]
+    assert runs[0]["phase"] == "failed"
+    assert failures[0]["run_id"] == "first"
+
+
+def test_source_file_failure_is_isolated_and_redacted(tmp_path, monkeypatch):
+    source_dir = tmp_path / "nas"
+    source_dir.mkdir()
+    bad = source_dir / "bad.mkv"
+    good = source_dir / "good.mkv"
+    bad.write_bytes(b"bad")
+    good.write_bytes(b"good")
+    secret = "secret-test-key"
+
+    def identity(path, *, service_dir):
+        if path == bad:
+            raise OSError(f"cannot read with {secret}")
+        return {"content_id": "a" * 64, "bytes": path.stat().st_size, "cache_hit": False}
+
+    monkeypatch.setattr(service, "content_identity", identity)
+    monkeypatch.setattr(service, "_start_pipeline_process", lambda *args, **kwargs: 4321)
+    report = service.run_service_once(
+        Settings(
+            cheap_model_api_key=secret,
+            recording_source_default=RecordingSourceDefaultConfig(
+                source_dir=source_dir,
+                min_age_minutes=0,
+                stable_check_seconds=0,
+            ),
+        ),
+        service_dir=tmp_path / "service",
+    )
+
+    assert report["discovered_runs"] == 1
+    assert report["file_error_count"] == 1
+    assert report["file_errors"][0]["name"] == "bad.mkv"
+    assert secret not in str(report)
+    assert "[REDACTED]" in report["file_errors"][0]["error"]
 
 
 def test_start_service_background_writes_pid_and_refuses_duplicate(tmp_path, monkeypatch):
@@ -773,6 +972,39 @@ def test_get_service_status_summarizes_runs(tmp_path, monkeypatch):
     assert status["running"] is True
     assert status["phase_counts"] == {"failed": 1, "needs_review": 1, "rendered": 1}
     assert status["pending_review_runs"] == ["a"]
+
+
+def test_tick_failure_marks_degraded_and_success_recovers_without_losing_history(tmp_path, monkeypatch):
+    service_dir = tmp_path / "service"
+    settings = Settings()
+    service._write_service_state(
+        service_dir,
+        {
+            "status": "running",
+            "pid": 1234,
+            "started_at": "2026-08-17T00:00:00+00:00",
+            "last_successful_tick_at": "2026-08-17T00:01:00+00:00",
+            "config_snapshot": {"source_id": "default"},
+        },
+    )
+    monkeypatch.setattr(service, "pid_is_running", lambda _pid: True)
+
+    service._record_tick_failure(service_dir, 1234, settings, RuntimeError("boom"))
+    degraded = service.get_service_status(service_dir=service_dir)["service"]
+    assert degraded["status"] == "degraded"
+    assert degraded["consecutive_errors"] == 1
+    assert degraded["started_at"] == "2026-08-17T00:00:00+00:00"
+    assert degraded["last_successful_tick_at"] == "2026-08-17T00:01:00+00:00"
+    assert degraded["last_error"] == "boom"
+    assert degraded["next_retry_at"]
+
+    service._record_tick_success(service_dir, 1234, settings, {"ok": True})
+    recovered = service.get_service_status(service_dir=service_dir)["service"]
+    assert recovered["status"] == "running"
+    assert recovered["consecutive_errors"] == 0
+    assert recovered["last_error"] is None
+    assert recovered["last_error_at"] == degraded["last_error_at"]
+    assert recovered["last_successful_tick_at"] != "2026-08-17T00:01:00+00:00"
 
 
 def test_read_service_logs_returns_tail(tmp_path):

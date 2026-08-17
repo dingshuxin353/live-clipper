@@ -73,6 +73,10 @@ def test_tick_scheduler_run_once_executes_recent_missed_job(monkeypatch, tmp_pat
     )
     calls = []
     monkeypatch.setattr(service, "run_service_once", lambda settings, service_dir: calls.append(service_dir) or {"ok": True})
+    write_json(
+        tmp_path / "scheduler_runs.json",
+        {"jobs": {"daily_scan": {"last_run_at": "2026-06-29T08:00:00+08:00", "next_run_at": "2026-06-30T08:00:00+08:00"}}},
+    )
 
     result = tick_scheduler(
         _settings([job]),
@@ -83,6 +87,14 @@ def test_tick_scheduler_run_once_executes_recent_missed_job(monkeypatch, tmp_pat
     assert result["ran_jobs"] == ["daily_scan"]
     assert calls == [tmp_path]
     assert read_json(tmp_path / "scheduler_runs.json")["jobs"]["daily_scan"]["status"] == "success"
+    assert read_json(tmp_path / "scheduler_runs.json")["jobs"]["daily_scan"]["next_run_at"] == "2026-07-01T08:00:00+08:00"
+    second = tick_scheduler(
+        _settings([job]),
+        service_dir=tmp_path,
+        now=datetime(2026, 6, 30, 9, 1, tzinfo=TZ),
+    )
+    assert second["ran_jobs"] == []
+    assert calls == [tmp_path]
     assert any(event["type"] == "scheduler_job_missed_run_once" for event in read_scheduler_events(tmp_path))
 
 
@@ -96,7 +108,10 @@ def test_tick_scheduler_skip_if_running_skips_job(tmp_path):
         time="08:00",
         skip_if_running=True,
     )
-    write_json(tmp_path / "scheduler_runs.json", {"jobs": {"daily_scan": {"status": "running"}}})
+    write_json(
+        tmp_path / "scheduler_runs.json",
+        {"jobs": {"daily_scan": {"status": "running", "next_run_at": "2026-06-30T08:00:00+08:00"}}},
+    )
 
     result = tick_scheduler(
         _settings([job]),
@@ -234,3 +249,95 @@ def test_pause_and_resume_job_persist_state(tmp_path):
     assert paused["ok"] is True
     assert resumed["ok"] is True
     assert read_json(tmp_path / "scheduler_runs.json")["jobs"][job_id]["paused"] is False
+
+
+def test_weekly_persisted_overdue_job_runs_once_and_advances(monkeypatch, tmp_path):
+    job = SchedulerJobConfig(
+        id="weekly_scan",
+        name="每周扫描",
+        enabled=True,
+        type="scan_recordings",
+        schedule="weekly",
+        day_of_week="sun",
+        time="08:00",
+    )
+    write_json(
+        tmp_path / "scheduler_runs.json",
+        {"jobs": {"weekly_scan": {"last_run_at": "2026-06-21T08:00:00+08:00", "next_run_at": "2026-06-28T08:00:00+08:00"}}},
+    )
+    calls = []
+    monkeypatch.setattr(service, "run_service_once", lambda settings, service_dir: calls.append(service_dir) or {"ok": True})
+
+    first = tick_scheduler(_settings([job]), service_dir=tmp_path, now=datetime(2026, 6, 30, 9, 0, tzinfo=TZ))
+    second = tick_scheduler(_settings([job]), service_dir=tmp_path, now=datetime(2026, 6, 30, 9, 1, tzinfo=TZ))
+
+    state = read_json(tmp_path / "scheduler_runs.json")["jobs"]["weekly_scan"]
+    assert first["ran_jobs"] == ["weekly_scan"]
+    assert second["ran_jobs"] == []
+    assert calls == [tmp_path]
+    assert state["next_run_at"] == "2026-07-05T08:00:00+08:00"
+
+
+def test_missed_policy_skip_advances_without_running(monkeypatch, tmp_path):
+    job = SchedulerJobConfig(
+        id="daily_scan",
+        name="每日扫描",
+        enabled=True,
+        type="scan_recordings",
+        schedule="daily",
+        time="08:00",
+    )
+    settings = Settings(scheduler=SchedulerConfig(jobs=[job], missed_policy="skip"))
+    write_json(
+        tmp_path / "scheduler_runs.json",
+        {"jobs": {"daily_scan": {"next_run_at": "2026-06-29T08:00:00+08:00"}}},
+    )
+    monkeypatch.setattr(service, "run_service_once", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not run")))
+
+    result = tick_scheduler(settings, service_dir=tmp_path, now=datetime(2026, 6, 30, 9, 0, tzinfo=TZ))
+
+    state = read_json(tmp_path / "scheduler_runs.json")["jobs"]["daily_scan"]
+    assert result["ran_jobs"] == []
+    assert result["skipped_jobs"] == ["daily_scan"]
+    assert state["status"] == "skipped"
+    assert state["next_run_at"] == "2026-07-01T08:00:00+08:00"
+
+
+def test_manual_run_preserves_persisted_schedule(monkeypatch, tmp_path):
+    job = SchedulerJobConfig(
+        id="daily_scan",
+        name="每日扫描",
+        enabled=True,
+        type="scan_recordings",
+        schedule="daily",
+        time="08:00",
+    )
+    write_json(tmp_path / "scheduler_runs.json", {"jobs": {"daily_scan": {"next_run_at": "2026-07-01T08:00:00+08:00"}}})
+    monkeypatch.setattr(service, "run_service_once", lambda *_args, **_kwargs: {"ok": True})
+
+    result = run_job_now(job, _settings([job]), service_dir=tmp_path, now=datetime(2026, 6, 30, 12, 0, tzinfo=TZ))
+
+    assert result["ok"] is True
+    assert read_json(tmp_path / "scheduler_runs.json")["jobs"]["daily_scan"]["next_run_at"] == "2026-07-01T08:00:00+08:00"
+
+
+def test_manual_run_consumes_overdue_schedule_without_duplicate_tick(monkeypatch, tmp_path):
+    job = SchedulerJobConfig(
+        id="daily_scan",
+        name="每日扫描",
+        enabled=True,
+        type="scan_recordings",
+        schedule="daily",
+        time="08:00",
+    )
+    write_json(tmp_path / "scheduler_runs.json", {"jobs": {"daily_scan": {"next_run_at": "2026-06-30T08:00:00+08:00"}}})
+    calls = []
+    monkeypatch.setattr(service, "run_service_once", lambda *_args, **_kwargs: calls.append("run") or {"ok": True})
+
+    manual = run_job_now(job, _settings([job]), service_dir=tmp_path, now=datetime(2026, 6, 30, 12, 0, tzinfo=TZ))
+    tick = tick_scheduler(_settings([job]), service_dir=tmp_path, now=datetime(2026, 6, 30, 12, 1, tzinfo=TZ))
+
+    assert manual["ok"] is True
+    assert tick["ran_jobs"] == []
+    assert calls == ["run"]
+    assert read_json(tmp_path / "scheduler_runs.json")["jobs"]["daily_scan"]["next_run_at"] == "2026-07-01T08:00:00+08:00"

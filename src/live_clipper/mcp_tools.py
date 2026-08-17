@@ -321,7 +321,7 @@ def get_run_log(
         return error
     assert run is not None
     log_path = Path(str(run.get("log_path", "")))
-    if not log_path.exists():
+    if not log_path.is_file():
         return _ok(run_id=run_id, log="", log_path=str(log_path))
     log_lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
     return _ok(run_id=run_id, log="\n".join(log_lines[-lines:]), log_path=str(log_path))
@@ -352,10 +352,12 @@ def scan_now(
 ) -> dict[str, Any]:
     try:
         report = service.run_service_once(_settings(settings), service_dir=service_dir)
+    except service.ScanBusyError as exc:
+        return _error("scan_busy", str(exc))
     except service.PipelineConfigurationError as exc:
         return _error("pipeline_configuration_required", str(exc))
     except Exception as exc:  # pragma: no cover - defensive adapter boundary
-        return _error("internal_error", str(exc))
+        return _error("internal_error", service._error_summary(exc, _settings(settings)))
     service.append_event(service_dir, "mcp_scan_now", report=report)
     return report
 
@@ -430,6 +432,29 @@ def write_selected_clips(
     candidates_path = run_dir / "merged_candidates.json"
     selection_path = run_dir / "selected_clips.json"
     temp_path = run_dir / "selected_clips.mcp.tmp.json"
+    if not selected_clips:
+        existing = service.selected_clips_status(run_dir)
+        if existing["status"] == "valid":
+            return _error("selected_clips_exists", "已有有效选片；空结果不会覆盖现有 selected_clips.json。")
+        if existing["status"] == "invalid":
+            return _error("selection_validation_failed", str(existing["error"]))
+        updated = dict(run)
+        updated["phase"] = "needs_review"
+        updated["selection_result"] = {
+            "status": "selection_empty",
+            "selected_count": 0,
+            "message": "未选出可用片段，可重新执行 AI 审阅或手工选片。",
+        }
+        updated["last_error"] = None
+        updated["updated_at"] = service.now_utc()
+        service.replace_run(updated, service_dir)
+        service.append_event(service_dir, "selection_empty", run_id=run_id, source="mcp", selected_count=0)
+        return _ok(
+            run_id=run_id,
+            status="selection_empty",
+            selected_count=0,
+            message="未选出可用片段，未创建 selected_clips.json；任务可重新审阅。",
+        )
     try:
         write_json(temp_path, selected_clips)
         validated = validate_selected_clips_file(temp_path, candidates_path)
@@ -453,8 +478,11 @@ def render_run(
     assert run is not None
     run_dir = Path(str(run["run_dir"]))
     selection_path = run_dir / "selected_clips.json"
-    if not selection_path.exists():
-        return _error("invalid_phase", f"Run is missing selected_clips.json: {run_id}")
+    selection = service.selected_clips_status(run_dir)
+    if selection["status"] in {"missing", "empty"}:
+        return _error("selection_empty", "尚未选出可用片段，不能渲染。")
+    if selection["status"] == "invalid":
+        return _error("selection_validation_failed", str(selection["error"]))
     service.append_event(service_dir, "mcp_render_started", run_id=run_id, run_dir=str(run_dir))
     rendered_paths = service.render_selected_clips(selection_path)
     run["phase"] = "rendered"

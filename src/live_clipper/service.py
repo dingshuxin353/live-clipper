@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from .automation import SUPPORTED_VIDEO_EXTENSIONS
+from .codex_selection import validate_selected_clips_file
 from .config import RecordingSourceDefaultConfig, Settings
 from .pipeline import cleanup_local_artifacts, cleanup_plan, stage_source_file
 from .render_clips import render_selected_clips
@@ -29,6 +30,7 @@ MAX_CONCURRENT_PIPELINES = 1
 _EMBEDDED_LOCK = threading.Lock()
 _EMBEDDED: dict[str, Any] = {"thread": None, "stop_event": None, "enabled_event": None, "service_dir": None}
 _RUN_STATE_LOCK = threading.RLock()
+_SCAN_LOCK = threading.Lock()
 
 
 class PipelineConfigurationError(ValueError):
@@ -37,6 +39,10 @@ class PipelineConfigurationError(ValueError):
 
 class SourceChangedDuringHash(RuntimeError):
     """Raised when a recording changes while its content identity is being calculated."""
+
+
+class ScanBusyError(RuntimeError):
+    """Raised when another manual or scheduled source scan is already in progress."""
 
 
 def require_pipeline_configuration(settings: Settings) -> None:
@@ -166,8 +172,20 @@ def _embedded_service_loop(
     ensure_dir(service_dir)
     pid = os.getpid()
     _pid_path(service_dir).write_text(f"{pid}\n", encoding="utf-8")
+    _write_service_state(
+        service_dir,
+        {
+            "status": "running",
+            "pid": pid,
+            "started_at": now_utc(),
+            "last_heartbeat_at": now_utc(),
+            "consecutive_errors": 0,
+            "last_error": None,
+        },
+    )
     append_event(service_dir, "service_started", pid=pid, embedded=True)
     while not stop_event.is_set():
+        settings: Settings | None = None
         try:
             settings = settings_loader()
             if not enabled_event.is_set():
@@ -175,26 +193,36 @@ def _embedded_service_loop(
                 continue
             source_configured = settings.recording_source_default.source_dir or settings.recording_source.source_dir
             if source_configured is None:
-                state = _service_state("running", pid, settings)
-                state["waiting"] = "recording_source_not_configured"
-                _write_service_state(service_dir, state)
+                _record_tick_success(
+                    service_dir,
+                    pid,
+                    settings,
+                    {"ok": True, "waiting": "recording_source_not_configured"},
+                )
                 stop_event.wait(min(settings.scheduler.tick_seconds, 10))
                 continue
             validate_service_settings(settings)
             report = run_service_tick(settings, service_dir=service_dir)
-            state = _service_state("running", pid, settings)
-            state["last_report"] = report
-            _write_service_state(service_dir, state)
+            _record_tick_success(service_dir, pid, settings, report)
             stop_event.wait(settings.scheduler.tick_seconds)
         except Exception as exc:  # pragma: no cover - defensive for long-running loop
-            _write_service_state(service_dir, {"status": "running", "pid": pid, "last_error": str(exc)})
-            append_event(service_dir, "service_error", error=str(exc))
-            stop_event.wait(60)
+            _record_tick_failure(service_dir, pid, settings, exc)
+            append_event(service_dir, "service_error", error=_error_summary(exc, settings))
+            stop_event.wait(min(settings.scheduler.tick_seconds, 60) if settings is not None else 60)
     _write_service_state(service_dir, {"status": "stopped", "pid": pid, "stopped_at": now_utc()})
 
 
 def now_utc() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _error_summary(error: BaseException, settings: Settings | None = None) -> str:
+    message = str(error).strip() or error.__class__.__name__
+    secrets = [settings.cheap_model_api_key] if settings is not None else []
+    for secret in secrets:
+        if secret:
+            message = message.replace(str(secret), "[REDACTED]")
+    return message[:500]
 
 
 def pid_is_running(pid: int) -> bool:
@@ -275,41 +303,66 @@ def input_dir_for_run(run: dict[str, Any], settings: Settings) -> Path:
     return settings.recording_source_default.input_dir
 
 
-def _is_stable_file(path: Path, stable_check_seconds: int) -> bool:
-    before = path.stat()
-    if stable_check_seconds > 0:
-        time.sleep(stable_check_seconds)
-    after = path.stat()
-    return before.st_size == after.st_size and before.st_mtime_ns == after.st_mtime_ns
-
-
 def scan_recording_source(config: RecordingSourceDefaultConfig) -> list[Path]:
     return scan_recording_source_report(config)["eligible"]
 
 
 def scan_recording_source_report(config: RecordingSourceDefaultConfig) -> dict[str, Any]:
     if config.source_dir is None:
-        return {"eligible": [], "unsupported_files": 0, "too_new_files": 0, "unstable_files": 0}
+        return {
+            "eligible": [],
+            "unsupported_files": 0,
+            "too_new_files": 0,
+            "unstable_files": 0,
+            "skipped_subdirectories": 0,
+            "file_errors": [],
+            "source_unconfigured": True,
+        }
     if not config.source_dir.exists():
         raise FileNotFoundError(config.source_dir)
 
     now = datetime.now()
     latest_allowed_mtime = now - timedelta(minutes=config.min_age_minutes)
-    candidates = []
+    snapshots: list[tuple[Path, os.stat_result]] = []
     unsupported_files = 0
     too_new_files = 0
     unstable_files = 0
-    for path in sorted(config.source_dir.iterdir()):
-        if not path.is_file():
+    skipped_subdirectories = 0
+    file_errors: list[dict[str, str]] = []
+    try:
+        entries = sorted(config.source_dir.iterdir())
+    except OSError as exc:
+        raise FileNotFoundError(config.source_dir) from exc
+    for path in entries:
+        try:
+            if path.is_dir():
+                skipped_subdirectories += 1
+                continue
+            if not path.is_file():
+                continue
+            if path.suffix.lower() not in SUPPORTED_VIDEO_EXTENSIONS:
+                unsupported_files += 1
+                continue
+            before = path.stat()
+            mtime = datetime.fromtimestamp(before.st_mtime)
+            if mtime > latest_allowed_mtime:
+                too_new_files += 1
+                continue
+            snapshots.append((path, before))
+        except OSError as exc:
+            file_errors.append({"name": path.name, "error": _error_summary(exc)})
+
+    if snapshots and config.stable_check_seconds > 0:
+        time.sleep(config.stable_check_seconds)
+
+    candidates = []
+    for path, before in snapshots:
+        try:
+            after = path.stat()
+        except OSError as exc:
+            file_errors.append({"name": path.name, "error": _error_summary(exc)})
             continue
-        if path.suffix.lower() not in SUPPORTED_VIDEO_EXTENSIONS:
-            unsupported_files += 1
-            continue
-        mtime = datetime.fromtimestamp(path.stat().st_mtime)
-        if mtime > latest_allowed_mtime:
-            too_new_files += 1
-            continue
-        if not _is_stable_file(path, config.stable_check_seconds):
+        if before.st_size != after.st_size or before.st_mtime_ns != after.st_mtime_ns:
             unstable_files += 1
             continue
         candidates.append(path)
@@ -318,6 +371,9 @@ def scan_recording_source_report(config: RecordingSourceDefaultConfig) -> dict[s
         "unsupported_files": unsupported_files,
         "too_new_files": too_new_files,
         "unstable_files": unstable_files,
+        "skipped_subdirectories": skipped_subdirectories,
+        "file_errors": file_errors,
+        "source_unconfigured": False,
     }
 
 
@@ -706,29 +762,80 @@ def _read_pid(service_dir: Path) -> int | None:
 
 
 def _write_service_state(service_dir: Path, state: dict[str, Any]) -> None:
-    write_json(_service_path(ensure_dir(service_dir)), state)
+    path = _service_path(ensure_dir(service_dir))
+    previous = read_json(path) if path.exists() else {}
+    merged = {**previous, **state}
+    write_json(path, merged)
 
 
-def _service_state(status: str, pid: int | None, settings: Settings) -> dict[str, Any]:
+def _next_scan_at(settings: Settings, service_dir: Path) -> str | None:
+    from . import scheduler
+
+    status = scheduler.get_scheduler_status(settings, service_dir=service_dir)
+    scan_jobs = [
+        job
+        for job in status.get("jobs", [])
+        if job.get("type") == "scan_recordings" and job.get("enabled") and not job.get("paused")
+    ]
+    due = [str(job["next_run_at"]) for job in scan_jobs if job.get("next_run_at")]
+    return min(due) if due else None
+
+
+def _service_state(status: str, pid: int | None, settings: Settings, *, service_dir: Path) -> dict[str, Any]:
     now = now_utc()
-    next_scan_at = (
-        datetime.now(UTC) + timedelta(minutes=settings.service.scan_interval_minutes)
-    ).isoformat()
+    path = _service_path(service_dir)
+    previous = read_json(path) if path.exists() else {}
     return {
         "status": status,
         "pid": pid,
-        "started_at": now if status == "running" else None,
+        "started_at": previous.get("started_at") or (now if status == "running" else None),
         "last_heartbeat_at": now,
-        "next_scan_at": next_scan_at if status == "running" else None,
+        "next_scan_at": _next_scan_at(settings, service_dir) if status in {"running", "degraded"} else None,
         "config_snapshot": {
             "source_id": settings.recording_source_default.source_id,
             "source_dir": str(settings.recording_source_default.source_dir)
             if settings.recording_source_default.source_dir
             else None,
-            "scan_interval_minutes": settings.service.scan_interval_minutes,
+            "scheduler_enabled": settings.scheduler.enabled,
         },
-        "last_error": None,
     }
+
+
+def _record_tick_success(service_dir: Path, pid: int, settings: Settings, report: dict[str, Any]) -> None:
+    state = _service_state("running", pid, settings, service_dir=service_dir)
+    state.update(
+        {
+            "last_successful_tick_at": now_utc(),
+            "consecutive_errors": 0,
+            "last_error": None,
+            "next_retry_at": None,
+            "last_report": report,
+            "waiting": report.get("waiting"),
+        }
+    )
+    _write_service_state(service_dir, state)
+
+
+def _record_tick_failure(service_dir: Path, pid: int, settings: Settings | None, error: BaseException) -> None:
+    path = _service_path(service_dir)
+    previous = read_json(path) if path.exists() else {}
+    retry_seconds = min(settings.scheduler.tick_seconds, 60) if settings is not None else 60
+    retry_at = (datetime.now(UTC) + timedelta(seconds=retry_seconds)).isoformat()
+    state: dict[str, Any] = {
+        "status": "degraded",
+        "pid": pid,
+        "last_heartbeat_at": now_utc(),
+        "last_error_at": now_utc(),
+        "consecutive_errors": int(previous.get("consecutive_errors") or 0) + 1,
+        "last_error": _error_summary(error, settings),
+        "next_retry_at": retry_at,
+    }
+    if settings is not None:
+        try:
+            state["next_scan_at"] = _next_scan_at(settings, service_dir)
+        except Exception:  # noqa: BLE001 - never mask the original tick failure.
+            pass
+    _write_service_state(service_dir, state)
 
 
 def _known_content_ids(runs: list[dict[str, Any]]) -> set[str]:
@@ -739,19 +846,29 @@ def migrate_run_content_ids(
     runs: list[dict[str, Any]],
     *,
     service_dir: Path = DEFAULT_SERVICE_DIR,
+    failures: list[dict[str, str]] | None = None,
 ) -> int:
     migrated = 0
     for run in runs:
         if run.get("content_id"):
             continue
-        local_source = Path(str(run.get("local_source_path") or ""))
-        original_source = Path(str(run.get("source_path") or ""))
-        source_path = local_source if local_source.is_file() else original_source
-        if not source_path.is_file():
-            continue
         try:
+            local_source = Path(str(run.get("local_source_path") or ""))
+            original_source = Path(str(run.get("source_path") or ""))
+            source_path = local_source if local_source.is_file() else original_source
+            if not source_path.is_file():
+                raise FileNotFoundError("source_unavailable")
             identity = content_identity(source_path, service_dir=service_dir)
-        except SourceChangedDuringHash:
+        except Exception as exc:  # noqa: BLE001 - migration failures are isolated per legacy run.
+            summary = _error_summary(exc)
+            if failures is not None:
+                failures.append({"run_id": str(run.get("run_id") or "unknown"), "error": summary})
+            append_event(
+                service_dir,
+                "run_content_id_migration_failed",
+                run_id=run.get("run_id"),
+                error=summary,
+            )
             continue
         run["content_id"] = identity["content_id"]
         run["source_bytes"] = identity["bytes"]
@@ -794,11 +911,33 @@ def _phase_from_files(run_dir: Path) -> str | None:
     clips = sorted(clips_dir.glob("*.mp4")) if clips_dir.exists() else []
     if clips:
         return "rendered"
-    if (run_dir / "selected_clips.json").exists():
+    selection = selected_clips_status(run_dir)
+    if selection["status"] == "valid":
         return "rendering"
+    if selection["status"] == "invalid":
+        raise ValueError(str(selection["error"]))
     if (run_dir / "codex_brief.json").exists():
         return "needs_review"
     return None
+
+
+def selected_clips_status(run_dir: Path) -> dict[str, Any]:
+    selection_path = run_dir / "selected_clips.json"
+    if not selection_path.exists():
+        return {"status": "missing", "selected_count": 0, "error": None}
+    try:
+        raw = read_json(selection_path)
+        if not isinstance(raw, list):
+            raise ValueError("selected_clips.json 必须是 JSON 数组。")
+        if not raw:
+            return {"status": "empty", "selected_count": 0, "error": None}
+        candidates_path = run_dir / "merged_candidates.json"
+        selected = validate_selected_clips_file(selection_path, candidates_path)
+        if not selected:
+            return {"status": "empty", "selected_count": 0, "error": None}
+        return {"status": "valid", "selected_count": len(selected), "error": None}
+    except Exception as exc:  # noqa: BLE001 - callers expose a stable diagnostic state.
+        return {"status": "invalid", "selected_count": 0, "error": _error_summary(exc)}
 
 
 def _parse_timestamp(value: Any) -> datetime | None:
@@ -834,8 +973,10 @@ def _run_is_stuck(run: dict[str, Any], settings: Settings) -> bool:
 
 def reconcile_run(run: dict[str, Any], settings: Settings, *, service_dir: Path = DEFAULT_SERVICE_DIR) -> bool:
     old_phase = run.get("phase")
+    old_selection_result = run.get("selection_result")
     run_dir = Path(str(run["run_dir"]))
     pid = run.get("pid")
+    selection = selected_clips_status(run_dir)
     inferred = _phase_from_files(run_dir)
 
     process_running = isinstance(pid, int) and pid_is_running(pid)
@@ -855,7 +996,17 @@ def reconcile_run(run: dict[str, Any], settings: Settings, *, service_dir: Path 
     if isinstance(pid, int):
         run["pid"] = None
 
-    if inferred == "rendering" and settings.service.auto_render_after_selection:
+    if selection["status"] == "empty":
+        run["phase"] = "needs_review"
+        run["selection_result"] = {
+            "status": "selection_empty",
+            "selected_count": 0,
+            "message": "未选出可用片段，可重新执行 AI 审阅或手工选片。",
+        }
+        run["last_error"] = None
+        if not isinstance(old_selection_result, dict) or old_selection_result.get("status") != "selection_empty":
+            append_event(service_dir, "selection_empty_recovered", run_id=run["run_id"], selected_count=0)
+    elif inferred == "rendering" and settings.service.auto_render_after_selection:
         run["phase"] = "rendering"
         append_event(service_dir, "render_started", run_id=run["run_id"], run_dir=str(run_dir))
         render_selected_clips(run_dir / "selected_clips.json")
@@ -873,7 +1024,11 @@ def reconcile_run(run: dict[str, Any], settings: Settings, *, service_dir: Path 
         run["phase"] = "failed"
         run["last_error"] = "Pipeline stopped before codex_brief.json was created"
 
-    changed = run.get("phase") != old_phase or (isinstance(pid, int) and run.get("pid") is None)
+    changed = (
+        run.get("phase") != old_phase
+        or run.get("selection_result") != old_selection_result
+        or (isinstance(pid, int) and run.get("pid") is None)
+    )
     if changed:
         run["updated_at"] = now_utc()
         append_event(
@@ -964,6 +1119,7 @@ def dispatch_queued_runs(
     *,
     settings: Settings,
     service_dir: Path = DEFAULT_SERVICE_DIR,
+    failures: list[dict[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     require_pipeline_configuration(settings)
     active_count = sum(1 for run in runs if run.get("phase") == "processing")
@@ -973,15 +1129,31 @@ def dispatch_queued_runs(
         (run for run in runs if run.get("phase") == "queued"),
         key=lambda run: str(run.get("discovered_at") or run.get("created_at") or ""),
     )
-    for run in queued[:capacity]:
+    for run in queued:
+        if len(started) >= capacity:
+            break
         try:
             _launch_queued_run(run, settings=settings, service_dir=service_dir)
-        except FileNotFoundError:
+        except PipelineConfigurationError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - a broken queued run must not block later runs.
+            summary = _error_summary(exc, settings)
             run["phase"] = "failed"
             run["pid"] = None
-            run["last_error"] = "原录像和本地副本均不可用，无法启动该任务。"
+            run["last_error"] = (
+                "原录像和本地副本均不可用，无法启动该任务。"
+                if isinstance(exc, FileNotFoundError)
+                else f"队列启动失败：{summary}"
+            )
             run["updated_at"] = now_utc()
-            append_event(service_dir, "queued_source_unavailable", run_id=run.get("run_id"))
+            if failures is not None:
+                failures.append({"run_id": str(run.get("run_id") or "unknown"), "error": summary})
+            append_event(
+                service_dir,
+                "queue_start_failed",
+                run_id=run.get("run_id"),
+                error=summary,
+            )
             continue
         started.append(run)
     return started
@@ -1098,17 +1270,46 @@ def _retry_failed_run_locked(
 
 
 def run_service_once(settings: Settings, *, service_dir: Path = DEFAULT_SERVICE_DIR) -> dict[str, Any]:
-    with _RUN_STATE_LOCK:
-        return _run_service_once_locked(settings, service_dir=service_dir)
+    if not _SCAN_LOCK.acquire(blocking=False):
+        raise ScanBusyError("扫描正在进行中，请等待当前扫描完成。")
+    try:
+        with _RUN_STATE_LOCK:
+            return _run_service_once_locked(settings, service_dir=service_dir)
+    finally:
+        _SCAN_LOCK.release()
+
+
+def _reconcile_runs(
+    runs: list[dict[str, Any]],
+    settings: Settings,
+    *,
+    service_dir: Path,
+) -> tuple[int, list[dict[str, str]]]:
+    changed = 0
+    failures: list[dict[str, str]] = []
+    for run in runs:
+        try:
+            if reconcile_run(run, settings, service_dir=service_dir):
+                changed += 1
+        except Exception as exc:  # noqa: BLE001 - reconcile is intentionally isolated per run.
+            summary = _error_summary(exc, settings)
+            run["phase"] = "failed"
+            run["pid"] = None
+            run["last_error"] = f"历史任务恢复失败：{summary}"
+            run["updated_at"] = now_utc()
+            failure = {"run_id": str(run.get("run_id") or "unknown"), "error": summary}
+            failures.append(failure)
+            append_event(service_dir, "run_reconcile_failed", **failure)
+    return changed, failures
 
 
 def _run_service_once_locked(settings: Settings, *, service_dir: Path) -> dict[str, Any]:
     validate_service_settings(settings)
     ensure_dir(service_dir)
     runs = load_runs(service_dir)
-    for run in runs:
-        reconcile_run(run, settings, service_dir=service_dir)
-    migrated_runs = migrate_run_content_ids(runs, service_dir=service_dir)
+    _changed_runs, reconcile_failures = _reconcile_runs(runs, settings, service_dir=service_dir)
+    migration_failures: list[dict[str, str]] = []
+    migrated_runs = migrate_run_content_ids(runs, service_dir=service_dir, failures=migration_failures)
     # 先把 reconcile 结果落盘：即使随后扫描录播源失败（如 NAS 未挂载），
     # 也不能丢掉状态推进。
     if runs:
@@ -1126,6 +1327,9 @@ def _run_service_once_locked(settings: Settings, *, service_dir: Path) -> dict[s
         "unsupported_files": 0,
         "too_new_files": 0,
         "unstable_files": 0,
+        "skipped_subdirectories": 0,
+        "file_errors": [],
+        "source_unconfigured": False,
     }
     try:
         scan_report = scan_recording_source_report(settings.recording_source_default)
@@ -1136,11 +1340,23 @@ def _run_service_once_locked(settings: Settings, *, service_dir: Path) -> dict[s
     duplicate_files = 0
     hash_cache_hits = 0
     hashes_computed = 0
+    file_errors = list(scan_report.get("file_errors", []))
     for source_path in scan_report["eligible"]:
         try:
             identity = content_identity(source_path, service_dir=service_dir)
-        except SourceChangedDuringHash:
+        except SourceChangedDuringHash as exc:
             scan_report["unstable_files"] += 1
+            append_event(
+                service_dir,
+                "recording_became_unstable",
+                source_name=source_path.name,
+                error=_error_summary(exc),
+            )
+            continue
+        except Exception as exc:  # noqa: BLE001 - one unreadable source must not block the scan.
+            summary = _error_summary(exc, settings)
+            file_errors.append({"name": source_path.name, "error": summary})
+            append_event(service_dir, "recording_file_failed", source_name=source_path.name, error=summary)
             continue
         if identity["cache_hit"]:
             hash_cache_hits += 1
@@ -1161,18 +1377,39 @@ def _run_service_once_locked(settings: Settings, *, service_dir: Path) -> dict[s
         discovered.append(run)
         known_by_content[str(identity["content_id"])] = run
 
-    started = dispatch_queued_runs(runs, settings=settings, service_dir=service_dir)
+    queue_start_failures: list[dict[str, str]] = []
+    started = dispatch_queued_runs(
+        runs,
+        settings=settings,
+        service_dir=service_dir,
+        failures=queue_start_failures,
+    )
     if runs:
         save_runs(runs, service_dir)
     queued_runs = sum(1 for run in runs if run.get("phase") == "queued")
-    if scan_error:
+    classification = (
+        f"已处理或内容重复 {duplicate_files} 个，"
+        f"过新 {scan_report['too_new_files']} 个，"
+        f"仍在写入 {scan_report['unstable_files']} 个，"
+        f"不支持格式 {scan_report['unsupported_files']} 个，"
+        f"跳过子目录 {scan_report['skipped_subdirectories']} 个，"
+        f"读取失败 {len(file_errors)} 个"
+    )
+    if scan_report.get("source_unconfigured"):
+        message = "尚未配置录像来源，请前往「设置 → 录像来源」选择目录。"
+    elif scan_error:
         message = f"录像目录不可用：{scan_error}"
     elif discovered:
-        message = f"发现 {len(discovered)} 个未处理录像，已开始 {len(started)} 个，排队 {queued_runs} 个。"
-    else:
         message = (
-            f"没有发现未处理录像：已处理或已排队 {duplicate_files} 个，"
-            f"过新 {scan_report['too_new_files']} 个，写入中 {scan_report['unstable_files']} 个。"
+            f"发现 {len(discovered)} 个未处理录像，已开始 {len(started)} 个，排队 {queued_runs} 个；"
+            f"{classification}。"
+        )
+    else:
+        message = f"没有发现未处理录像：{classification}。"
+    if reconcile_failures or queue_start_failures:
+        message += (
+            f" 历史任务恢复失败 {len(reconcile_failures)} 个，"
+            f"队列启动失败 {len(queue_start_failures)} 个；其他项目已继续处理。"
         )
     return {
         "ok": True,
@@ -1184,9 +1421,19 @@ def _run_service_once_locked(settings: Settings, *, service_dir: Path) -> dict[s
         "too_new_files": scan_report["too_new_files"],
         "unstable_files": scan_report["unstable_files"],
         "unsupported_files": scan_report["unsupported_files"],
+        "skipped_subdirectories": scan_report["skipped_subdirectories"],
+        "file_error_count": len(file_errors),
+        "file_errors": file_errors,
         "hash_cache_hits": hash_cache_hits,
         "hashes_computed": hashes_computed,
         "migrated_runs": migrated_runs,
+        "reconcile_failed_runs": len(reconcile_failures),
+        "reconcile_failures": reconcile_failures,
+        "migration_failed_runs": len(migration_failures),
+        "migration_failures": migration_failures,
+        "queue_start_failed_runs": len(queue_start_failures),
+        "queue_start_failures": queue_start_failures,
+        "source_unconfigured": bool(scan_report.get("source_unconfigured")),
         "scan_error": scan_error,
         "message": message,
         "service_dir": str(service_dir),
@@ -1202,14 +1449,17 @@ def _run_service_tick_locked(settings: Settings, *, service_dir: Path) -> dict[s
     validate_service_settings(settings)
     ensure_dir(service_dir)
     runs = load_runs(service_dir)
-    changed_runs = 0
-    for run in runs:
-        if reconcile_run(run, settings, service_dir=service_dir):
-            changed_runs += 1
+    changed_runs, reconcile_failures = _reconcile_runs(runs, settings, service_dir=service_dir)
     queued_started: list[dict[str, Any]] = []
+    queue_start_failures: list[dict[str, str]] = []
     if any(run.get("phase") == "queued" for run in runs):
         try:
-            queued_started = dispatch_queued_runs(runs, settings=settings, service_dir=service_dir)
+            queued_started = dispatch_queued_runs(
+                runs,
+                settings=settings,
+                service_dir=service_dir,
+                failures=queue_start_failures,
+            )
         except PipelineConfigurationError:
             append_event(service_dir, "pipeline_configuration_blocked", trigger="queue_dispatch")
     save_runs(runs, service_dir)
@@ -1221,7 +1471,11 @@ def _run_service_tick_locked(settings: Settings, *, service_dir: Path) -> dict[s
         "ok": True,
         "known_runs": len(runs),
         "changed_runs": changed_runs,
+        "reconcile_failed_runs": len(reconcile_failures),
+        "reconcile_failures": reconcile_failures,
         "started_queued_runs": len(queued_started),
+        "queue_start_failed_runs": len(queue_start_failures),
+        "queue_start_failures": queue_start_failures,
         "queued_runs": sum(1 for run in runs if run.get("phase") == "queued"),
         "scheduler": scheduler_report,
         "service_dir": str(service_dir),
@@ -1233,22 +1487,18 @@ def service_loop(settings: Settings, *, service_dir: Path = DEFAULT_SERVICE_DIR)
     ensure_dir(service_dir)
     pid = os.getpid()
     _pid_path(service_dir).write_text(f"{pid}\n", encoding="utf-8")
-    _write_service_state(service_dir, _service_state("running", pid, settings))
+    _write_service_state(service_dir, _service_state("running", pid, settings, service_dir=service_dir))
     append_event(service_dir, "service_started", pid=pid)
     while True:
         try:
             report = run_service_tick(settings, service_dir=service_dir)
-            state = _service_state("running", pid, settings)
-            state["last_report"] = report
-            _write_service_state(service_dir, state)
+            _record_tick_success(service_dir, pid, settings, report)
             time.sleep(settings.scheduler.tick_seconds)
         except KeyboardInterrupt:
             break
         except Exception as exc:  # pragma: no cover - defensive for long-running service
-            state = _service_state("running", pid, settings)
-            state["last_error"] = str(exc)
-            _write_service_state(service_dir, state)
-            append_event(service_dir, "service_error", error=str(exc))
+            _record_tick_failure(service_dir, pid, settings, exc)
+            append_event(service_dir, "service_error", error=_error_summary(exc, settings))
             time.sleep(min(settings.scheduler.tick_seconds, 60))
     _write_service_state(service_dir, {"status": "stopped", "pid": pid, "stopped_at": now_utc()})
     append_event(service_dir, "service_stopped", pid=pid)
@@ -1276,7 +1526,7 @@ def start_service(
     if once:
         pid = os.getpid()
         _pid_path(service_dir).write_text(f"{pid}\n", encoding="utf-8")
-        _write_service_state(service_dir, _service_state("running", pid, settings))
+        _write_service_state(service_dir, _service_state("running", pid, settings, service_dir=service_dir))
         report = run_service_once(settings, service_dir=service_dir)
         _write_service_state(service_dir, {"status": "stopped", "pid": pid, "stopped_at": now_utc(), "last_report": report})
         return {
@@ -1308,7 +1558,7 @@ def start_service(
             start_new_session=True,
         )
     _pid_path(service_dir).write_text(f"{process.pid}\n", encoding="utf-8")
-    _write_service_state(service_dir, _service_state("running", process.pid, settings))
+    _write_service_state(service_dir, _service_state("running", process.pid, settings, service_dir=service_dir))
     append_event(service_dir, "service_started", pid=process.pid)
     return {
         "ok": True,
@@ -1343,6 +1593,12 @@ def get_service_status(*, service_dir: Path = DEFAULT_SERVICE_DIR) -> dict[str, 
     state = read_json(state_path) if state_path.exists() else {"status": "stopped", "pid": None}
     pid = state.get("pid")
     running = isinstance(pid, int) and pid_is_running(pid)
+    health = str(state.get("status") or "stopped")
+    if health not in {"running", "degraded", "paused", "stopped"}:
+        health = "stopped"
+    if not running and health in {"running", "degraded"}:
+        health = "stopped"
+    state["status"] = health
     runs = load_runs(service_dir)
     counts = dict(sorted(Counter(str(run.get("phase", "unknown")) for run in runs).items()))
     return {

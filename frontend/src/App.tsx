@@ -59,6 +59,8 @@ const phaseLabels: Record<string, string> = {
   ready_to_render: "可渲染",
   needs_codex_selection: "待审阅",
   running: "运行中",
+  degraded: "服务异常，正在重试",
+  paused: "已暂停",
   waiting_or_manual: "等待处理",
   missing: "缺失",
   unknown: "未知",
@@ -86,6 +88,8 @@ const valueLabels: Record<string, string> = {
   daily: "每天",
   interval_minutes: "每隔 N 分钟",
   success: "成功",
+  failed: "失败",
+  overdue: "已逾期",
   skipped: "已跳过",
   local_agent: "本地 Agent",
   model: "配置模型直连",
@@ -190,8 +194,10 @@ function AppContent() {
   const [log, setLog] = useState("选择一个任务查看日志。");
   const [toast, setToast] = useState("");
   const [loadError, setLoadError] = useState("");
+  const [scanning, setScanning] = useState(false);
   const mounted = useRef(true);
   const pollingJobs = useRef(new Set<string>());
+  const scanningRef = useRef(false);
 
   const notify = useCallback((message: string) => {
     setToast(message);
@@ -275,7 +281,9 @@ function AppContent() {
         }
         if (!job || job.status === "running") continue;
         if (job.status === "succeeded") {
-          notify(`AI 审阅完成，已选 ${String(job.result?.selected_count ?? "?")} 个片段`);
+          notify(job.result?.status === "selection_empty"
+            ? "AI 审阅完成，但未选出可用片段；你可以重新审阅或手工选片。"
+            : `AI 审阅完成，已选 ${String(job.result?.selected_count ?? "?")} 个片段`);
         } else if (job.status === "interrupted") {
           notify("AI 审阅在服务重启时被中断，请重试。");
         } else {
@@ -329,6 +337,18 @@ function AppContent() {
     }
   }
 
+  async function scanNow() {
+    if (scanningRef.current) return;
+    scanningRef.current = true;
+    setScanning(true);
+    try {
+      await runAction("/api/service/scan-now");
+    } finally {
+      scanningRef.current = false;
+      if (mounted.current) setScanning(false);
+    }
+  }
+
   const pending = snapshot.confirmations.filter((item) => item.status === "pending");
   const tabs: Array<[TabId, string]> = [
     ["clips", "切片结果"],
@@ -339,6 +359,8 @@ function AppContent() {
   const service = snapshot.service ?? {};
   const schedulerState = snapshot.scheduler?.scheduler ?? {};
   const running = Boolean(service.running);
+  const serviceStatus = String(service.service?.status || "stopped");
+  const serviceStatusLabel = serviceStatus === "degraded" ? "服务异常，正在重试" : labelFor(serviceStatus);
 
   return (
     <>
@@ -361,13 +383,13 @@ function AppContent() {
             footer={(
               <div id="sidebarServiceCard" className="sidebar-service">
             <small>本机服务</small>
-            <strong>{running ? "服务运行中" : labelFor(service.service?.status || "已停止")}</strong>
+            <strong>{serviceStatusLabel}</strong>
             <small>PID：{String(service.service?.pid || "无")}</small>
             <small>下次扫描：{formatLocalTime(service.service?.next_scan_at)}</small>
             <small>下次定时：{formatLocalTime(schedulerState.next_due_at)}</small>
                 <div className="sidebar-service-actions">
-                  <Button label="立即扫描" size="sm" variant="secondary" onClick={() => void runAction("/api/service/scan-now").catch(() => undefined)} />
-                  <Button label={running ? "停止" : "启动"} size="sm" variant="secondary" onClick={() => void runAction(running ? "/api/service/stop" : "/api/service/start")} />
+                  <Button isDisabled={scanning} label={scanning ? "扫描中…" : "立即扫描"} size="sm" variant="secondary" onClick={() => void scanNow().catch(() => undefined)} />
+                  <Button label={serviceStatus === "paused" ? "恢复" : running ? "停止" : "启动"} size="sm" variant="secondary" onClick={() => void runAction(serviceStatus === "paused" ? "/api/service/start" : running ? "/api/service/stop" : "/api/service/start")} />
                 </div>
               </div>
             )}
@@ -398,6 +420,8 @@ function AppContent() {
               refreshAll={refreshAll}
               pollAiReviewJob={pollAiReviewJob}
               runAction={runAction}
+              scanNow={scanNow}
+              scanning={scanning}
             />
           </section>
           <section className={`page ${activeTab === "automation" ? "active" : ""}`} id="section-automation">
@@ -470,10 +494,12 @@ interface ClipsProps {
   refreshAll(): Promise<void>;
   pollAiReviewJob(runId: string, jobId: string): Promise<void>;
   runAction(path: string, payload?: unknown, showToast?: boolean): Promise<GenericRecord>;
+  scanNow(): Promise<void>;
+  scanning: boolean;
 }
 
 function Clips(props: ClipsProps) {
-  const { phase, setPhase, runs, detail, selectedRunId, selectRun, setActiveTab, setLog, notify, refreshAll, pollAiReviewJob, runAction } = props;
+  const { phase, setPhase, runs, detail, selectedRunId, selectRun, setActiveTab, setLog, notify, refreshAll, pollAiReviewJob, runAction, scanNow, scanning } = props;
   const clipCount = runs.reduce((total, run) => total + Number(run.clip_count || 0), 0);
   const queuedCount = runs.filter((run) => String(run.phase) === "queued").length;
   const processingCount = runs.filter((run) => ["processing", "rendering", "running", "ready_to_render"].includes(String(run.phase))).length;
@@ -491,7 +517,7 @@ function Clips(props: ClipsProps) {
         <div><h2>切片结果</h2><p id="clipsSubtitle" className="muted">{subtitle}</p></div>
         <div className="button-row">
           <Button id="refreshBtn" label="刷新" onClick={() => void refreshAll()} />
-          <Button id="scanNowBtn" label="立即扫描录播" onClick={() => void runAction("/api/service/scan-now").catch(() => undefined)} variant="primary" />
+          <Button id="scanNowBtn" isDisabled={scanning} label={scanning ? "扫描中…" : "立即扫描录播"} onClick={() => void scanNow().catch(() => undefined)} variant="primary" />
         </div>
       </div>
       <TabList aria-label="任务阶段筛选" className="phase-filters" id="phaseFilters" onChange={setPhase} size="sm" value={phase}>
@@ -725,7 +751,9 @@ function Automation({
           ["待确认", service.pending_confirmation_count || 0], ["当前任务", service.active_run || "无"],
         ]} /></div>
         <div id="serviceSummary" className="info-grid service-summary-grid"><InfoRows rows={[
-          ["最近心跳", serviceState.last_heartbeat_at], ["下次扫描", serviceState.next_scan_at],
+          ["最近心跳", serviceState.last_heartbeat_at], ["最近成功", serviceState.last_successful_tick_at],
+          ["最近错误时间", serviceState.last_error_at], ["下次重试", serviceState.next_retry_at],
+          ["下次扫描", serviceState.next_scan_at],
           ["录播源", source.source_dir], ["输入目录", source.input_dir], ["输出目录", source.output_root],
           ["最近错误", serviceState.last_error],
         ]} /></div>

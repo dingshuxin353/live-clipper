@@ -161,7 +161,7 @@ failure_log_mode = "redacted"
 
 ## 本机常驻服务
 
-V1 提供一个本机常驻服务，用来替代手写的定时提示词编排。服务会按配置扫描录播目录，把稳定录制复制到本地 `input/`，启动现有 pipeline，等 `selected_clips.json` 出现后自动渲染。
+V1 提供一个本机常驻服务，用来替代手写的定时提示词编排。内置 Scheduler 的 `scan_recordings` 任务是自动扫描的唯一调度来源；服务会把稳定录制复制到本地 `input/`，启动现有 pipeline，并在有效且非空的 `selected_clips.json` 出现后按配置自动渲染。
 
 常用命令：
 
@@ -189,8 +189,6 @@ work/service/
 
 ```toml
 [service]
-enabled = true
-scan_interval_minutes = 30
 auto_render_after_selection = true
 cleanup_mode = "preview_only"
 
@@ -203,6 +201,8 @@ min_age_minutes = 10
 stable_check_seconds = 60
 ```
 
+旧配置中的 `service.enabled` 和 `service.scan_interval_minutes` 仍可读取，但已经弃用，不再控制运行或生成“下次扫描”。下次扫描来自最早启用且未暂停的 `scan_recordings` Scheduler 任务。`review_automation.auto_render_after_selection` 同样只兼容旧配置；运行时以 `service.auto_render_after_selection` 为准。
+
 安全边界：
 
 - 服务不会自动删除 NAS 原始录制。
@@ -210,6 +210,7 @@ stable_check_seconds = 60
 - 服务不会自动执行 `cleanup --confirm`。
 - `service stop` 只停止服务主进程，不会主动终止已经启动的 pipeline 子进程。
 - V1 只会在渲染完成后做 cleanup preview，并把状态记录到本地文件。
+- 空选片不会创建新的正式 `selected_clips.json`，也不会进入渲染或清理；旧版本留下的空选片会无损恢复为待审阅状态。
 
 ## MCP 工具面
 
@@ -511,6 +512,8 @@ V5 增加内置 Scheduler，跟随 `live-clipper service` 运行，不再依赖 
 - 对任务执行 `立即执行`、`暂停`、`启用`。
 - 修改 `timezone`、`tick_seconds`、`missed_policy` 后保存配置，并重启 service 让新设置生效。
 
+Scheduler 以 `work/service/scheduler_runs.json` 中持久化的 `next_run_at` 判断到期。`run_once` 对错过的多个周期只补跑一次，`skip` 会跳过并推进到未来；手工“立即执行”不会让同一个已到期计划点再触发一次。
+
 安全边界：
 
 - Scheduler 不会删除文件，不会执行 cleanup confirm，不会 approve/reject confirmation。
@@ -536,6 +539,8 @@ V6 增加 AI 自动审阅执行器，用来把 `needs_review` 任务的审阅包
 4. 系统调用 `validate_selected_clips_file()` 校验 clip id、时间范围和 remove ranges。
 5. 校验通过后才替换成正式 `selected_clips.json`。
 6. `service` 继续复用已有自动渲染链路。
+
+如果 AI 返回合法空数组，系统会记录 `selection_empty` 和 `selected_count=0`，保持任务可重新审阅，并且不会写入新的正式选片文件。
 
 安全边界：
 
