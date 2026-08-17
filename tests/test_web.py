@@ -216,6 +216,40 @@ def test_scan_and_retry_configuration_errors_use_http_409(tmp_path, monkeypatch)
     assert "设置 → AI 服务" in scan["message"]
 
 
+def test_empty_selection_disables_render_and_cleanup_and_returns_http_409(tmp_path):
+    service_dir = tmp_path / "service"
+    run_dir = tmp_path / "workspace" / "runs" / "run-empty" / "output"
+    write_json(run_dir / "codex_brief.json", {"candidates": []})
+    write_json(run_dir / "merged_candidates.json", [])
+    write_json(run_dir / "selected_clips.json", [])
+    write_json(
+        service_dir / "runs.json",
+        {
+            "runs": [
+                {
+                    "run_id": "run-empty",
+                    "phase": "needs_review",
+                    "run_dir": str(run_dir),
+                    "input_dir": str(run_dir.parent / "input"),
+                    "source_path": str(tmp_path / "source.mkv"),
+                    "local_source_path": None,
+                }
+            ]
+        },
+    )
+    paths = WebPaths(service_dir=service_dir, config_path=tmp_path / "missing.toml")
+
+    detail = build_run_detail("run-empty", paths)
+    status, _headers, payload = handle_api_request("POST", "/api/runs/run-empty/render", paths)
+
+    assert detail["actions"]["can_render"] is False
+    assert detail["actions"]["can_cleanup_preview"] is False
+    assert detail["actions"]["can_cleanup"] is False
+    assert detail["actions"]["can_ai_review"] is True
+    assert status == 409
+    assert payload["error_code"] == "selection_empty"
+
+
 def test_static_assets_disable_cache_and_serve_hashed_react_js(tmp_path):
     class TestHandler(LiveClipperRequestHandler):
         paths = WebPaths(output_root=tmp_path / "output", state_dir=tmp_path / "state", log_dir=tmp_path / "logs")

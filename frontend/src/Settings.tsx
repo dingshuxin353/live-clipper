@@ -537,6 +537,7 @@ export function Settings(props: SettingsProps) {
           <div className="full-span settings-guidance">
             <Text as="div" color="secondary" type="supporting">自动化引擎随 App 运行</Text>
             <Text as="div" color="secondary" type="supporting">AI 自动选片默认关闭，勾选下方开关并在「自动化」页点「测试 AI 审阅环境」确认可用后即可全自动出片。</Text>
+            <Text as="div" color="secondary" type="supporting">旧版“启用自动处理引擎”和“扫描间隔”开关已弃用；请通过恢复/暂停服务和下方定时任务管理自动扫描。</Text>
           </div>
           <FormLayout className="settings-field-grid full-span">
             {control("scheduler.enabled", "按时间表自动扫描和检查（默认每周日）", { type: "checkbox" })}
@@ -545,7 +546,6 @@ export function Settings(props: SettingsProps) {
             {control("review_automation_local_agent.provider", "本地 Agent", { options: [["codex_cli", "Codex CLI"], ["claude_code", "Claude Code"]] })}
             {control("review_automation_model.model", "模型", { placeholder: "为空时复用 LLM 模型" })}
             {control("review_automation.max_runs_per_tick", "每次最多处理任务数", { type: "number" })}
-            {control("review_automation.auto_render_after_selection", "选片后沿用自动渲染", { type: "checkbox" })}
           </FormLayout>
           <details className="scheduler-editor full-span">
             <summary>编辑高级定时任务</summary>
@@ -572,7 +572,6 @@ export function Settings(props: SettingsProps) {
                 })}
                 {control("recording_source_default.min_age_minutes", "录像多少分钟没变化才开始处理", { type: "number" })}
                 {control("recording_source_default.stable_check_seconds", "稳定性检查秒数", { type: "number" })}
-                {control("service.enabled", "启用自动处理引擎", { type: "checkbox" })}
                 {control("service.cleanup_mode", "清理模式", { readOnly: true })}
               </FormLayout>
             </fieldset>
@@ -599,7 +598,6 @@ export function Settings(props: SettingsProps) {
             <fieldset>
               <legend>服务与调度</legend>
               <FormLayout>
-                {control("service.scan_interval_minutes", "扫描间隔（分钟）", { type: "number" })}
                 {control("scheduler.timezone", "调度时区")}
                 {control("scheduler.tick_seconds", "tick 秒数", { type: "number" })}
                 {control("scheduler.missed_policy", "错过执行策略", { options: [["run_once", "补跑一次"], ["skip", "跳过"]] })}

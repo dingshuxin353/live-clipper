@@ -87,6 +87,11 @@ JOB_ID_RE = re.compile(r"^[a-z0-9_-]{1,64}$")
 JOB_TYPES = {"scan_recordings", "review_due_check", "maintenance_check", "ai_review"}
 SCHEDULES = {"weekly", "daily", "interval_minutes"}
 DAYS_OF_WEEK = {"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
+DEPRECATED_FIELDS = [
+    "service.enabled",
+    "service.scan_interval_minutes",
+    "review_automation.auto_render_after_selection",
+]
 
 
 def load_editable_config(*, config_path: Path = DEFAULT_CONFIG_PATH) -> dict[str, Any]:
@@ -103,6 +108,7 @@ def load_editable_config(*, config_path: Path = DEFAULT_CONFIG_PATH) -> dict[str
         "config": config,
         "env_status": _env_status(config),
         "warnings": _warnings_for(config, base_dir=config_path.parent),
+        "deprecated_fields": DEPRECATED_FIELDS,
     }
 
 

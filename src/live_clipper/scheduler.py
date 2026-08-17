@@ -14,7 +14,6 @@ JOB_ID_RE = re.compile(r"^[a-z0-9_-]{1,64}$")
 JOB_TYPES = {"scan_recordings", "review_due_check", "maintenance_check", "ai_review"}
 SCHEDULES = {"weekly", "daily", "interval_minutes"}
 DAYS_OF_WEEK = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
-MAX_MISSED_AGE = timedelta(days=7)
 
 
 def _scheduler_path(service_dir: Path) -> Path:
@@ -201,17 +200,40 @@ def tick_scheduler(
     ran_jobs = []
     skipped_jobs = []
     for job in settings.scheduler.jobs:
-        if not job.enabled or _job_state(runs_state, job.id).get("paused"):
+        state = _job_state(runs_state, job.id)
+        if not job.enabled or state.get("paused"):
             continue
-        if not _job_due(job, settings=settings, runs_state=runs_state, now=current):
+        due_at = _ensure_next_run_at(job, settings=settings, state=state, now=current)
+        save_scheduler_runs(service_dir, runs_state)
+        if due_at > current:
             continue
-        if settings.scheduler.missed_policy == "run_once":
-            append_scheduler_event(service_dir, "scheduler_job_missed_run_once", job_id=job.id)
-        if job.skip_if_running and _job_state(runs_state, job.id).get("status") == "running":
-            _mark_job_skipped(service_dir, runs_state, job, "job_already_running")
+        if settings.scheduler.missed_policy == "skip":
+            state.update(
+                {
+                    "status": "skipped",
+                    "last_error": "missed_policy_skip",
+                    "last_scheduled_for": due_at.isoformat(),
+                    "next_run_at": _advance_next_run(job, due_at=due_at, now=current).isoformat(),
+                }
+            )
+            save_scheduler_runs(service_dir, runs_state)
+            append_scheduler_event(service_dir, "scheduler_job_skipped", job_id=job.id, reason="missed_policy_skip")
             skipped_jobs.append(job.id)
             continue
-        run_job_now(job, settings, service_dir=service_dir, now=current)
+        append_scheduler_event(
+            service_dir,
+            "scheduler_job_missed_run_once",
+            job_id=job.id,
+            scheduled_for=due_at.isoformat(),
+        )
+        if job.skip_if_running and state.get("status") == "running":
+            _mark_job_skipped(service_dir, runs_state, job, "job_already_running")
+            state["next_run_at"] = _advance_next_run(job, due_at=due_at, now=current).isoformat()
+            save_scheduler_runs(service_dir, runs_state)
+            skipped_jobs.append(job.id)
+            continue
+        run_job_now(job, settings, service_dir=service_dir, now=current, scheduled_due_at=due_at)
+        runs_state = load_scheduler_runs(service_dir)
         ran_jobs.append(job.id)
     _write_scheduler_summary(settings, service_dir, current)
     return {"ok": True, "ran_jobs": ran_jobs, "skipped_jobs": skipped_jobs, "enabled": True}
@@ -223,17 +245,32 @@ def run_job_now(
     *,
     service_dir: Path,
     now: datetime | None = None,
+    scheduled_due_at: datetime | None = None,
 ) -> dict[str, Any]:
     current = now or datetime.now(ZoneInfo(settings.scheduler.timezone))
     runs_state = load_scheduler_runs(service_dir)
     entry = _job_state(runs_state, job.id)
+    previous_next_run_at = entry.get("next_run_at")
+    if scheduled_due_at is None and previous_next_run_at is None:
+        previous_next_run_at = _ensure_next_run_at(job, settings=settings, state=entry, now=current).isoformat()
+    due_to_advance = scheduled_due_at
+    if due_to_advance is None:
+        persisted_due = _parse_datetime(previous_next_run_at)
+        if persisted_due is not None and _as_timezone(persisted_due, ZoneInfo(settings.scheduler.timezone)) <= current:
+            due_to_advance = _as_timezone(persisted_due, ZoneInfo(settings.scheduler.timezone))
     entry.update({"status": "running", "last_started_at": current.isoformat()})
+    if scheduled_due_at is not None:
+        entry["last_scheduled_for"] = scheduled_due_at.isoformat()
     save_scheduler_runs(service_dir, runs_state)
     append_scheduler_event(service_dir, "scheduler_job_started", job_id=job.id, job_type=job.type)
     try:
         result = _run_job_action(job, settings, service_dir=service_dir, now=current)
     except Exception as exc:  # noqa: BLE001 - record long-running scheduler failure as state.
         entry.update({"status": "failed", "last_run_at": current.isoformat(), "last_error": str(exc)})
+        if due_to_advance is not None:
+            entry["next_run_at"] = _advance_next_run(job, due_at=due_to_advance, now=current).isoformat()
+        elif previous_next_run_at is not None:
+            entry["next_run_at"] = previous_next_run_at
         save_scheduler_runs(service_dir, runs_state)
         append_scheduler_event(service_dir, "scheduler_job_failed", job_id=job.id, error=str(exc))
         _write_scheduler_summary(settings, service_dir, current)
@@ -241,10 +278,14 @@ def run_job_now(
     entry.update({
         "status": "success",
         "last_run_at": current.isoformat(),
+        "last_successful_run_at": current.isoformat(),
         "last_result": result,
-        "next_run_at": next_run_at(job, now=current, timezone=settings.scheduler.timezone, last_run_at=current).isoformat(),
         "last_error": None,
     })
+    if due_to_advance is not None:
+        entry["next_run_at"] = _advance_next_run(job, due_at=due_to_advance, now=current).isoformat()
+    elif previous_next_run_at is not None:
+        entry["next_run_at"] = previous_next_run_at
     save_scheduler_runs(service_dir, runs_state)
     append_scheduler_event(service_dir, "scheduler_job_completed", job_id=job.id, result=result)
     _write_scheduler_summary(settings, service_dir, current)
@@ -331,10 +372,13 @@ def _job_status(
     now: datetime,
 ) -> dict[str, Any]:
     state = _job_state(runs_state, job.id)
-    last_run = _parse_datetime(state.get("last_run_at"))
-    next_run = state.get("next_run_at")
-    if not next_run:
-        next_run = next_run_at(job, now=now, timezone=settings.scheduler.timezone, last_run_at=last_run).isoformat()
+    next_run_at_value = _ensure_next_run_at(job, settings=settings, state=state, now=now)
+    paused = bool(state.get("paused"))
+    status = state.get("status")
+    if paused:
+        status = "paused"
+    elif status != "running" and next_run_at_value <= now:
+        status = "overdue"
     return {
         "id": job.id,
         "name": job.name,
@@ -345,10 +389,10 @@ def _job_status(
         "interval_minutes": job.interval_minutes,
         "enabled": job.enabled,
         "skip_if_running": job.skip_if_running,
-        "paused": bool(state.get("paused")),
-        "status": state.get("status"),
+        "paused": paused,
+        "status": status,
         "last_run_at": state.get("last_run_at"),
-        "next_run_at": next_run,
+        "next_run_at": next_run_at_value.isoformat(),
         "last_result": state.get("last_result"),
         "last_error": state.get("last_error"),
     }
@@ -356,15 +400,44 @@ def _job_status(
 
 def _job_due(job: SchedulerJobConfig, *, settings: Settings, runs_state: dict[str, Any], now: datetime) -> bool:
     state = _job_state(runs_state, job.id)
-    last_run = _parse_datetime(state.get("last_run_at"))
-    if last_run is not None:
-        return next_run_at(job, now=now, timezone=settings.scheduler.timezone, last_run_at=last_run) <= now
-    previous = previous_run_at(job, now=now, timezone=settings.scheduler.timezone)
-    if now - previous > MAX_MISSED_AGE:
-        return False
-    if settings.scheduler.missed_policy == "skip" and previous < now.replace(second=0, microsecond=0):
-        return False
-    return previous <= now
+    return _ensure_next_run_at(job, settings=settings, state=state, now=now) <= now
+
+
+def _ensure_next_run_at(
+    job: SchedulerJobConfig,
+    *,
+    settings: Settings,
+    state: dict[str, Any],
+    now: datetime,
+) -> datetime:
+    persisted = _parse_datetime(state.get("next_run_at"))
+    if persisted is not None:
+        return _as_timezone(persisted, ZoneInfo(settings.scheduler.timezone))
+    last_success = _parse_datetime(state.get("last_successful_run_at") or state.get("last_run_at"))
+    if job.schedule == "interval_minutes":
+        base = _as_timezone(last_success, ZoneInfo(settings.scheduler.timezone)) if last_success else now
+        initialized = base + timedelta(minutes=int(job.interval_minutes or 5))
+    elif last_success is not None:
+        initialized = next_run_at(
+            job,
+            now=last_success,
+            timezone=settings.scheduler.timezone,
+            last_run_at=last_success,
+        )
+    else:
+        initialized = next_run_at(job, now=now, timezone=settings.scheduler.timezone)
+    state["next_run_at"] = initialized.isoformat()
+    return initialized
+
+
+def _advance_next_run(job: SchedulerJobConfig, *, due_at: datetime, now: datetime) -> datetime:
+    if job.schedule == "interval_minutes":
+        return now + timedelta(minutes=int(job.interval_minutes or 5))
+    step = timedelta(days=1 if job.schedule == "daily" else 7)
+    candidate = due_at
+    while candidate <= now:
+        candidate += step
+    return candidate
 
 
 def _mark_job_skipped(service_dir: Path, runs_state: dict[str, Any], job: SchedulerJobConfig, reason: str) -> None:

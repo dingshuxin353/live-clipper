@@ -118,6 +118,9 @@ def _action_status(payload: dict[str, Any]) -> int:
     if payload.get("error_code") in {
         "pipeline_configuration_required",
         "invalid_phase",
+        "scan_busy",
+        "selection_empty",
+        "selection_validation_failed",
         "source_unavailable",
     }:
         return 409
@@ -341,6 +344,7 @@ def build_run_detail(run_id: str, paths: WebPaths | None = None, *, log_lines: i
         run["selected_count"] = detail.get("selected_count", 0)
         run["clip_count"] = detail.get("rendered_clip_count", 0)
         run["requires_codex"] = run.get("phase") == "needs_review"
+        selection = service.selected_clips_status(run_dir)
         cleanup = _cleanup_preview(
             run_dir,
             paths,
@@ -359,12 +363,13 @@ def build_run_detail(run_id: str, paths: WebPaths | None = None, *, log_lines: i
             "active_job": jobs.active_job_for(paths.service_dir, run_id, "ai_review"),
             "actions": {
                 "can_check": True,
-                "can_render": (run_dir / "selected_clips.json").exists() and not detail.get("rendered_clip_count"),
-                "can_cleanup_preview": (run_dir / "selected_clips.json").exists(),
+                "can_render": selection["status"] == "valid" and not detail.get("rendered_clip_count"),
+                "can_cleanup_preview": bool(detail.get("rendered_clip_count")),
                 "can_cleanup": bool(detail.get("rendered_clip_count")),
                 "can_delete_local_source": bool(service_run.get("local_source_path")) and bool(detail.get("rendered_clip_count")),
-                "can_ai_review": run.get("phase") == "needs_review" and not (run_dir / "selected_clips.json").exists(),
+                "can_ai_review": run.get("phase") == "needs_review" and selection["status"] in {"missing", "empty"},
             },
+            "selection": selection,
             "log": mcp_tools.get_run_log(run_id, lines=log_lines, service_dir=paths.service_dir),
         }
     run_dir = paths.output_root / run_id
@@ -376,6 +381,7 @@ def build_run_detail(run_id: str, paths: WebPaths | None = None, *, log_lines: i
     log_path = _log_path_for_run(paths, run_id, state)
     files = status["files"]
     cleanup = _cleanup_preview(run_dir, paths)
+    selection = service.selected_clips_status(run_dir)
     can_delete_local_source = any(
         target.get("kind") == "local_source_video" and target.get("deletable")
         for target in cleanup["targets"]
@@ -392,12 +398,13 @@ def build_run_detail(run_id: str, paths: WebPaths | None = None, *, log_lines: i
         "active_job": jobs.active_job_for(paths.service_dir, run_id, "ai_review"),
         "actions": {
             "can_check": True,
-            "can_render": files["selected_clips.json"]["exists"] and files["clips"].get("count", 0) == 0,
-            "can_cleanup_preview": files["selected_clips.json"]["exists"],
-            "can_cleanup": files["selected_clips.json"]["exists"] and files["clips"].get("count", 0) > 0,
+            "can_render": selection["status"] == "valid" and files["clips"].get("count", 0) == 0,
+            "can_cleanup_preview": files["clips"].get("count", 0) > 0,
+            "can_cleanup": files["clips"].get("count", 0) > 0,
             "can_delete_local_source": can_delete_local_source and files["clips"].get("count", 0) > 0,
-            "can_ai_review": run.get("phase") == "needs_codex_selection" and not files["selected_clips.json"]["exists"],
+            "can_ai_review": run.get("phase") == "needs_codex_selection" and selection["status"] in {"missing", "empty"},
         },
+        "selection": selection,
         "log": {
             "path": str(log_path) if log_path.exists() else None,
             "tail": _tail_text(log_path, max_lines=log_lines) if log_path.exists() else "",
@@ -671,8 +678,10 @@ def handle_api_request(
             return _json_response(check_automation_runs(paths.output_root, state_dir=paths.state_dir))
         if method == "POST" and len(parts) == 4 and parts[:2] == ["api", "runs"] and parts[3] == "render":
             if service.find_run(parts[2], paths.service_dir):
-                return _json_response(mcp_tools.render_run(parts[2], settings=_settings_for_paths(paths), service_dir=paths.service_dir))
-            return _json_response(_render_run(paths.output_root / parts[2]))
+                payload = mcp_tools.render_run(parts[2], settings=_settings_for_paths(paths), service_dir=paths.service_dir)
+                return _json_response(payload, status=_action_status(payload))
+            payload = _render_run(paths.output_root / parts[2])
+            return _json_response(payload, status=_action_status(payload))
         if method == "POST" and len(parts) == 4 and parts[:2] == ["api", "runs"] and parts[3] == "retry":
             payload = mcp_tools.retry_run(parts[2], settings=_settings_for_paths(paths), service_dir=paths.service_dir)
             return _json_response(payload, status=_action_status(payload))
@@ -827,8 +836,11 @@ def _run_scheduler_job_now(paths: WebPaths, job_id: str) -> dict[str, Any]:
 
 def _render_run(run_dir: Path) -> dict[str, Any]:
     selection_path = run_dir / "selected_clips.json"
-    if not selection_path.exists():
-        return {"ok": False, "error": "缺少 selected_clips.json，暂不能渲染"}
+    selection = service.selected_clips_status(run_dir)
+    if selection["status"] in {"missing", "empty"}:
+        return _structured_error("selection_empty", "尚未选出可用片段，不能渲染。")
+    if selection["status"] == "invalid":
+        return _structured_error("selection_validation_failed", str(selection["error"]))
     rendered = render_selected_clips(selection_path)
     return {"ok": True, "rendered": [str(path) for path in rendered]}
 

@@ -80,7 +80,8 @@ def get_review_automation_status(settings: Settings, *, service_dir: Path) -> di
             "mode": settings.review_automation.mode,
             "provider": _provider(settings),
             "max_runs_per_tick": settings.review_automation.max_runs_per_tick,
-            "auto_render_after_selection": settings.review_automation.auto_render_after_selection,
+            "auto_render_after_selection": settings.service.auto_render_after_selection,
+            "legacy_auto_render_after_selection": settings.review_automation.auto_render_after_selection,
             "last_run_at": summary.get("last_run_at"),
             "last_status": summary.get("last_status"),
             "last_run_id": summary.get("last_run_id"),
@@ -181,7 +182,7 @@ def run_ai_review_for_run(
         return _error("invalid_phase", "只有 needs_review 任务可以执行 AI 审阅。")
     run_dir = Path(str(run["run_dir"]))
     final_path = run_dir / "selected_clips.json"
-    if final_path.exists():
+    if final_path.exists() and service.selected_clips_status(run_dir)["status"] != "empty":
         return _error("selected_clips_exists", "selected_clips.json 已存在，不重复执行 AI 审阅。")
 
     append_review_event(service_dir, "ai_review_started", run_id=run_id, mode=settings.review_automation.mode)
@@ -214,7 +215,8 @@ def run_due_ai_reviews(
             break
         if run.get("phase") != "needs_review":
             continue
-        if (Path(str(run["run_dir"])) / "selected_clips.json").exists():
+        run_dir = Path(str(run["run_dir"]))
+        if (run_dir / "selected_clips.json").exists() and service.selected_clips_status(run_dir)["status"] != "empty":
             continue
         result = run_ai_review_for_run(
             str(run["run_id"]),
@@ -294,10 +296,31 @@ def _run_model_adapter(
 
 
 def _write_validated_selection(run: dict[str, Any], selection: list[dict[str, Any]], *, service_dir: Path) -> dict[str, Any]:
+    from . import service
+
     run_dir = Path(str(run["run_dir"]))
     temp_path = run_dir / "selected_clips.tmp.json"
     final_path = run_dir / "selected_clips.json"
     candidates_path = _candidates_path(run_dir)
+    if not selection:
+        updated = dict(run)
+        updated["phase"] = "needs_review"
+        updated["selection_result"] = {
+            "status": "selection_empty",
+            "selected_count": 0,
+            "message": "未选出可用片段，可重新执行 AI 审阅或手工选片。",
+        }
+        updated["last_error"] = None
+        updated["updated_at"] = _now()
+        service.replace_run(updated, service_dir)
+        append_review_event(service_dir, "ai_review_selection_empty", run_id=run.get("run_id"), selected_count=0)
+        return {
+            "ok": True,
+            "run_id": run.get("run_id"),
+            "status": "selection_empty",
+            "selected_count": 0,
+            "message": "未选出可用片段，未创建 selected_clips.json；任务可重新审阅。",
+        }
     write_json(temp_path, selection)
     try:
         selected = validate_selected_clips_file(temp_path, candidates_path)

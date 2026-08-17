@@ -5,12 +5,15 @@ import { formatLocalTime } from "../src/ui/presentation";
 import { installFetchMock, MODELS } from "./helpers";
 
 describe("Astryx settings migration", () => {
-  it("maps the 46 user-editable non-secret config fields to an Astryx form control", async () => {
+  it("maps the 43 active non-secret config fields to an Astryx form control", async () => {
     installFetchMock();
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: /设置/ }));
     const controls = [...document.querySelectorAll<HTMLElement>("[data-config-field]")];
-    expect(controls).toHaveLength(46);
+    expect(controls).toHaveLength(43);
+    expect(document.querySelector('[data-config-field="service.enabled"]')).not.toBeInTheDocument();
+    expect(document.querySelector('[data-config-field="service.scan_interval_minutes"]')).not.toBeInTheDocument();
+    expect(document.querySelector('[data-config-field="review_automation.auto_render_after_selection"]')).not.toBeInTheDocument();
     expect(controls.every((control) => control.closest(
       ".astryx-text-input, .astryx-number-input, .astryx-selector, .astryx-checkbox-input",
     ))).toBe(true);

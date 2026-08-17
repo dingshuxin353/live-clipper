@@ -172,6 +172,7 @@ def test_render_run_and_preview_cleanup_do_not_delete_files(tmp_path, monkeypatc
     run_dir = tmp_path / "output" / "default" / "run-1"
     _write_run(service_dir, run_dir, phase="needs_review", local_source_path=source)
     write_json(run_dir / "run_metadata.json", {"pipeline": {"local_source_path": str(source), "original_source_path": "/nas/source.mp4"}})
+    write_json(run_dir / "merged_candidates.json", [_candidate()])
     write_json(run_dir / "selected_clips.json", _selection())
 
     def fake_render(selection_path):
@@ -195,6 +196,24 @@ def test_render_run_and_preview_cleanup_do_not_delete_files(tmp_path, monkeypatc
     events = (service_dir / "events.jsonl").read_text(encoding="utf-8")
     assert "mcp_render_completed" in events
     assert "cleanup_preview_created" in events
+
+
+def test_empty_selection_is_recoverable_and_render_returns_selection_empty(tmp_path):
+    service_dir = tmp_path / "service"
+    run_dir = tmp_path / "output" / "default" / "run-1"
+    _write_run(service_dir, run_dir)
+    write_json(run_dir / "merged_candidates.json", [_candidate()])
+
+    selected = mcp_tools.write_selected_clips("run-1", [], service_dir=service_dir)
+    rendered = mcp_tools.render_run("run-1", service_dir=service_dir)
+
+    assert selected["ok"] is True
+    assert selected["status"] == "selection_empty"
+    assert not (run_dir / "selected_clips.json").exists()
+    assert rendered["ok"] is False
+    assert rendered["error_code"] == "selection_empty"
+    saved = mcp_tools.service.find_run("run-1", service_dir)
+    assert saved["phase"] == "needs_review"
 
 
 def test_cleanup_tools_use_saved_run_input_instead_of_legacy_setting(tmp_path, monkeypatch):
@@ -267,7 +286,8 @@ def test_scan_now_and_start_run_for_source_use_service_core(tmp_path, monkeypatc
 
     assert scan["ok"] is True
     assert scan["started_runs"] == 1
-    assert scan["message"] == "发现 1 个未处理录像，已开始 1 个，排队 0 个。"
+    assert scan["message"].startswith("发现 1 个未处理录像，已开始 1 个，排队 0 个；")
+    assert "不支持格式 0 个" in scan["message"]
     assert duplicate["ok"] is False
     assert duplicate["error_code"] == "duplicate_run"
 

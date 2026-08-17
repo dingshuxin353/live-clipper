@@ -206,6 +206,57 @@ describe("React application shell", () => {
     expect(await screen.findByText("请先到「设置 → AI 服务」配置 AI API Key，再开始处理录播。")).toBeVisible();
   });
 
+  it("shares one busy state across both scan buttons and prevents duplicate requests", async () => {
+    let finishScan!: () => void;
+    const pendingScan = new Promise<Response>((resolve) => {
+      finishScan = () => resolve(new Response(JSON.stringify({ ok: true, message: "扫描完成" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }));
+    });
+    const calls = installFetchMock({ "/api/service/scan-now": () => pendingScan });
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "立即扫描录播" }));
+
+    const busyButtons = await screen.findAllByRole("button", { name: "扫描中…" });
+    expect(busyButtons).toHaveLength(2);
+    expect(busyButtons.every((button) => button.hasAttribute("disabled"))).toBe(true);
+    fireEvent.click(busyButtons[0]);
+    expect(calls.filter(([path]) => path === "/api/service/scan-now")).toHaveLength(1);
+
+    finishScan();
+    expect(await screen.findByText("扫描完成")).toBeVisible();
+    expect(await screen.findByRole("button", { name: "立即扫描录播" })).toBeEnabled();
+  });
+
+  it("shows degraded service health instead of treating a live PID as healthy", async () => {
+    installFetchMock({
+      "/api/service": {
+        ok: true,
+        running: true,
+        service: {
+          status: "degraded",
+          pid: 4321,
+          last_successful_tick_at: "2026-08-17T01:00:00+08:00",
+          last_error_at: "2026-08-17T01:01:00+08:00",
+          next_retry_at: "2026-08-17T01:02:00+08:00",
+          last_error: "tick failed",
+        },
+        pending_review_runs: [],
+        failed_runs: [],
+        pending_confirmation_count: 0,
+      },
+    });
+    render(<App />);
+
+    expect((await screen.findAllByText("服务异常，正在重试")).length).toBeGreaterThan(0);
+    const navigation = screen.getByRole("navigation", { name: "控制台页面" });
+    fireEvent.click(within(navigation).getByRole("button", { name: /^自动化$/ }));
+    expect(await screen.findByText("tick failed")).toBeVisible();
+    expect(screen.getByText("下次重试")).toBeVisible();
+  });
+
   it("labels queued recordings and reports precise no-new-recording feedback", async () => {
     installFetchMock({
       "/api/runs": {
@@ -272,7 +323,7 @@ describe("React application shell", () => {
     const saveCall = calls.find(([path, options]) => path === "/api/config" && options?.method === "POST");
     const body = JSON.parse(String(saveCall?.[1]?.body));
     expect(body.config.recording_source_default.source_dir).toBe("/recordings");
-    expect(document.querySelectorAll("[data-config-field]")).toHaveLength(46);
+    expect(document.querySelectorAll("[data-config-field]")).toHaveLength(43);
   });
 
   it("lets skipped-onboarding users paste and save the LLM key without echoing it", async () => {

@@ -88,8 +88,6 @@ git switch codex/mcp-workbench
 
 ```toml
 [service]
-enabled = true
-scan_interval_minutes = 30
 auto_render_after_selection = true
 cleanup_mode = "preview_only"
 
@@ -104,15 +102,16 @@ stable_check_seconds = 60
 
 这些配置的意思是：
 
-- `scan_interval_minutes = 30`：服务每 30 分钟扫描一次录播源。
 - `auto_render_after_selection = true`：AI 写好 `selected_clips.json` 后，服务会自动渲染。
 - `cleanup_mode = "preview_only"`：渲染后只做清理预览，不直接删除文件。
 - `source_dir`：你的 NAS 录播目录。
 - `input_dir`：复制到本机后的输入目录。
 - `output_root`：任务输出目录。
-- `since_hours = 168`：只看最近 168 小时内修改过的录播。
+- `since_hours = 168`：仅为旧配置兼容保留；当前扫描不会按录像日期过滤。
 - `min_age_minutes = 10`：至少 10 分钟没变化的文件才认为录制结束。
 - `stable_check_seconds = 60`：再检查 60 秒，确认文件大小稳定。
+
+自动扫描频率请在 Scheduler 的 `scan_recordings` 任务中设置。旧字段 `service.enabled`、`service.scan_interval_minutes` 与 `review_automation.auto_render_after_selection` 仍可读取，但已弃用；自动渲染只以 `service.auto_render_after_selection` 为准。
 
 ## 第 3 步：启动 Web 控制台
 
@@ -371,6 +370,8 @@ auto_render_after_selection = true
 ```
 
 那么 AI 写入 `selected_clips.json` 后，服务下一轮 reconcile 会自动渲染。
+
+只有经过校验且至少包含一个片段的选片文件会触发渲染。AI 或 MCP 返回空数组时，系统记录“未选出可用片段”，不创建新的正式 `selected_clips.json`，任务仍可重新审阅；手工渲染会稳定返回 `selection_empty`。
 
 你也可以手动渲染。
 

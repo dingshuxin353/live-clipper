@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from live_clipper import service
 from live_clipper.config import (
     ReviewAutomationConfig,
     ReviewAutomationLocalAgentConfig,
@@ -122,6 +123,28 @@ def test_local_agent_validation_failure_does_not_write_selected_clips(tmp_path):
     assert not (run_dir / "selected_clips.json").exists()
     assert not (run_dir / "selected_clips.tmp.json").exists()
     assert any(event["type"] == "ai_review_validation_failed" for event in read_review_automation_events(service_dir))
+
+
+def test_empty_ai_selection_keeps_run_retryable_without_writing_final_file(tmp_path):
+    service_dir = tmp_path / "service"
+    run_dir = tmp_path / "output" / "default" / "run-1"
+    _write_run(service_dir, run_dir)
+
+    result = run_ai_review_for_run(
+        "run-1",
+        _settings(),
+        service_dir=service_dir,
+        local_runner=lambda *_args, **_kwargs: {"ok": True, "stdout": "[]", "stderr": ""},
+    )
+
+    assert result["ok"] is True
+    assert result["status"] == "selection_empty"
+    assert result["selected_count"] == 0
+    assert not (run_dir / "selected_clips.json").exists()
+    saved = service.find_run("run-1", service_dir)
+    assert saved["phase"] == "needs_review"
+    assert saved["selection_result"]["status"] == "selection_empty"
+    assert any(event["type"] == "ai_review_selection_empty" for event in read_review_automation_events(service_dir))
 
 
 def test_local_agent_success_writes_validated_selection_and_events(tmp_path):
