@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.5 - 2026-08-17
+
+### Changed
+
+- Scan results now explain unsupported files, skipped directories, per-file failures, recovered historical runs, and queue-start failures instead of reporting a generic success.
+- Recording stability checks now snapshot all candidates, wait once, and recheck the batch instead of waiting once per file.
+- Automation now reports running, degraded, paused, and stopped health separately, and derives the next recording scan from the real scheduler job.
+
+### Fixed
+
+- A historical run with an empty, invalid, or failed clip selection can no longer abort reconciliation before new recordings are scanned and queued.
+- Empty AI or MCP selections remain reviewable and can no longer be rendered, marked as completed, or sent into cleanup without a real rendered clip.
+- Daily and weekly scheduler jobs continue recurring after their first run, advance overdue schedules according to the missed-run policy, and do not execute the same due time twice.
+- Reconciliation, legacy identity migration, content hashing, and queue startup failures are isolated to the affected run or file so other work continues.
+- Both scan buttons share an in-progress state, prevent duplicate submissions, and show the same actionable result.
+
 ## 0.3.4 - 2026-08-09
 
 ### Changed
