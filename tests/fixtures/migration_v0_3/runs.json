@@ -1,0 +1,16 @@
+{
+  "runs": [
+    {
+      "run_id": "old-1",
+      "content_id": "content-1",
+      "source_path": "/recordings/a.mp4",
+      "phase": "rendered",
+      "created_at": "2026-08-01T00:00:00Z"
+    },
+    {
+      "run_id": "old-no-content",
+      "source_path": "/recordings/missing.mp4",
+      "phase": "failed"
+    }
+  ]
+}
