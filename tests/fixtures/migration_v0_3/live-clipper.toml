@@ -1,0 +1,14 @@
+[recording_source.default]
+source_dir = "/recordings"
+output_root = "/clips"
+
+[scheduler]
+timezone = "Asia/Tokyo"
+
+[[scheduler.jobs]]
+id = "weekly_recording_scan"
+type = "scan_recordings"
+schedule = "weekly"
+
+[llm]
+api_key = "sk-fixture-secret"
