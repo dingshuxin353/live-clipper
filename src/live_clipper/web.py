@@ -23,6 +23,16 @@ from .utils import read_json, write_json
 
 STATIC_DIR = Path(__file__).parent / "web_static"
 
+WEB_PHASE_GROUPS: dict[str, frozenset[str]] = {
+    "queued": frozenset({"queued"}),
+    "processing": frozenset({"processing", "rendering", "running", "ready_to_render"}),
+    "needs_review": frozenset({"needs_review", "needs_codex_selection"}),
+    "rendered": frozenset({"rendered", "cleanup_ready"}),
+    "failed": frozenset({"failed", "failed_needs_codex"}),
+}
+WEB_PHASE_GROUP_ORDER = ("queued", "processing", "needs_review", "rendered", "failed", "other")
+WEB_PHASE_QUERY_VALUES = frozenset(WEB_PHASE_GROUPS)
+
 
 @dataclass(frozen=True)
 class WebPaths:
@@ -127,6 +137,44 @@ def _action_status(payload: dict[str, Any]) -> int:
     return 500
 
 
+def _invalid_runs_query(parameter: str, value: str) -> dict[str, Any]:
+    return _structured_error("invalid_query_parameter", f"无效的查询参数 {parameter}: {value}")
+
+
+def _parse_runs_query(query: dict[str, list[str]]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    def single(name: str) -> str | None:
+        values = query.get(name)
+        if not values:
+            return None
+        if len(values) != 1:
+            raise ValueError(f"{name}={','.join(values)}")
+        return values[0]
+
+    try:
+        phase_value = single("phase")
+        if phase_value is not None and phase_value not in WEB_PHASE_QUERY_VALUES:
+            return None, _invalid_runs_query("phase", phase_value)
+
+        offset_value = single("offset")
+        if offset_value is None:
+            offset = 0
+        elif not offset_value.isdigit():
+            return None, _invalid_runs_query("offset", offset_value)
+        else:
+            offset = int(offset_value)
+
+        limit_value = single("limit")
+        if limit_value is None:
+            limit = 20
+        elif not limit_value.isdigit() or not 1 <= int(limit_value) <= 100:
+            return None, _invalid_runs_query("limit", limit_value)
+        else:
+            limit = int(limit_value)
+    except ValueError as exc:
+        return None, _invalid_runs_query("query", str(exc))
+    return {"phase": phase_value, "offset": offset, "limit": limit}, None
+
+
 def _load_state(paths: WebPaths, run_id: str) -> dict[str, Any]:
     state = _safe_read_json(paths.state_dir / f"{run_id}.json")
     return state if isinstance(state, dict) else {}
@@ -153,36 +201,91 @@ def _phase_for(status: dict[str, Any], running: bool) -> str:
     return "missing"
 
 
-def _run_summary(run_dir: Path, paths: WebPaths) -> dict[str, Any]:
-    status = build_run_status(run_dir, write_report=False)
+def _legacy_index_status(run_dir: Path) -> dict[str, Any]:
+    selected_path = run_dir / "selected_clips.json"
+    clips_dir = run_dir / "clips"
+    clip_count = 0
+    if selected_path.exists() and clips_dir.exists():
+        clip_count = sum(1 for path in clips_dir.glob("*.mp4") if path.is_file())
+    return {
+        "exists": run_dir.exists(),
+        "files": {
+            "selected_clips.json": {"exists": selected_path.exists()},
+            "codex_brief.json": {"exists": (run_dir / "codex_brief.json").exists()},
+            "clips": {"exists": clips_dir.exists(), "count": clip_count},
+        },
+    }
+
+
+def _legacy_next_step(phase: str) -> str:
+    return {
+        "cleanup_ready": "已完成",
+        "ready_to_render": "运行 render 渲染 selected_clips.json",
+        "needs_codex_selection": "审阅 codex_brief.json，并写入 selected_clips.json",
+        "running": "流水线处理中",
+        "waiting_or_manual": "等待处理",
+        "missing": "运行 scan 创建新的 run 目录",
+    }.get(phase, "")
+
+
+def _web_phase_group(phase: Any) -> str:
+    value = str(phase or "unknown")
+    for group, phases in WEB_PHASE_GROUPS.items():
+        if value in phases:
+            return group
+    return "other"
+
+
+def _requires_codex(phase: Any) -> bool:
+    return str(phase or "") in {"needs_review", "needs_codex_selection", "cleanup_ready"}
+
+
+def _sort_timestamp(value: Any) -> float:
+    parsed = _coerce_timestamp(value)
+    return parsed.timestamp() if parsed is not None else 0.0
+
+
+def _run_sort_key(run: dict[str, Any]) -> tuple[float, float, str]:
+    return (
+        _sort_timestamp(run.get("updated_at")),
+        _sort_timestamp(run.get("created_at")),
+        str(run.get("run_id") or ""),
+    )
+
+
+def _run_summary(run_dir: Path, paths: WebPaths, *, include_derived: bool = True) -> dict[str, Any]:
     state = _load_state(paths, run_dir.name)
     pid = state.get("pid")
     running = isinstance(pid, int) and _pid_is_running(pid)
+    status = build_run_status(run_dir, write_report=False) if include_derived else _legacy_index_status(run_dir)
     phase = _phase_for(status, running)
     files = status["files"]
-    refined_count = _count_candidates(run_dir / "refined_candidates.json")
-    merged_count = _count_candidates(run_dir / "merged_candidates.json")
-    selected_count = _count_candidates(run_dir / "selected_clips.json")
     log_path = _log_path_for_run(paths, run_dir.name, state)
     updated_at = state.get("updated_at")
     if not updated_at and run_dir.exists():
         updated_at = run_dir.stat().st_mtime
 
-    return {
+    summary: dict[str, Any] = {
         "run_id": run_dir.name,
         "run_dir": str(run_dir),
         "source_name": _source_name(run_dir),
         "phase": phase,
-        "next_step": status["next_step"],
-        "requires_codex": phase in {"needs_codex_selection", "cleanup_ready"},
+        "next_step": status.get("next_step") or _legacy_next_step(phase),
+        "requires_codex": _requires_codex(phase),
         "running": running,
         "pid": pid,
-        "candidate_count": refined_count or merged_count,
-        "selected_count": selected_count,
-        "clip_count": files["clips"].get("count", 0),
+        "created_at": state.get("created_at"),
         "log_path": str(log_path) if log_path.exists() else None,
         "updated_at": updated_at,
     }
+    if include_derived:
+        summary["candidate_count"] = (
+            _count_candidates(run_dir / "refined_candidates.json")
+            or _count_candidates(run_dir / "merged_candidates.json")
+        )
+        summary["selected_count"] = _count_candidates(run_dir / "selected_clips.json")
+        summary["clip_count"] = files["clips"].get("count", 0)
+    return summary
 
 
 def _source_name(run_dir: Path) -> str:
@@ -196,7 +299,7 @@ def _run_looks_stuck(run: dict[str, Any], stuck_after_minutes: int) -> bool:
     """判断某个 run 是否「停在处理中且疑似卡死」，用于前端提示。"""
     if stuck_after_minutes <= 0:
         return False
-    if run.get("phase") != "processing":
+    if _web_phase_group(run.get("phase")) != "processing":
         return False
     updated_at = run.get("updated_at")
     started = _coerce_timestamp(updated_at) or _coerce_timestamp(run.get("created_at"))
@@ -228,35 +331,89 @@ def _coerce_timestamp(value: Any):
     return None
 
 
-def build_runs_index(paths: WebPaths | None = None) -> dict[str, Any]:
+def _load_web_runs(paths: WebPaths) -> tuple[list[dict[str, Any]], bool]:
+    if _service_runs_available(paths):
+        return service.load_runs(paths.service_dir), True
+
+    runs: list[dict[str, Any]] = []
+    if paths.output_root.exists():
+        run_dirs = [path for path in paths.output_root.iterdir() if path.is_dir()]
+        run_dirs.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+        runs = [_run_summary(run_dir, paths, include_derived=False) for run_dir in run_dirs]
+    return runs, False
+
+
+def _decorate_run(
+    run: dict[str, Any],
+    paths: WebPaths,
+    *,
+    stuck_after_minutes: int,
+    legacy: bool,
+) -> dict[str, Any]:
+    decorated = dict(run)
+    phase = decorated.get("phase")
+    run_dir_value = decorated.get("run_dir")
+    run_dir = Path(str(run_dir_value)) if run_dir_value else None
+    decorated["phase_group"] = _web_phase_group(phase)
+    decorated["source_name"] = decorated.get("source_name") or Path(
+        str(decorated.get("source_path") or decorated.get("run_id") or "")
+    ).name
+    if run_dir is not None:
+        if legacy:
+            decorated["candidate_count"] = (
+                _count_candidates(run_dir / "refined_candidates.json")
+                or _count_candidates(run_dir / "merged_candidates.json")
+            )
+        else:
+            decorated["candidate_count"] = _count_candidates(run_dir / "codex_brief.json")
+        decorated["selected_count"] = _count_candidates(run_dir / "selected_clips.json")
+        clips_dir = run_dir / "clips"
+        decorated["clip_count"] = len(list(clips_dir.glob("*.mp4"))) if clips_dir.exists() else 0
+    else:
+        decorated.setdefault("candidate_count", 0)
+        decorated.setdefault("selected_count", 0)
+        decorated.setdefault("clip_count", 0)
+    decorated["requires_codex"] = _requires_codex(phase)
+    decorated["stuck"] = _run_looks_stuck(decorated, stuck_after_minutes)
+    return decorated
+
+
+def build_runs_index(
+    paths: WebPaths | None = None,
+    *,
+    phase: str | None = None,
+    offset: int = 0,
+    limit: int = 20,
+) -> dict[str, Any]:
     paths = paths or WebPaths()
     stuck_after_minutes = _settings_for_paths(paths).service.stuck_after_minutes
-    if _service_runs_available(paths):
-        runs = mcp_tools.list_runs(service_dir=paths.service_dir)["runs"]
-        for run in runs:
-            run["source_name"] = Path(str(run.get("source_path") or run.get("run_id"))).name
-            run["candidate_count"] = _count_candidates(Path(str(run["run_dir"])) / "codex_brief.json")
-            run["selected_count"] = _count_candidates(Path(str(run["run_dir"])) / "selected_clips.json")
-            clips_dir = Path(str(run["run_dir"])) / "clips"
-            run["clip_count"] = len(sorted(clips_dir.glob("*.mp4"))) if clips_dir.exists() else 0
-            run["requires_codex"] = run.get("phase") == "needs_review"
-            run["stuck"] = _run_looks_stuck(run, stuck_after_minutes)
-        return {
-            "ok": True,
-            "runs": runs,
-            "requires_codex": any(run["requires_codex"] for run in runs),
-        }
-    runs = []
-    if paths.output_root.exists():
-        for run_dir in sorted(paths.output_root.iterdir(), key=lambda path: path.stat().st_mtime, reverse=True):
-            if run_dir.is_dir():
-                summary = _run_summary(run_dir, paths)
-                summary["stuck"] = _run_looks_stuck(summary, stuck_after_minutes)
-                runs.append(summary)
+    runs, service_runs = _load_web_runs(paths)
+    phase_counts = {"all": 0, **{group: 0 for group in WEB_PHASE_GROUP_ORDER}}
+    for run in runs:
+        phase_counts["all"] += 1
+        phase_counts[_web_phase_group(run.get("phase"))] += 1
+
+    filtered = [run for run in runs if phase is None or _web_phase_group(run.get("phase")) == phase]
+    if phase == "queued":
+        filtered = [{**run, "queue_position": position} for position, run in enumerate(filtered, start=1)]
+    else:
+        filtered = sorted(filtered, key=_run_sort_key, reverse=True)
+    page = filtered[offset : offset + limit]
+    page = [
+        _decorate_run(run, paths, stuck_after_minutes=stuck_after_minutes, legacy=not service_runs)
+        for run in page
+    ]
     return {
         "ok": True,
-        "runs": runs,
-        "requires_codex": any(run["requires_codex"] for run in runs),
+        "runs": page,
+        "count": len(page),
+        "total": len(filtered),
+        "offset": offset,
+        "limit": limit,
+        "has_more": offset + len(page) < len(filtered),
+        "phase": phase,
+        "phase_counts": phase_counts,
+        "requires_codex": any(_requires_codex(run.get("phase")) for run in runs),
     }
 
 
@@ -421,7 +578,7 @@ def handle_api_request(
     paths = paths or WebPaths()
     parsed = urlparse(request_path)
     parsed_path = parsed.path
-    query = parse_qs(parsed.query)
+    query = parse_qs(parsed.query, keep_blank_values=True)
     parts = [unquote(part) for part in parsed_path.split("/") if part]
     try:
         if method == "GET" and parts == ["api", "service"]:
@@ -438,11 +595,11 @@ def handle_api_request(
             payload = mcp_tools.scan_now(settings=_settings_for_paths(paths), service_dir=paths.service_dir)
             return _json_response(payload, status=_action_status(payload))
         if method == "GET" and parts == ["api", "runs"]:
-            payload = build_runs_index(paths)
-            phase = query.get("phase", [None])[0]
-            if phase:
-                payload["runs"] = [run for run in payload["runs"] if run.get("phase") == phase]
-            return _json_response(payload)
+            run_query, query_error = _parse_runs_query(query)
+            if query_error is not None:
+                return _json_response(query_error, status=400)
+            assert run_query is not None
+            return _json_response(build_runs_index(paths, **run_query))
         if method == "GET" and len(parts) == 3 and parts[:2] == ["api", "runs"]:
             detail = build_run_detail(parts[2], paths)
             if detail.get("ok") is False and "error_code" not in detail:

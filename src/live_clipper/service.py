@@ -1399,18 +1399,17 @@ def _run_service_once_locked(settings: Settings, *, service_dir: Path) -> dict[s
         message = "尚未配置录像来源，请前往「设置 → 录像来源」选择目录。"
     elif scan_error:
         message = f"录像目录不可用：{scan_error}"
-    elif discovered:
-        message = (
-            f"发现 {len(discovered)} 个未处理录像，已开始 {len(started)} 个，排队 {queued_runs} 个；"
-            f"{classification}。"
-        )
     else:
-        message = f"没有发现未处理录像：{classification}。"
+        message = f"本次发现 {len(discovered)} 个，本轮启动 {len(started)} 个，当前总排队 {queued_runs} 个；{classification}。"
     if reconcile_failures or queue_start_failures:
         message += (
             f" 历史任务恢复失败 {len(reconcile_failures)} 个，"
             f"队列启动失败 {len(queue_start_failures)} 个；其他项目已继续处理。"
         )
+    elif not started and queued_runs > 0 and any(
+        run.get("phase") in {"processing", "rendering", "running", "ready_to_render"} for run in runs
+    ):
+        message += " 已有任务正在处理，新任务会按顺序自动开始。"
     return {
         "ok": True,
         "known_runs": len(runs),

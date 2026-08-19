@@ -188,6 +188,164 @@ def test_handle_api_request_returns_json_payloads(tmp_path):
     assert body["runs"][0]["run_id"] == "recording"
 
 
+def test_runs_api_filters_full_snapshot_before_pagination_and_reports_counts(tmp_path):
+    service_dir = tmp_path / "service"
+    historical = [
+        {
+            "run_id": f"rendered-{index}",
+            "phase": "rendered",
+            "run_dir": str(tmp_path / "output" / f"rendered-{index}"),
+            "updated_at": f"2026-08-{index + 1:02d}T00:00:00+00:00",
+        }
+        for index in range(20)
+    ]
+    queued = [
+        {
+            "run_id": f"queued-{index}",
+            "phase": "queued",
+            "run_dir": str(tmp_path / "output" / f"queued-{index}"),
+        }
+        for index in range(57)
+    ]
+    queued.insert(
+        20,
+        {
+            "run_id": "processing-hidden-after-first-page",
+            "phase": "processing",
+            "run_dir": str(tmp_path / "output" / "processing-hidden-after-first-page"),
+        },
+    )
+    queued.insert(
+        21,
+        {
+            "run_id": "failed-hidden-after-first-page",
+            "phase": "failed",
+            "run_dir": str(tmp_path / "output" / "failed-hidden-after-first-page"),
+        },
+    )
+    write_json(service_dir / "runs.json", {"runs": historical + queued})
+    paths = WebPaths(service_dir=service_dir, output_root=tmp_path / "output")
+
+    first_status, _headers, first = handle_api_request(
+        "GET", "/api/runs?phase=queued&offset=0&limit=20", paths
+    )
+    last_status, _headers, last = handle_api_request(
+        "GET", "/api/runs?phase=queued&offset=40&limit=20", paths
+    )
+    processing_status, _headers, processing = handle_api_request(
+        "GET", "/api/runs?phase=processing", paths
+    )
+
+    assert first_status == last_status == processing_status == 200
+    assert first["total"] == 57
+    assert first["count"] == 20
+    assert first["has_more"] is True
+    assert first["phase_counts"] == {
+        "all": 79,
+        "queued": 57,
+        "processing": 1,
+        "needs_review": 0,
+        "rendered": 20,
+        "failed": 1,
+        "other": 0,
+    }
+    assert [run["queue_position"] for run in first["runs"]] == list(range(1, 21))
+    assert [run["queue_position"] for run in last["runs"]] == list(range(41, 58))
+    assert last["count"] == 17
+    assert last["has_more"] is False
+    assert processing["total"] == 1
+    assert processing["runs"][0]["run_id"] == "processing-hidden-after-first-page"
+
+
+def test_runs_api_uses_one_phase_group_contract_for_legacy_phases(tmp_path):
+    service_dir = tmp_path / "service"
+    phases = [
+        "queued",
+        "processing",
+        "rendering",
+        "running",
+        "ready_to_render",
+        "needs_review",
+        "needs_codex_selection",
+        "rendered",
+        "cleanup_ready",
+        "failed",
+        "failed_needs_codex",
+        "waiting_or_manual",
+        "missing",
+        "unknown",
+        "future_phase",
+    ]
+    write_json(
+        service_dir / "runs.json",
+        {
+            "runs": [
+                {"run_id": phase, "phase": phase, "run_dir": str(tmp_path / "output" / phase)}
+                for phase in phases
+            ]
+        },
+    )
+    paths = WebPaths(service_dir=service_dir)
+
+    status, _headers, all_runs = handle_api_request("GET", "/api/runs?limit=100", paths)
+    review_status, _headers, review = handle_api_request("GET", "/api/runs?phase=needs_review", paths)
+    failed_status, _headers, failed = handle_api_request("GET", "/api/runs?phase=failed", paths)
+
+    assert status == review_status == failed_status == 200
+    assert all_runs["phase_counts"] == {
+        "all": 15,
+        "queued": 1,
+        "processing": 4,
+        "needs_review": 2,
+        "rendered": 2,
+        "failed": 2,
+        "other": 4,
+    }
+    assert {run["phase"] for run in review["runs"]} == {"needs_review", "needs_codex_selection"}
+    assert {run["phase"] for run in failed["runs"]} == {"failed", "failed_needs_codex"}
+    assert {run["run_id"] for run in all_runs["runs"]} == set(phases)
+
+
+def test_runs_api_rejects_invalid_query_parameters_with_stable_error(tmp_path):
+    paths = WebPaths(service_dir=tmp_path / "service")
+
+    for query in [
+        "phase=not-a-phase",
+        "offset=-1",
+        "offset=abc",
+        "limit=0",
+        "limit=101",
+        "limit=1.5",
+    ]:
+        status, _headers, body = handle_api_request("GET", f"/api/runs?{query}", paths)
+
+        assert status == 400
+        assert body["ok"] is False
+        assert body["error_code"] == "invalid_query_parameter"
+
+
+def test_runs_api_applies_the_same_contract_to_legacy_output_fallback(tmp_path):
+    output_root = tmp_path / "output"
+    for index in range(25):
+        run_dir = output_root / f"legacy-{index}"
+        write_json(run_dir / "run_metadata.json", {"source_name": f"legacy-{index}.mkv"})
+        write_json(run_dir / "codex_brief.json", {"candidates": [{"id": f"clip-{index}"}]})
+
+    status, _headers, payload = handle_api_request(
+        "GET",
+        "/api/runs?phase=needs_review&offset=20&limit=20",
+        WebPaths(output_root=output_root, service_dir=tmp_path / "missing-service"),
+    )
+
+    assert status == 200
+    assert payload["total"] == 25
+    assert payload["count"] == 5
+    assert payload["has_more"] is False
+    assert payload["phase_counts"]["all"] == 25
+    assert payload["phase_counts"]["needs_review"] == 25
+    assert {run["phase"] for run in payload["runs"]} == {"needs_codex_selection"}
+
+
 def test_scan_and_retry_configuration_errors_use_http_409(tmp_path, monkeypatch):
     paths = WebPaths(
         output_root=tmp_path / "output",
