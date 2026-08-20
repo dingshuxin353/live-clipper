@@ -1,11 +1,42 @@
 export type JsonObject = Record<string, unknown>;
 
+export type ApiErrorCode =
+  | "network_error"
+  | "invalid_response"
+  | "unknown_error"
+  | "validation_failed"
+  | "migration_required"
+  | "route_not_found"
+  | "project_not_found"
+  | "run_not_found"
+  | "request_id_conflict"
+  | "data_integrity_error"
+  | "revision_conflict"
+  | "project_not_ready"
+  | "scan_in_progress"
+  | "source_unavailable"
+  | "source_path_outside_project"
+  | "resource_unavailable"
+  | "initial_scan_failed";
+
+const API_ERROR_CODES: ReadonlySet<ApiErrorCode> = new Set([
+  "network_error", "invalid_response", "unknown_error", "validation_failed", "migration_required",
+  "route_not_found", "project_not_found", "run_not_found", "request_id_conflict", "data_integrity_error",
+  "revision_conflict", "project_not_ready", "scan_in_progress", "source_unavailable",
+  "source_path_outside_project", "resource_unavailable", "initial_scan_failed",
+]);
+
+function apiErrorCode(value: unknown): ApiErrorCode {
+  const candidate = String(value ?? "");
+  return API_ERROR_CODES.has(candidate as ApiErrorCode) ? candidate as ApiErrorCode : "unknown_error";
+}
+
 export class ApiError extends Error {
   readonly status: number;
-  readonly code?: string;
+  readonly code: ApiErrorCode;
   readonly fields: Record<string, string>;
 
-  constructor(message: string, status = 0, code?: string, fields: Record<string, string> = {}) {
+  constructor(message: string, status = 0, code: ApiErrorCode = "unknown_error", fields: Record<string, string> = {}) {
     super(message);
     this.name = "ApiError";
     this.status = status;
@@ -32,14 +63,14 @@ export async function api<T>(
     });
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") throw error;
-    throw new ApiError("网络连接失败");
+    throw new ApiError("网络连接失败", 0, "network_error");
   }
 
   let payload: JsonObject;
   try {
     payload = (await response.json()) as JsonObject;
   } catch {
-    throw new ApiError("服务返回了无法读取的响应", response.status);
+    throw new ApiError("服务返回了无法读取的响应", response.status, "invalid_response");
   }
   if (!response.ok || payload.ok === false) {
     const nested = typeof payload.error === "object" && payload.error
@@ -50,7 +81,7 @@ export async function api<T>(
     const fields = typeof rawFields === "object" && rawFields
       ? Object.fromEntries(Object.entries(rawFields as Record<string, unknown>).map(([key, value]) => [key, String(value)]))
       : {};
-    throw new ApiError(String(message), response.status, String(nested?.code ?? payload.error_code ?? "") || undefined, fields);
+    throw new ApiError(String(message), response.status, apiErrorCode(nested?.code ?? payload.error_code), fields);
   }
   return payload as T;
 }

@@ -39,11 +39,26 @@ export function draftFromProject(project: ProjectSummary): ProjectDraft {
   return { name: project.name, description: project.description, sourceDirectory: config.source.directory, outputDirectory: config.output.directory, firstScanMode: config.source.first_scan_mode, lookbackDays: config.source.lookback_days ?? 7, scheduleEnabled: config.schedule.enabled, scheduleMode: config.schedule.mode, dailyTime: config.schedule.daily_time ?? "22:00", intervalMinutes: config.schedule.interval_minutes ?? 60, asrRef: config.resources.asr_ref, analysisRef: config.resources.analysis_ref, retention: config.output.intermediate_retention };
 }
 
-export function usePolling<T>(load: (signal: AbortSignal) => Promise<T>, interval: number) {
-  const [data, setData] = useState<T | null>(null); const [error, setError] = useState(""); const [loading, setLoading] = useState(true); const loadRef = useRef(load); loadRef.current = load;
-  const refresh = useCallback(async (signal?: AbortSignal) => { const own = signal ? null : new AbortController(); try { const next = await loadRef.current(signal ?? own!.signal); setData(next); setError(""); } catch (reason) { if (!(reason instanceof DOMException && reason.name === "AbortError")) setError((reason as Error).message); } finally { setLoading(false); } }, []);
-  useEffect(() => { const controller = new AbortController(); void refresh(controller.signal); return () => controller.abort(); }, [refresh]);
-  useEffect(() => { let timer = 0; const schedule = () => { window.clearInterval(timer); if (!document.hidden) timer = window.setInterval(() => void refresh(), interval); }; schedule(); document.addEventListener("visibilitychange", schedule); return () => { window.clearInterval(timer); document.removeEventListener("visibilitychange", schedule); }; }, [interval, refresh]);
+export interface PollingState<T> {
+  data: T | null; error: string; loading: boolean; refresh(): Promise<void>;
+  setData: React.Dispatch<React.SetStateAction<T | null>>;
+}
+
+export function usePolling<T>(load: (signal: AbortSignal) => Promise<T>, interval: number, resourceKey = "default"): PollingState<T> {
+  const [data, setData] = useState<T | null>(null); const [error, setError] = useState(""); const [loading, setLoading] = useState(true); const loadRef = useRef(load); const controllerRef = useRef<AbortController | null>(null); const sequenceRef = useRef(0); loadRef.current = load;
+  const refresh = useCallback(async () => {
+    controllerRef.current?.abort(); const controller = new AbortController(); controllerRef.current = controller; const sequence = ++sequenceRef.current;
+    try { const next = await loadRef.current(controller.signal); if (sequence === sequenceRef.current) { setData(next); setError(""); } }
+    catch (reason) { if (!(reason instanceof DOMException && reason.name === "AbortError") && sequence === sequenceRef.current) setError((reason as Error).message); }
+    finally { if (sequence === sequenceRef.current) setLoading(false); }
+  }, []);
+  useEffect(() => { setData(null); setError(""); setLoading(true); void refresh(); return () => controllerRef.current?.abort(); }, [refresh, resourceKey]);
+  useEffect(() => {
+    let timer = 0; const schedule = () => { window.clearInterval(timer); if (!document.hidden) timer = window.setInterval(() => void refresh(), interval); };
+    const visibilityChanged = () => { if (!document.hidden) void refresh(); schedule(); };
+    schedule(); document.addEventListener("visibilitychange", visibilityChanged);
+    return () => { window.clearInterval(timer); document.removeEventListener("visibilitychange", visibilityChanged); };
+  }, [interval, refresh]);
   return { data, error, loading, refresh, setData };
 }
 

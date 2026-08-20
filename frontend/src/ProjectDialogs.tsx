@@ -6,8 +6,8 @@ import { projectApi, requestId } from "./project-api";
 import type { FormOptionsPayload, ProjectSummary, ScanEvent, SourceFile, ValidationPayload } from "./project-dto";
 import { DRAFT_KEY, LoadingState, Metric, ProjectDraft, StatusPill, configFromDraft, draftFromProject, emptyDraft, formatBytes, scanMessage, statusTone, time, usePolling } from "./workbench-shared";
 
-function DialogFrame({ title, description, children, footer, wide = false }: { title: string; description: string; children: React.ReactNode; footer?: React.ReactNode; wide?: boolean }) {
-  const navigate = useNavigate(); const location = useLocation(); const dialogRef = useRef<HTMLElement>(null); const close = () => { const params = new URLSearchParams(location.search); params.delete("dialog"); params.delete("projectId"); navigate({ pathname: location.pathname, search: params.toString() }, { replace: true }); };
+function DialogFrame({ title, description, children, footer, wide = false, alert = false, onClose }: { title: string; description: string; children: React.ReactNode; footer?: React.ReactNode; wide?: boolean; alert?: boolean; onClose?(): void }) {
+  const navigate = useNavigate(); const location = useLocation(); const dialogRef = useRef<HTMLElement>(null); const close = () => { if (onClose) { onClose(); return; } const params = new URLSearchParams(location.search); params.delete("dialog"); params.delete("projectId"); navigate({ pathname: location.pathname, search: params.toString() }, { replace: true }); };
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
     const focusable = () => [...(dialogRef.current?.querySelectorAll<HTMLElement>('button:not([disabled]), a[href], input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])') ?? [])];
@@ -22,7 +22,7 @@ function DialogFrame({ title, description, children, footer, wide = false }: { t
     window.addEventListener("keydown", handler);
     return () => { window.removeEventListener("keydown", handler); previous?.focus(); };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  return <div className="modal-backdrop"><section ref={dialogRef} className={`modal ${wide ? "wide" : ""}`} role="dialog" aria-modal="true" aria-labelledby="dialog-title"><header><div><span className="eyebrow">Venus 项目</span><h1 id="dialog-title">{title}</h1><p>{description}</p></div><button aria-label="关闭" className="modal-close" onClick={close}>×</button></header><div className="modal-body">{children}</div>{footer && <footer>{footer}</footer>}</section></div>;
+  return <div className="modal-backdrop"><section ref={dialogRef} className={`modal ${wide ? "wide" : ""}`} role={alert ? "alertdialog" : "dialog"} aria-modal="true" aria-labelledby="dialog-title"><header><div><span className="eyebrow">Venus 项目</span><h1 id="dialog-title">{title}</h1><p>{description}</p></div><button aria-label="关闭" className="modal-close" onClick={close}>×</button></header><div className="modal-body">{children}</div>{footer && <footer>{footer}</footer>}</section></div>;
 }
 
 export function NewProjectDialog({ notify }: { notify(message: string): void }) {
@@ -72,8 +72,14 @@ export function LatestScanDialog({ project }: { project: ProjectSummary }) {
 }
 
 export function ChooseRecordingsDialog({ project, onScanned }: { project: ProjectSummary; onScanned(scan: ScanEvent): Promise<void> }) {
-  const [files, setFiles] = useState<SourceFile[]>([]); const [selected, setSelected] = useState<string[]>([]); const [error, setError] = useState(""); const [busy, setBusy] = useState(false); const id = useRef(requestId("scan-selected"));
+  const navigate = useNavigate(); const [files, setFiles] = useState<SourceFile[]>([]); const [selected, setSelected] = useState<string[]>([]); const [error, setError] = useState(""); const [busy, setBusy] = useState(false); const id = useRef(requestId("scan-selected"));
   useEffect(() => { const controller = new AbortController(); projectApi.sourceFiles(project.project_id, controller.signal).then((result) => setFiles(result.files)).catch((reason) => setError((reason as Error).message)); return () => controller.abort(); }, [project.project_id]);
-  const scan = async () => { if (!selected.length || busy) return; setBusy(true); try { const result = await projectApi.scan(project.project_id, id.current, "selected", selected); await onScanned(result.scan); setSelected([]); } catch (reason) { setError((reason as Error).message); } finally { setBusy(false); } };
+  const scan = async () => { if (!selected.length || busy) return; setBusy(true); try { const result = await projectApi.scan(project.project_id, id.current, "selected", selected); await onScanned(result.scan); navigate(`/projects/${project.project_id}`, { replace: true }); } catch (reason) { setError((reason as Error).message); } finally { setBusy(false); } };
   return <DialogFrame wide title="选择已有录像" description="只会提交当前勾选且可处理的相对路径。" footer={<><span>{selected.length} 个已选择</span><span className="footer-spacer" /><button className="button primary" disabled={!selected.length || busy} onClick={() => void scan()}>{busy ? "扫描中…" : "扫描所选录像"}</button></>}>{error && <p className="form-error" role="alert">{error}</p>}<div className="source-files">{files.map((file) => <label className={!file.selectable ? "disabled" : ""} key={file.relative_path}><input type="checkbox" disabled={!file.selectable} checked={selected.includes(file.relative_path)} onChange={(event) => setSelected((current) => event.target.checked ? [...current, file.relative_path] : current.filter((item) => item !== file.relative_path))} /><span><strong>{file.relative_path}</strong><small>{formatBytes(file.bytes)} · {time(file.modified_at)}{file.reason ? ` · ${file.reason}` : ""}</small></span></label>)}{!files.length && !error && <LoadingState />}</div></DialogFrame>;
+}
+
+export function PauseProjectDialog({ projectName, onClose, onConfirm }: { projectName: string; onClose(): void; onConfirm(): Promise<boolean> }) {
+  const [busy, setBusy] = useState(false);
+  const confirm = async () => { if (busy) return; setBusy(true); const succeeded = await onConfirm(); setBusy(false); if (succeeded) onClose(); };
+  return <DialogFrame alert title="暂停项目" description={`确认暂停“${projectName}”的自动扫描？`} onClose={onClose} footer={<><button className="button" disabled={busy} onClick={onClose}>取消</button><span className="footer-spacer" /><button className="button primary" disabled={busy} onClick={() => void confirm()}>{busy ? "暂停中…" : "确认暂停"}</button></>}><div className="readiness warning"><StatusPill status="paused" label="暂停自动扫描" /><div><strong>已有工作会继续，手动扫描仍可用</strong><p>暂停只会停止后续自动扫描，不会中断正在处理或排队的剪辑记录。</p></div></div></DialogFrame>;
 }

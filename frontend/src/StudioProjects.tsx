@@ -2,11 +2,11 @@ import { useEffect } from "react";
 import { Link } from "react-router-dom";
 
 import { projectApi } from "./project-api";
-import type { ProjectSummary, Run } from "./project-dto";
-import { ErrorState, LoadingState, Metric, PageHeading, ProjectRow, RunCard, SectionHeading, basename, sortProjects, usePolling } from "./workbench-shared";
+import type { ProjectSummary, Run, StudioPayload } from "./project-dto";
+import { ErrorState, LoadingState, Metric, PageHeading, ProjectRow, RunCard, SectionHeading, basename, sortProjects, type PollingState, usePolling } from "./workbench-shared";
 
-export function StudioPage({ notify }: { notify(message: string): void }) {
-  const state = usePolling((signal) => projectApi.studio(signal), 15000); const studio = state.data;
+export function StudioPage({ notify, state }: { notify(message: string): void; state: PollingState<StudioPayload> }) {
+  const studio = state.data;
   const active = Boolean(studio && (studio.workload.processing || studio.workload.queued));
   useEffect(() => { if (!active) return; const id = window.setInterval(() => { if (!document.hidden) void state.refresh(); }, 5000); return () => window.clearInterval(id); }, [active, state.refresh]);
   if (state.loading && !studio) return <LoadingState />;

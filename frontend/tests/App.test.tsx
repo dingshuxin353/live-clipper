@@ -105,6 +105,78 @@ describe("Venus 1.0 core workbench", () => {
     await waitFor(() => expect(calls.some(([path, options]) => path === "/api/projects/project-1/scans" && String(options?.body).includes("ready.mkv"))).toBe(true));
     const body = JSON.parse(String(calls.find(([path, options]) => path === "/api/projects/project-1/scans" && options?.method === "POST")?.[1]?.body));
     expect(body.selected_relative_paths).toEqual(["ready.mkv"]);
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "选择已有录像" })).not.toBeInTheDocument());
+    expect(window.location.pathname).toBe("/projects/project-1");
+    expect(window.location.search).toBe("");
+  });
+
+  it("loads the newly created project when navigation reuses the detail route", async () => {
+    const created = { ...PROJECT, project_id: "project-2", name: "新项目 B", description: "新项目详情", activation_state: "inactive", main_status: "inactive", workload: { processing: 0, queued: 0, awaiting_review: 0, failed: 0, completed: 0 } };
+    installFetchMock({
+      "/api/projects": (options?: RequestInit) => options?.method === "POST" ? jsonResponse({ ok: true, project: created, initial_scan: null }, 201) : jsonResponse({ ok: true, projects: [PROJECT] }),
+      "/api/projects/project-2": { ok: true, project: created },
+      "/api/projects/project-2/runs": { ok: true, runs: [], cursor: null, has_more: false },
+    });
+    route("/projects/project-1"); render(<App />);
+    expect(await screen.findByRole("heading", { name: PROJECT.name })).toBeVisible();
+    const dialog = await openCreateWizard();
+    fireEvent.click(within(dialog).getByRole("button", { name: "保存为未启用" }));
+    expect(await screen.findByRole("heading", { name: "新项目 B" })).toBeVisible();
+    expect(window.location.pathname).toBe("/projects/project-2");
+    expect(screen.queryByRole("heading", { name: PROJECT.name })).not.toBeInTheDocument();
+  });
+
+  it("preserves global settings and exposes project resources read-only", async () => {
+    installFetchMock(); route("/settings"); const view = render(<App />);
+    expect(await screen.findByRole("heading", { name: "设置" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "保存配置" })).toBeVisible();
+    expect(screen.getByLabelText("录播文件夹")).toBeVisible();
+    view.unmount();
+    route("/resources"); render(<App />);
+    expect(await screen.findByRole("heading", { name: "资源" })).toBeVisible();
+    expect(screen.getByText("本地 ASR")).toBeVisible();
+    expect(screen.getByText("主分析模型")).toBeVisible();
+    expect(screen.getByRole("link", { name: "前往设置" })).toHaveAttribute("href", "/settings");
+    expect(screen.queryByRole("button", { name: /删除|新增|编辑/ })).not.toBeInTheDocument();
+  });
+
+  it("shows the current pending review count in the top navigation", async () => {
+    installFetchMock({ "/api/studio": { ok: true, through_event_id: 0, changes: [], pending_review_count: 3, workload: PROJECT.workload, unattended_changes: { created: [], completed: [], awaiting_review: [], failed: [] }, needs_attention: { failed_runs: [], blocked_project_ids: [] }, in_progress: { processing: [], queued: [] }, recent_results: [], project_health: [PROJECT], projects: [PROJECT] } });
+    render(<App />);
+    const navigation = await screen.findByRole("navigation", { name: "主导航" });
+    expect(await within(navigation).findByLabelText("3 条待审")).toHaveTextContent("3");
+  });
+
+  it("requires an explicit explanation and confirmation before pausing", async () => {
+    let paused = false;
+    const calls = installFetchMock({
+      "/api/projects/project-1": () => jsonResponse({ ok: true, project: paused ? { ...PROJECT, activation_state: "paused", main_status: "paused" } : PROJECT }),
+      "/api/projects/project-1/pause": (options?: RequestInit) => { paused = options?.method === "POST"; return jsonResponse({ ok: true, project: { ...PROJECT, activation_state: "paused", main_status: "paused" }, initial_scan: null }); },
+    });
+    route("/projects/project-1"); render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "暂停项目" }));
+    const dialog = await screen.findByRole("alertdialog", { name: "暂停项目" });
+    expect(within(dialog).getByText(/已有工作会继续，手动扫描仍可用/)).toBeVisible();
+    expect(calls.filter(([path]) => path === "/api/projects/project-1/pause")).toHaveLength(0);
+    fireEvent.click(within(dialog).getByRole("button", { name: "确认暂停" }));
+    await waitFor(() => expect(calls.filter(([path]) => path === "/api/projects/project-1/pause")).toHaveLength(1));
+    expect(await screen.findByRole("button", { name: "恢复项目" })).toBeVisible();
+  });
+
+  it("refreshes immediately when a hidden page becomes visible", async () => {
+    const originalHidden = document.hidden; let projectLoads = 0;
+    Object.defineProperty(document, "hidden", { configurable: true, value: true });
+    try {
+      installFetchMock({ "/api/projects": () => { projectLoads += 1; return jsonResponse({ ok: true, projects: [PROJECT] }); } });
+      route("/projects"); render(<App />);
+      expect(await screen.findByText(PROJECT.name)).toBeVisible();
+      expect(projectLoads).toBe(1);
+      Object.defineProperty(document, "hidden", { configurable: true, value: false });
+      document.dispatchEvent(new Event("visibilitychange"));
+      await waitFor(() => expect(projectLoads).toBe(2));
+    } finally {
+      Object.defineProperty(document, "hidden", { configurable: true, value: originalHidden });
+    }
   });
 
   it("keeps the last successful project list visible after refresh failure", async () => {
