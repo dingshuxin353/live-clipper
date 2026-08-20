@@ -5,6 +5,8 @@ directories:
 files:
   - main.js
   - preload.js
+  - backend-client.js
+  - runtime-state.js
   - package.json
   - assets/**
 extraResources:

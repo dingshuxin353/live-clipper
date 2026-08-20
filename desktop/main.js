@@ -1,15 +1,19 @@
 const { app, BrowserWindow, Tray, Menu, clipboard, dialog, ipcMain, session, shell, nativeImage } = require("electron");
 const { spawn } = require("child_process");
-const http = require("http");
 const https = require("https");
 const net = require("net");
 const path = require("path");
+const { BackendClient, redactText } = require("./backend-client");
+const { appUrl, createBadgePoller, createRuntimeState, isInternalAppUrl } = require("./runtime-state");
 
 let mainWindow = null;
 let tray = null;
 let backendProcess = null;
 let backendPort = null;
-let quitting = false;
+let backendClient = null;
+let badgePoller = null;
+let exitingNow = false;
+const runtime = createRuntimeState();
 const backendToken = require("crypto").randomBytes(16).toString("hex");
 
 function findFreePort() {
@@ -39,81 +43,29 @@ function backendCommand(port) {
 }
 
 function startBackend(port) {
+  if (!runtime.canStart()) return false;
   const { executable, args } = backendCommand(port);
   const env = { ...process.env, LIVE_CLIPPER_WEB_TOKEN: backendToken };
   if (app.isPackaged) {
     env.PATH = `${path.join(process.resourcesPath, "bin")}:${env.PATH || ""}`;
   }
   backendProcess = spawn(executable, args, { env, stdio: ["ignore", "pipe", "pipe"] });
-  backendProcess.stdout.on("data", (chunk) => process.stdout.write(`[backend] ${chunk}`));
-  backendProcess.stderr.on("data", (chunk) => process.stderr.write(`[backend] ${chunk}`));
+  backendProcess.stdout.on("data", (chunk) => process.stdout.write(`[backend] ${redactText(chunk, [backendToken])}`));
+  backendProcess.stderr.on("data", (chunk) => process.stderr.write(`[backend] ${redactText(chunk, [backendToken])}`));
+  backendProcess.on("error", () => {
+    backendProcess = null;
+  });
   backendProcess.on("exit", (code) => {
     backendProcess = null;
-    if (!quitting) {
+    if (!runtime.isQuitting()) {
       dialog.showErrorBox("Venus", `后台服务意外退出（代码 ${code ?? "未知"}）。请重新打开应用。`);
-      app.quit();
+      runtime.beginQuit();
+      badgePoller?.stop();
+      exitingNow = true;
+      app.exit(1);
     }
   });
-}
-
-function waitForBackend(port, timeoutMs = 30000) {
-  const started = Date.now();
-  return new Promise((resolve, reject) => {
-    const retry = () => {
-      if (Date.now() - started > timeoutMs) {
-        reject(new Error("后台服务启动超时"));
-        return;
-      }
-      setTimeout(attempt, 250);
-    };
-    const attempt = () => {
-      const request = http.get(
-        {
-          host: "127.0.0.1",
-          port,
-          path: "/api/onboarding",
-          timeout: 1000,
-          headers: { Authorization: `Bearer ${backendToken}` },
-        },
-        (response) => {
-          response.resume();
-          if (response.statusCode === 200) resolve();
-          else retry();
-        }
-      );
-      request.on("error", retry);
-      request.on("timeout", () => {
-        request.destroy();
-        retry();
-      });
-    };
-    attempt();
-  });
-}
-
-function postBackend(apiPath, timeoutMs = 3000) {
-  return new Promise((resolve, reject) => {
-    const request = http.request(
-      {
-        host: "127.0.0.1",
-        port: backendPort,
-        path: apiPath,
-        method: "POST",
-        timeout: timeoutMs,
-        headers: { Authorization: `Bearer ${backendToken}` },
-      },
-      (response) => {
-        response.resume();
-        response.on("end", resolve);
-      }
-    );
-    request.on("error", reject);
-    request.on("timeout", () => {
-      request.destroy();
-      reject(new Error("timeout"));
-    });
-    request.end("{}");
-  });
+  return true;
 }
 
 ipcMain.handle("lc:select-folder", async (_event, title) => {
@@ -186,8 +138,8 @@ function setupAutoUpdater() {
 }
 
 async function installDownloadedUpdate() {
-  quitting = true;
-  await shutdownBackend();
+  if (!(await prepareForQuit())) return;
+  exitingNow = true;
   updater.quitAndInstall();
 }
 
@@ -279,10 +231,16 @@ async function checkForUpdates(interactive) {
   }
 }
 
-function showWindow() {
+function showWindow(route = null) {
+  if (!runtime.canStart() || !backendPort) return;
   if (mainWindow) {
+    if (route) {
+      const target = appUrl(backendPort, route);
+      if (mainWindow.webContents.getURL() !== target) void mainWindow.loadURL(target);
+    }
     mainWindow.show();
     mainWindow.focus();
+    void badgePoller?.activate();
     return;
   }
   mainWindow = new BrowserWindow({
@@ -299,13 +257,22 @@ function showWindow() {
       preload: path.join(__dirname, "preload.js"),
     },
   });
-  mainWindow.loadURL(`http://127.0.0.1:${backendPort}`);
+  mainWindow.loadURL(appUrl(backendPort, route || "/studio"));
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    if (isInternalAppUrl(url, backendPort)) {
+      void mainWindow.loadURL(url);
+    } else {
+      try {
+        const target = new URL(url);
+        if (["http:", "https:"].includes(target.protocol)) void shell.openExternal(url);
+      } catch (_error) {
+        // Ignore invalid and non-web external targets.
+      }
+    }
     return { action: "deny" };
   });
   mainWindow.on("close", (event) => {
-    if (!quitting) {
+    if (!runtime.isQuitting()) {
       event.preventDefault();
       mainWindow.hide();
     }
@@ -322,8 +289,8 @@ function createTray() {
   tray.setToolTip("Venus");
   tray.setContextMenu(
     Menu.buildFromTemplate([
-      { label: "打开主界面", click: () => showWindow() },
-      { label: "立即扫描录播", click: () => postBackend("/api/service/scan-now").catch(() => {}) },
+      { label: "打开工作室", click: () => showWindow("/studio") },
+      { label: "查看项目", click: () => showWindow("/projects") },
       { label: "检查更新", click: () => checkForUpdates(true) },
       { type: "separator" },
       { label: "退出 Venus", click: () => app.quit() },
@@ -333,53 +300,76 @@ function createTray() {
 
 async function shutdownBackend() {
   try {
-    await postBackend("/api/service/stop", 3000);
+    await backendClient?.stopService(3000);
   } catch (_error) {
     // Service may not be running; proceed to terminate the web backend.
   }
-  if (!backendProcess) return;
+  if (!backendProcess) {
+    backendClient = null;
+    return;
+  }
   const proc = backendProcess;
   proc.kill("SIGTERM");
   await new Promise((resolve) => {
     const timer = setTimeout(() => {
+      console.warn("[desktop] 后台服务未在 3 秒内退出，发送 SIGKILL");
       try {
         proc.kill("SIGKILL");
       } catch (_error) {
         // Already exited.
       }
       resolve();
-    }, 4000);
-    proc.on("exit", () => {
+    }, 3000);
+    proc.once("exit", () => {
       clearTimeout(timer);
       resolve();
     });
   });
+  backendClient = null;
+}
+
+async function prepareForQuit() {
+  if (!runtime.beginQuit()) return false;
+  badgePoller?.stop();
+  badgePoller = null;
+  tray?.destroy();
+  tray = null;
+  await shutdownBackend();
+  return true;
 }
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on("second-instance", () => showWindow());
+  app.on("second-instance", () => {
+    if (runtime.canStart() && backendPort) showWindow();
+  });
 
   app.whenReady().then(async () => {
     try {
       backendPort = await findFreePort();
+      backendClient = new BackendClient({ port: backendPort, token: backendToken });
       startBackend(backendPort);
-      await waitForBackend(backendPort);
+      await backendClient.waitUntilReady({ isAlive: () => Boolean(backendProcess) });
       await session.defaultSession.cookies.set({
         url: `http://127.0.0.1:${backendPort}`,
         name: "lc_token",
         value: backendToken,
         sameSite: "strict",
+        httpOnly: true,
       });
       createApplicationMenu();
       createTray();
-      showWindow();
+      badgePoller = createBadgePoller({ client: backendClient, dock: app.dock, platform: process.platform });
+      await badgePoller.start();
+      showWindow("/studio");
       setTimeout(() => checkForUpdates(false), 5000);
     } catch (error) {
       dialog.showErrorBox("Venus", `启动失败：${error.message}`);
-      quitting = true;
+      runtime.beginQuit();
+      badgePoller?.stop();
       await shutdownBackend();
+      exitingNow = true;
       app.exit(1);
     }
   });
@@ -389,13 +379,19 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.on("activate", () => {
-    if (backendPort) showWindow();
+    if (backendPort && runtime.canStart()) {
+      showWindow();
+      void badgePoller?.activate();
+    }
   });
 
   app.on("before-quit", (event) => {
-    if (quitting) return;
-    quitting = true;
+    if (exitingNow) return;
     event.preventDefault();
-    shutdownBackend().finally(() => app.exit(0));
+    if (runtime.isQuitting()) return;
+    prepareForQuit().finally(() => {
+      exitingNow = true;
+      app.exit(0);
+    });
   });
 }
