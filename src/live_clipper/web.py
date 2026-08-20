@@ -17,6 +17,8 @@ from . import asr_models, config_editor, jobs, mcp_tools, onboarding, review_aut
 from .automation import DEFAULT_LOG_DIR, DEFAULT_STATE_DIR, _pid_is_running, check_automation_runs
 from .config import RecordingSourceDefaultConfig, ServiceConfig, Settings, load_settings
 from .pipeline import cleanup_local_artifacts, cleanup_plan
+from .project_api import ProjectAPI
+from .project_storage import ProjectRepository, database_path
 from .render_clips import render_selected_clips
 from .status import build_run_status
 from .utils import read_json, write_json
@@ -114,6 +116,21 @@ def _settings_for_paths(paths: WebPaths) -> Settings:
 
 def _service_runs_available(paths: WebPaths) -> bool:
     return (paths.service_dir / "runs.json").exists()
+
+
+def _project_mode_active(paths: WebPaths) -> bool:
+    if not database_path(paths.service_dir).exists():
+        return False
+    with ProjectRepository(paths.service_dir) as repository:
+        return repository.get_data_mode() == "projects"
+
+
+def _is_project_api_route(method: str, parts: list[str], paths: WebPaths) -> bool:
+    if parts[:1] != ["api"]:
+        return False
+    if len(parts) >= 2 and parts[1] in {"project-form-options", "projects", "studio"}:
+        return True
+    return method == "GET" and len(parts) == 3 and parts[1] == "runs" and _project_mode_active(paths)
 
 
 def _structured_error(error_code: str, message: str) -> dict[str, Any]:
@@ -581,6 +598,13 @@ def handle_api_request(
     query = parse_qs(parsed.query, keep_blank_values=True)
     parts = [unquote(part) for part in parsed_path.split("/") if part]
     try:
+        if _is_project_api_route(method, parts, paths):
+            api = ProjectAPI(paths.service_dir, _settings_for_paths(paths))
+            try:
+                status, payload = api.handle(method, request_path, body=body)
+            finally:
+                api.close()
+            return _json_response(payload, status=status)
         if method == "GET" and parts == ["api", "service"]:
             return _json_response(_build_service_payload(paths))
         if method == "POST" and parts == ["api", "service", "start"]:
@@ -592,6 +616,18 @@ def handle_api_request(
                 return _json_response(service.pause_embedded_service())
             return _json_response(service.stop_service(service_dir=paths.service_dir))
         if method == "POST" and parts == ["api", "service", "scan-now"]:
+            if _project_mode_active(paths):
+                return _json_response(
+                    {
+                        "ok": False,
+                        "error": {
+                            "code": "project_scope_required",
+                            "message": "项目模式下必须指定项目后发起扫描",
+                            "fields": {},
+                        },
+                    },
+                    status=409,
+                )
             payload = mcp_tools.scan_now(settings=_settings_for_paths(paths), service_dir=paths.service_dir)
             return _json_response(payload, status=_action_status(payload))
         if method == "GET" and parts == ["api", "runs"]:
@@ -1068,11 +1104,15 @@ class LiveClipperRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_HEAD(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
-        if self.path == "/" or self.path.startswith("/static/"):
+        parsed_path = urlparse(self.path).path
+        if parsed_path == "/" or parsed_path.startswith("/static/"):
             self._serve_static(head_only=True)
             return
-        if self.path.startswith("/media/"):
+        if parsed_path.startswith("/media/"):
             self._serve_media(head_only=True)
+            return
+        if not parsed_path.startswith("/api/"):
+            self._serve_spa(head_only=True)
             return
         status, headers, _payload = handle_api_request("GET", self.path, self.paths)
         self.send_response(status)
@@ -1081,19 +1121,26 @@ class LiveClipperRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
-        if self.path == "/" or self.path.startswith("/static/"):
+        parsed_path = urlparse(self.path).path
+        if parsed_path == "/" or parsed_path.startswith("/static/"):
             self._serve_static()
             return
-        if self.path.startswith("/media/"):
+        if parsed_path.startswith("/media/"):
             if not self._authorized():
                 self._reject_unauthorized()
                 return
             self._serve_media()
             return
+        if not parsed_path.startswith("/api/"):
+            self._serve_spa()
+            return
         self._serve_api("GET")
 
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         self._serve_api("POST")
+
+    def do_PATCH(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        self._serve_api("PATCH")
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
         return
@@ -1103,7 +1150,7 @@ class LiveClipperRequestHandler(BaseHTTPRequestHandler):
             self._reject_unauthorized()
             return
         body_payload: dict[str, Any] | None = None
-        if method == "POST":
+        if method in {"POST", "PATCH"}:
             raw_length = self.headers.get("Content-Length")
             length = int(raw_length) if raw_length else 0
             if length:
@@ -1127,6 +1174,20 @@ class LiveClipperRequestHandler(BaseHTTPRequestHandler):
         body = target.read_bytes()
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", f"{content_type}; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if not head_only:
+            self.wfile.write(body)
+
+    def _serve_spa(self, *, head_only: bool = False) -> None:
+        target = STATIC_DIR / "react" / "index.html"
+        if not target.is_file():
+            self.send_error(HTTPStatus.NOT_FOUND, "File not found")
+            return
+        body = target.read_bytes()
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()

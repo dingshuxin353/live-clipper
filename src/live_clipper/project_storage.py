@@ -321,6 +321,68 @@ class ProjectRepository:
     def list_projects(self) -> list[Project]:
         return [Project(**row) for row in _dicts(self.connection.execute("SELECT * FROM projects ORDER BY created_at, project_id"))]
 
+    def update_project_identity(
+        self,
+        project_id: str,
+        *,
+        name: str,
+        description: str,
+        updated_at: str | None = None,
+    ) -> Project:
+        timestamp = normalize_utc(updated_at)
+        with self.transaction():
+            cursor = self.connection.execute(
+                "UPDATE projects SET name = ?, description = ?, updated_at = ? WHERE project_id = ?",
+                (name, description, timestamp, project_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(project_id)
+        project = self.get_project(project_id)
+        assert project is not None
+        return project
+
+    def update_project_activation(
+        self,
+        project_id: str,
+        activation_state: str,
+        *,
+        occurred_at: str | None = None,
+    ) -> Project:
+        if activation_state not in {"inactive", "active", "paused"}:
+            raise ValueError("invalid activation_state")
+        timestamp = normalize_utc(occurred_at)
+        activated_at = timestamp if activation_state == "active" else None
+        paused_at = timestamp if activation_state == "paused" else None
+        event_type = {"active": "project_enabled", "paused": "project_paused", "inactive": "project_deactivated"}[
+            activation_state
+        ]
+        with self.transaction():
+            cursor = self.connection.execute(
+                """UPDATE projects SET activation_state = ?, updated_at = ?,
+                     activated_at = CASE WHEN ? = 'active' THEN ? ELSE activated_at END,
+                     paused_at = CASE WHEN ? = 'paused' THEN ? ELSE NULL END
+                   WHERE project_id = ?""",
+                (
+                    activation_state,
+                    timestamp,
+                    activation_state,
+                    activated_at,
+                    activation_state,
+                    paused_at,
+                    project_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(project_id)
+            self.connection.execute(
+                """INSERT INTO workspace_events(event_type, project_id, occurred_at, payload_json)
+                   VALUES (?, ?, ?, ?)""",
+                (event_type, project_id, timestamp, stable_json({"activation_state": activation_state})),
+            )
+        project = self.get_project(project_id)
+        assert project is not None
+        return project
+
     def get_runtime(self, project_id: str) -> ProjectRuntime | None:
         row = _one(self.connection.execute("SELECT * FROM project_runtime WHERE project_id = ?", (project_id,)))
         return ProjectRuntime(**row) if row else None
@@ -437,6 +499,30 @@ class ProjectRepository:
         row["recovery_scan"] = bool(row["recovery_scan"])
         return ScanEvent(**row)
 
+    def get_running_scan(self, project_id: str) -> ScanEvent | None:
+        row = _one(
+            self.connection.execute(
+                "SELECT * FROM scan_events WHERE project_id = ? AND status = 'running'", (project_id,)
+            )
+        )
+        if row is None:
+            return None
+        row["recovery_scan"] = bool(row["recovery_scan"])
+        return ScanEvent(**row)
+
+    def list_scan_events(self, project_id: str) -> list[ScanEvent]:
+        rows = _dicts(
+            self.connection.execute(
+                "SELECT * FROM scan_events WHERE project_id = ? ORDER BY started_at DESC, scan_id DESC",
+                (project_id,),
+            )
+        )
+        events = []
+        for row in rows:
+            row["recovery_scan"] = bool(row["recovery_scan"])
+            events.append(ScanEvent(**row))
+        return events
+
     def complete_scan_event(
         self,
         scan_id: str,
@@ -541,7 +627,14 @@ class ProjectRepository:
             existing = self.find_run(project_id, content_id, 1)
             if existing is None:
                 raise
-            return NormalRunCreationResult(created=False, duplicate=True, run=existing)
+            with self.transaction():
+                self.connection.execute(
+                    "UPDATE runs SET latest_seen_path = ?, updated_at = ? WHERE run_id = ?",
+                    (latest_seen_path, timestamp, existing.run_id),
+                )
+            refreshed = self.get_run(existing.run_id)
+            assert refreshed is not None
+            return NormalRunCreationResult(created=False, duplicate=True, run=refreshed)
         created = self.get_run(run_id)
         assert created is not None
         return NormalRunCreationResult(created=True, duplicate=False, run=created)
@@ -593,6 +686,18 @@ class ProjectRepository:
         assert row is not None
         row["detail"] = parse_json(row.pop("detail_json"))
         return RunStageEvent(**row)
+
+    def list_stage_events(self, run_id: str) -> list[RunStageEvent]:
+        rows = _dicts(
+            self.connection.execute(
+                "SELECT * FROM run_stage_events WHERE run_id = ? ORDER BY event_id", (run_id,)
+            )
+        )
+        events = []
+        for row in rows:
+            row["detail"] = parse_json(row.pop("detail_json"))
+            events.append(RunStageEvent(**row))
+        return events
 
     def transition_run(
         self,
@@ -686,6 +791,10 @@ class ProjectRepository:
             row["payload"] = parse_json(row.pop("payload_json"))
             events.append(WorkspaceEvent(**row))
         return events
+
+    def max_workspace_event_id(self) -> int:
+        row = self.connection.execute("SELECT COALESCE(MAX(event_id), 0) FROM workspace_events").fetchone()
+        return int(row[0]) if row else 0
 
     def set_workspace_view(self, view_id: str, last_seen_event_id: int, *, updated_at: str | None = None) -> None:
         if last_seen_event_id < 0:

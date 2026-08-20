@@ -188,6 +188,7 @@ def tick_scheduler(
     *,
     service_dir: Path,
     now: datetime | None = None,
+    skip_job_types: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     current = now or datetime.now(ZoneInfo(settings.scheduler.timezone))
     ensure_dir(service_dir)
@@ -206,6 +207,24 @@ def tick_scheduler(
         due_at = _ensure_next_run_at(job, settings=settings, state=state, now=current)
         save_scheduler_runs(service_dir, runs_state)
         if due_at > current:
+            continue
+        if job.type in skip_job_types:
+            state.update(
+                {
+                    "status": "skipped",
+                    "last_error": "delegated_to_project_scheduler",
+                    "last_scheduled_for": due_at.isoformat(),
+                    "next_run_at": _advance_next_run(job, due_at=due_at, now=current).isoformat(),
+                }
+            )
+            save_scheduler_runs(service_dir, runs_state)
+            append_scheduler_event(
+                service_dir,
+                "scheduler_job_skipped",
+                job_id=job.id,
+                reason="delegated_to_project_scheduler",
+            )
+            skipped_jobs.append(job.id)
             continue
         if settings.scheduler.missed_policy == "skip":
             state.update(

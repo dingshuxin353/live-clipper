@@ -6,6 +6,9 @@ from threading import Thread
 from urllib.request import urlopen
 
 from live_clipper import web
+from live_clipper.config import Settings
+from live_clipper.project_domain import default_project_config
+from live_clipper.project_service import ProjectManager, open_project_repository
 from live_clipper.utils import write_json
 from live_clipper.web import LiveClipperRequestHandler, WebPaths, build_run_detail, build_runs_index, handle_api_request
 
@@ -489,3 +492,50 @@ def test_handle_api_request_deletes_only_local_source_copy(tmp_path):
     assert body["deleted"] == str(local_source)
     assert not local_source.exists()
     assert nas_source.exists()
+
+
+def test_project_routes_use_sqlite_and_global_scan_is_blocked(tmp_path):
+    service_dir = tmp_path / "service"
+    source = tmp_path / "source"
+    output = tmp_path / "output"
+    source.mkdir()
+    output.mkdir()
+    repository = open_project_repository(service_dir)
+    project = ProjectManager(repository, Settings()).create_project(
+        name="项目",
+        config=default_project_config(source, output),
+        activation_state="inactive",
+        request_id="create-web-project",
+    )
+    repository.close()
+    paths = WebPaths(service_dir=service_dir, config_path=tmp_path / "missing.toml")
+
+    status, _headers, projects = handle_api_request("GET", "/api/projects", paths)
+    run_status, _headers, missing_run = handle_api_request("GET", "/api/runs/not-found", paths)
+    scan_status, _headers, scan = handle_api_request("POST", "/api/service/scan-now", paths)
+
+    assert status == 200
+    assert projects["projects"][0]["project_id"] == project.project_id
+    assert run_status == 404 and missing_run["error"]["code"] == "run_not_found"
+    assert scan_status == 409 and scan["error"]["code"] == "project_scope_required"
+    assert not (service_dir / "runs.json").exists()
+
+
+def test_spa_history_route_returns_react_index(tmp_path):
+    class TestHandler(LiveClipperRequestHandler):
+        paths = WebPaths(service_dir=tmp_path / "service")
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), TestHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base_url = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        root = urlopen(f"{base_url}/", timeout=5).read()
+        deep = urlopen(f"{base_url}/projects/project-1/runs/run-1", timeout=5)
+        assert deep.status == 200
+        assert deep.headers["Content-Type"] == "text/html; charset=utf-8"
+        assert deep.read() == root
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)

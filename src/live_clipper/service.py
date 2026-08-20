@@ -45,6 +45,19 @@ class ScanBusyError(RuntimeError):
     """Raised when another manual or scheduled source scan is already in progress."""
 
 
+class ProjectScopeRequiredError(RuntimeError):
+    """Raised when a global legacy action is used after project mode is active."""
+
+
+def project_mode_active(service_dir: Path = DEFAULT_SERVICE_DIR) -> bool:
+    from .project_storage import ProjectRepository, database_path
+
+    if not database_path(service_dir).exists():
+        return False
+    with ProjectRepository(service_dir) as repository:
+        return repository.get_data_mode() == "projects"
+
+
 def require_pipeline_configuration(settings: Settings) -> None:
     if not settings.cheap_model_api_key:
         raise PipelineConfigurationError(PIPELINE_CONFIGURATION_MESSAGE)
@@ -586,6 +599,20 @@ def approve_confirmation(
     if confirmation.get("status") != "pending":
         return _confirmation_error("invalid_phase", f"Confirmation is not pending: {confirmation_id}")
     run = find_run(str(confirmation.get("run_id")), service_dir)
+    if run is None and project_mode_active(service_dir):
+        from .project_runtime import run_work_dir
+        from .project_storage import ProjectRepository
+
+        with ProjectRepository(service_dir) as repository:
+            project_run = repository.get_run(str(confirmation.get("run_id")))
+        if project_run is not None:
+            project_run_dir = run_work_dir(settings.paths.work_dir, project_run)
+            run = {
+                "run_id": project_run.run_id,
+                "run_dir": str(project_run_dir),
+                "input_dir": str(project_run_dir / "input"),
+                "phase": "rendered" if project_run.status == "completed" else project_run.status,
+            }
     if run is None:
         return _confirmation_error("run_not_found", f"Run not found: {confirmation.get('run_id')}")
     action = str(confirmation.get("action"))
@@ -1270,6 +1297,8 @@ def _retry_failed_run_locked(
 
 
 def run_service_once(settings: Settings, *, service_dir: Path = DEFAULT_SERVICE_DIR) -> dict[str, Any]:
+    if project_mode_active(service_dir):
+        raise ProjectScopeRequiredError("项目模式下必须指定项目后发起扫描")
     if not _SCAN_LOCK.acquire(blocking=False):
         raise ScanBusyError("扫描正在进行中，请等待当前扫描完成。")
     try:
@@ -1447,6 +1476,26 @@ def run_service_tick(settings: Settings, *, service_dir: Path = DEFAULT_SERVICE_
 def _run_service_tick_locked(settings: Settings, *, service_dir: Path) -> dict[str, Any]:
     validate_service_settings(settings)
     ensure_dir(service_dir)
+    if project_mode_active(service_dir):
+        from . import scheduler
+        from .project_runtime import tick_project_runtime
+        from .project_scheduler import tick_project_schedules
+
+        runtime_report = tick_project_runtime(settings, service_dir=service_dir)
+        scheduler_report = tick_project_schedules(settings, service_dir=service_dir)
+        legacy_scheduler_report = scheduler.tick_scheduler(
+            settings,
+            service_dir=service_dir,
+            skip_job_types=frozenset({"scan_recordings"}),
+        )
+        return {
+            "ok": True,
+            "mode": "projects",
+            "runtime": runtime_report,
+            "scheduler": scheduler_report,
+            "legacy_scheduler": legacy_scheduler_report,
+            "service_dir": str(service_dir),
+        }
     runs = load_runs(service_dir)
     changed_runs, reconcile_failures = _reconcile_runs(runs, settings, service_dir=service_dir)
     queued_started: list[dict[str, Any]] = []

@@ -9,9 +9,11 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 LEGACY_ID_NAMESPACE = uuid.UUID("4ca0dcf0-a4dd-5ff9-b7bd-f4af56d78bb8")
 _CREDENTIAL_KEY = re.compile(r"api[_-]?key|token|secret|password", re.IGNORECASE)
+PROJECT_VIDEO_EXTENSIONS = (".m4v", ".mkv", ".mov", ".mp4", ".webm")
 
 
 class ActivationState(StrEnum):
@@ -209,7 +211,7 @@ def default_project_config(source_directory: str | Path, output_directory: str |
         "schema_version": 1,
         "source": {
             "directory": str(Path(source_directory).expanduser().resolve()),
-            "supported_extensions": [".mp4"],
+            "supported_extensions": list(PROJECT_VIDEO_EXTENSIONS),
             "include_patterns": [],
             "exclude_patterns": [],
             "first_scan_mode": "new_only",
@@ -270,6 +272,10 @@ def validate_project_config(config: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(config.get(section), Mapping) or set(config[section]) != keys:
             raise ValueError(f"project config section {section!r} does not match schema v1")
     source = config["source"]
+    if source["supported_extensions"] != list(PROJECT_VIDEO_EXTENSIONS):
+        raise ValueError("supported_extensions must use the current Venus video formats")
+    if source["include_patterns"] or source["exclude_patterns"]:
+        raise ValueError("include and exclude patterns are fixed in schema v1")
     if source["first_scan_mode"] not in {"new_only", "recent", "choose_existing"}:
         raise ValueError("invalid first_scan_mode")
     if source["first_scan_mode"] == "recent":
@@ -278,6 +284,8 @@ def validate_project_config(config: Mapping[str, Any]) -> dict[str, Any]:
     elif source["lookback_days"] is not None:
         raise ValueError("lookback_days is only valid for recent first scans")
     schedule = config["schedule"]
+    if not isinstance(schedule["enabled"], bool):
+        raise ValueError("schedule.enabled must be a boolean")
     if schedule["mode"] not in {"daily", "interval"}:
         raise ValueError("invalid schedule mode")
     if schedule["mode"] == "interval":
@@ -285,11 +293,31 @@ def validate_project_config(config: Mapping[str, Any]) -> dict[str, Any]:
             raise ValueError("invalid interval_minutes")
     elif schedule["interval_minutes"] is not None:
         raise ValueError("interval_minutes is only valid for interval schedules")
+    if schedule["mode"] == "daily":
+        if not isinstance(schedule["daily_time"], str) or not re.fullmatch(
+            r"(?:[01]\d|2[0-3]):[0-5]\d", schedule["daily_time"]
+        ):
+            raise ValueError("daily schedules require daily_time in HH:MM format")
+    elif schedule["daily_time"] is not None:
+        raise ValueError("daily_time is only valid for daily schedules")
+    try:
+        ZoneInfo(str(schedule["timezone"]))
+    except ZoneInfoNotFoundError as exc:
+        raise ValueError("invalid schedule timezone") from exc
+    resources = config["resources"]
+    if not all(isinstance(resources[field], str) and resources[field] for field in ("asr_ref", "analysis_ref")):
+        raise ValueError("ASR and analysis resource references are required")
+    if resources["arbitration_mode"] != "reuse_analysis" or resources["arbitration_ref"] is not None:
+        raise ValueError("schema v1 arbitration must reuse the analysis resource")
     if config["output"]["intermediate_retention"] not in {
         "remind_immediately",
         "remind_after_7_days",
         "keep",
     }:
         raise ValueError("invalid intermediate_retention")
+    if config["output"]["original_media_policy"] != "never_delete":
+        raise ValueError("original media must never be deleted")
+    if config["output"]["final_media_policy"] != "keep":
+        raise ValueError("final media must be retained")
     # A JSON round-trip also rejects non-serializable objects and returns an owned copy.
     return json.loads(stable_json(config))

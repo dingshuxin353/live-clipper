@@ -341,3 +341,35 @@ def test_manual_run_consumes_overdue_schedule_without_duplicate_tick(monkeypatch
     assert tick["ran_jobs"] == []
     assert calls == ["run"]
     assert read_json(tmp_path / "scheduler_runs.json")["jobs"]["daily_scan"]["next_run_at"] == "2026-07-01T08:00:00+08:00"
+
+
+def test_project_mode_delegates_legacy_recording_scan_job(monkeypatch, tmp_path):
+    job = SchedulerJobConfig(
+        id="daily_scan",
+        name="每日扫描",
+        enabled=True,
+        type="scan_recordings",
+        schedule="daily",
+        time="08:00",
+    )
+    write_json(
+        tmp_path / "scheduler_runs.json",
+        {"jobs": {"daily_scan": {"next_run_at": "2026-06-30T08:00:00+08:00"}}},
+    )
+    monkeypatch.setattr(
+        service,
+        "run_service_once",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("global scan must not run")),
+    )
+
+    result = tick_scheduler(
+        _settings([job]),
+        service_dir=tmp_path,
+        now=datetime(2026, 6, 30, 9, 0, tzinfo=TZ),
+        skip_job_types=frozenset({"scan_recordings"}),
+    )
+
+    state = read_json(tmp_path / "scheduler_runs.json")["jobs"]["daily_scan"]
+    assert result["skipped_jobs"] == ["daily_scan"]
+    assert state["last_error"] == "delegated_to_project_scheduler"
+    assert state["next_run_at"] == "2026-07-01T08:00:00+08:00"

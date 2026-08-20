@@ -16,6 +16,7 @@ from live_clipper.config import (
     ServiceConfig,
     Settings,
 )
+from live_clipper.project_service import open_project_repository
 from live_clipper.utils import read_json, write_json
 
 
@@ -1203,3 +1204,25 @@ def test_run_service_once_persists_reconcile_when_scan_source_missing(tmp_path, 
     assert saved[0]["phase"] == "needs_review"
     events = (service_dir / "events.jsonl").read_text(encoding="utf-8")
     assert "recording_source_unavailable" in events
+
+
+def test_projects_mode_service_tick_uses_sqlite_runtime_without_runs_json(tmp_path, monkeypatch):
+    service_dir = tmp_path / "service"
+    open_project_repository(service_dir).close()
+    monkeypatch.setattr(
+        "live_clipper.project_runtime.tick_project_runtime",
+        lambda settings, *, service_dir: {"ok": True, "mode": "projects", "started_run_ids": []},
+    )
+    monkeypatch.setattr(
+        "live_clipper.project_scheduler.tick_project_schedules",
+        lambda settings, *, service_dir: {"ok": True, "mode": "projects", "scanned_projects": []},
+    )
+
+    report = service.run_service_tick(Settings(), service_dir=service_dir)
+
+    assert report["mode"] == "projects"
+    assert report["runtime"]["mode"] == "projects"
+    assert report["scheduler"]["mode"] == "projects"
+    assert not (service_dir / "runs.json").exists()
+    with pytest.raises(service.ProjectScopeRequiredError):
+        service.run_service_once(Settings(), service_dir=service_dir)
