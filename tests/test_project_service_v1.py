@@ -59,4 +59,3 @@ def test_output_nested_in_source_is_a_blocker_even_through_symlink(tmp_path):
     manager = ProjectManager(open_project_repository(tmp_path / "service"), Settings(cheap_model_api_key="fake"))
     result = manager.validate_project(name="项目", config=config, activation_state="active")
     assert any(issue.code == "output_inside_source" for issue in result.blockers)
-

@@ -13,4 +13,3 @@ def test_compatibility_resources_and_snapshot_never_expose_credentials(tmp_path)
     assert snapshot["resources"]["asr_ref"] == "legacy.asr.default"
     assert "sk-never-return" not in repr(snapshot)
     assert "asr-never-return" not in repr(snapshot)
-
