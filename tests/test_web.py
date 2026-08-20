@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 import re
 from http.server import ThreadingHTTPServer
 from threading import Thread
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 from live_clipper import web
 from live_clipper.config import Settings
@@ -539,3 +540,47 @@ def test_spa_history_route_returns_react_index(tmp_path):
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+def test_http_recent_project_creation_completes_initial_scan(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    output = tmp_path / "output"
+    source.mkdir()
+    output.mkdir()
+    config = default_project_config(source, output)
+    config["source"].update(first_scan_mode="recent", lookback_days=3)
+    monkeypatch.setenv("CHEAP_MODEL_API_KEY", "fake")
+
+    class TestHandler(LiveClipperRequestHandler):
+        paths = WebPaths(service_dir=tmp_path / "service", config_path=tmp_path / "missing.toml")
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), TestHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    request = Request(
+        f"http://127.0.0.1:{server.server_address[1]}/api/projects",
+        data=json.dumps(
+            {
+                "request_id": "http-recent-create",
+                "activation_state": "active",
+                "project": {"name": "recent", "description": "", "config": config},
+            }
+        ).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        response = urlopen(request, timeout=5)
+        payload = json.loads(response.read())
+        assert response.status == 201
+        assert payload["initial_scan"]["status"] == "success"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    repository = open_project_repository(tmp_path / "service")
+    scan = repository.list_scan_events(payload["project"]["project_id"])[0]
+    assert scan.trigger_source == "manual"
+    assert repository.get_runtime(payload["project"]["project_id"]).first_scan_state == "completed"
+    repository.close()

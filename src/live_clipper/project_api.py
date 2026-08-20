@@ -238,15 +238,50 @@ class ProjectAPI:
             or revision.config["source"]["first_scan_mode"] != "recent"
         ):
             return None
-        return asdict(
-            scan_project(
-                self.repository,
-                project_id,
-                trigger_source="initial",
-                settings=self.settings,
-                service_dir=self.service_dir,
+        try:
+            return asdict(
+                scan_project(
+                    self.repository,
+                    project_id,
+                    trigger_source="manual",
+                    settings=self.settings,
+                    service_dir=self.service_dir,
+                )
             )
+        except ProjectScanError as exc:
+            return self._record_initial_scan_failure(project_id, code=exc.code, message=exc.message)
+        except Exception:  # noqa: BLE001 - keep project creation coherent across the HTTP boundary.
+            return self._record_initial_scan_failure(
+                project_id,
+                code="initial_scan_failed",
+                message="项目已创建，但首次回溯扫描启动失败",
+            )
+
+    def _record_initial_scan_failure(self, project_id: str, *, code: str, message: str) -> dict[str, Any]:
+        running = self.repository.get_running_scan(project_id)
+        if running is not None:
+            self.repository.complete_scan_event(
+                running.scan_id,
+                status="failed",
+                error_summary=message,
+            )
+        self.repository.update_runtime(
+            project_id,
+            readiness_state="blocked",
+            failure_code=code,
+            failure_summary=message,
         )
+        self.repository.append_workspace_event(
+            "scan_failed",
+            project_id=project_id,
+            scan_id=running.scan_id if running else None,
+            payload={"error_code": code, "initial_scan": True},
+        )
+        return {
+            "status": "failed",
+            "scan_id": running.scan_id if running else None,
+            "error": {"code": code, "message": message},
+        }
 
     def _project_summary(self, project_id: str, *, include_config: bool = False) -> dict[str, Any]:
         project = self.repository.get_project(project_id)

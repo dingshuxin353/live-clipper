@@ -1,6 +1,7 @@
 from live_clipper.config import Settings
 from live_clipper.project_api import ProjectAPI
 from live_clipper.project_domain import default_project_config
+from live_clipper.project_scan import ProjectScanError
 
 
 def test_api_create_list_detail_and_stable_errors(tmp_path):
@@ -111,3 +112,60 @@ def test_api_preview_revision_conflict_cursor_and_seen_anchor(tmp_path):
     assert status == 200 and seen["last_seen_event_id"] == through
     status, backward = api.handle("POST", "/api/studio/seen", body={"through_event_id": through - 1})
     assert status == 422 and backward["error"]["code"] == "validation_failed"
+
+
+def test_recent_project_creation_uses_legal_initial_scan_trigger(tmp_path):
+    source = tmp_path / "source"
+    output = tmp_path / "output"
+    source.mkdir()
+    output.mkdir()
+    config = default_project_config(source, output)
+    config["source"].update(first_scan_mode="recent", lookback_days=3)
+    api = ProjectAPI(tmp_path / "service", Settings(cheap_model_api_key="fake"))
+
+    status, payload = api.handle(
+        "POST",
+        "/api/projects",
+        body={
+            "request_id": "recent-create",
+            "activation_state": "active",
+            "project": {"name": "recent", "description": "", "config": config},
+        },
+    )
+
+    assert status == 201 and payload["initial_scan"]["status"] == "success"
+    scan = api.repository.list_scan_events(payload["project"]["project_id"])[0]
+    assert scan.trigger_source == "manual"
+    assert api.repository.get_runtime(payload["project"]["project_id"]).first_scan_state == "completed"
+
+
+def test_initial_scan_failure_returns_coherent_created_project(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    output = tmp_path / "output"
+    source.mkdir()
+    output.mkdir()
+    config = default_project_config(source, output)
+    config["source"].update(first_scan_mode="recent", lookback_days=3)
+    api = ProjectAPI(tmp_path / "service", Settings(cheap_model_api_key="fake"))
+    monkeypatch.setattr(
+        "live_clipper.project_api.scan_project",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ProjectScanError("source_unavailable", "录像目录不可用")),
+    )
+
+    status, payload = api.handle(
+        "POST",
+        "/api/projects",
+        body={
+            "request_id": "recent-failure",
+            "activation_state": "active",
+            "project": {"name": "recent", "description": "", "config": config},
+        },
+    )
+
+    project_id = payload["project"]["project_id"]
+    runtime = api.repository.get_runtime(project_id)
+    assert status == 201 and payload["initial_scan"]["error"]["code"] == "source_unavailable"
+    assert len(api.repository.list_projects()) == 1
+    assert runtime.first_scan_state == "pending"
+    assert runtime.readiness_state == "blocked" and runtime.failure_code == "source_unavailable"
+    assert api.repository.list_workspace_events()[-1].event_type == "scan_failed"
