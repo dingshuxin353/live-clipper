@@ -227,6 +227,63 @@ def test_run_service_once_discovers_all_content_and_starts_only_one_pipeline(tmp
     assert not Path(runs[1]["input_dir"]).exists()
 
 
+def test_scan_message_explains_existing_active_work_when_queue_cannot_start(tmp_path, monkeypatch):
+    service_dir = tmp_path / "service"
+    source_dir = tmp_path / "nas"
+    source_dir.mkdir()
+    write_json(
+        service_dir / "runs.json",
+        {
+            "runs": [
+                {"run_id": "active", "phase": "processing", "run_dir": str(tmp_path / "active")},
+                {"run_id": "queued", "phase": "queued", "run_dir": str(tmp_path / "queued")},
+            ]
+        },
+    )
+    monkeypatch.setattr(service, "_reconcile_runs", lambda runs, settings, service_dir: (0, []))
+
+    def fake_dispatch(runs, *, settings, service_dir, failures):
+        failures.append({"run_id": "queued", "error": "already active"})
+        return []
+
+    monkeypatch.setattr(service, "dispatch_queued_runs", fake_dispatch)
+    monkeypatch.setattr(
+        service,
+        "scan_recording_source_report",
+        lambda config: {
+            "eligible": [],
+            "unsupported_files": 0,
+            "too_new_files": 0,
+            "unstable_files": 0,
+            "skipped_subdirectories": 0,
+            "file_errors": [],
+            "source_unconfigured": False,
+        },
+    )
+    settings = Settings(
+        cheap_model_api_key="test-key",
+        recording_source_default=RecordingSourceDefaultConfig(
+            source_dir=source_dir,
+            input_dir=tmp_path / "input",
+            output_root=tmp_path / "output",
+            min_age_minutes=0,
+            stable_check_seconds=0,
+        ),
+    )
+
+    report = service.run_service_once(settings, service_dir=service_dir)
+
+    assert report["started_runs"] == 0
+    assert report["queued_runs"] == 1
+    assert "本次发现 0 个，本轮启动 0 个，当前总排队 1 个" in report["message"]
+    assert "队列启动失败 1 个" in report["message"]
+    assert "已有任务正在处理" not in report["message"]
+
+    monkeypatch.setattr(service, "dispatch_queued_runs", lambda runs, *, settings, service_dir, failures: [])
+    recovered_message = service.run_service_once(settings, service_dir=service_dir)["message"]
+    assert "已有任务正在处理，新任务会按顺序自动开始" in recovered_message
+
+
 def test_run_service_once_deduplicates_renamed_copy_by_full_content_id(tmp_path, monkeypatch):
     source_dir = tmp_path / "nas"
     source_dir.mkdir()

@@ -287,6 +287,123 @@ describe("React application shell", () => {
     expect(screen.queryByText("操作已完成")).not.toBeInTheDocument();
   });
 
+  it("uses full phase counts and exposes accessible task pagination", async () => {
+    const runs = Array.from({ length: 20 }, (_, index) => ({
+      run_id: `queued-${index}`,
+      source_name: `queued-${index}.mkv`,
+      phase: "queued",
+      queue_position: index + 1,
+    }));
+    const calls = installFetchMock({
+      "/api/runs": {
+        ok: true,
+        runs,
+        count: 20,
+        total: 57,
+        has_more: true,
+        phase_counts: { all: 186, queued: 57, processing: 1, needs_review: 30, rendered: 90, failed: 8, other: 0 },
+      },
+    });
+    render(<App />);
+
+    expect((await screen.findAllByText("排队中 57"))[0]).toBeVisible();
+    expect(screen.getByText("共 186 个任务：90 个已成片，57 个排队中，1 个处理中，30 个待审阅，8 个失败")).toBeVisible();
+    expect(screen.getByText("队列第 1 位", { exact: false })).toBeVisible();
+    expect(screen.getByText("1–20 / 共 57 个任务")).toBeVisible();
+    expect(screen.getByRole("navigation", { name: "任务分页" })).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+
+    await waitFor(() => expect(calls.some(([path]) => path === "/api/runs?offset=20&limit=20")).toBe(true));
+    expect(await screen.findByText("21–40 / 共 57 个任务")).toBeVisible();
+  });
+
+  it("ignores a slower page response after switching phase", async () => {
+    let runRequest = 0;
+    let resolveSlowPage!: (response: Response) => void;
+    const slowPage = new Promise<Response>((resolve) => {
+      resolveSlowPage = resolve;
+    });
+    installFetchMock({
+      "/api/runs": () => {
+        runRequest += 1;
+        if (runRequest === 1) {
+          return jsonResponse({
+            ok: true,
+            runs: Array.from({ length: 20 }, (_, index) => ({ run_id: `queued-${index}`, source_name: `queued-${index}.mkv`, phase: "queued" })),
+            count: 20,
+            total: 41,
+            has_more: true,
+            phase_counts: { all: 41, queued: 40, processing: 0, needs_review: 0, rendered: 0, failed: 1, other: 0 },
+          });
+        }
+        if (runRequest === 2) return slowPage;
+        return jsonResponse({
+          ok: true,
+          runs: [{ run_id: "failed-run", source_name: "failed.mkv", phase: "failed" }],
+          count: 1,
+          total: 1,
+          has_more: false,
+          phase: "failed",
+          phase_counts: { all: 41, queued: 40, processing: 0, needs_review: 0, rendered: 0, failed: 1, other: 0 },
+        });
+      },
+    });
+    render(<App />);
+
+    await screen.findByText("queued-0.mkv");
+    fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+    const phaseFilters = document.getElementById("phaseFilters") as HTMLElement;
+    const failedTab = [...phaseFilters.querySelectorAll("button")].find((button) => button.textContent?.includes("失败 1"));
+    expect(failedTab).toBeDefined();
+    fireEvent.click(failedTab as HTMLElement);
+
+    expect(await screen.findByText("failed.mkv")).toBeVisible();
+    resolveSlowPage(new Response(JSON.stringify({
+      ok: true,
+      runs: [{ run_id: "stale-queued", source_name: "stale-queued.mkv", phase: "queued" }],
+      count: 1,
+      total: 40,
+      offset: 20,
+      limit: 20,
+      has_more: false,
+      phase: "queued",
+      phase_counts: { all: 41, queued: 40, processing: 0, needs_review: 0, rendered: 0, failed: 1, other: 0 },
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.getByText("failed.mkv")).toBeVisible();
+    expect(screen.queryByText("stale-queued.mkv")).not.toBeInTheDocument();
+  });
+
+  it("keeps the last successful list visible when a refresh fails", async () => {
+    let runRequest = 0;
+    const calls = installFetchMock({
+      "/api/runs": () => {
+        runRequest += 1;
+        if (runRequest === 1) {
+          return jsonResponse({
+            ok: true,
+            runs: [{ run_id: "stable-run", source_name: "stable.mkv", phase: "rendered" }],
+            count: 1,
+            total: 1,
+            has_more: false,
+            phase_counts: { all: 1, queued: 0, processing: 0, needs_review: 0, rendered: 1, failed: 0, other: 0 },
+          });
+        }
+        return jsonResponse({ ok: false, error_code: "internal_error", message: "列表刷新失败" }, 500);
+      },
+    });
+    render(<App />);
+    expect(await screen.findByText("stable.mkv")).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "刷新" }));
+
+    expect(await screen.findByText("刷新失败：列表刷新失败")).toBeVisible();
+    expect(screen.getByText("stable.mkv")).toBeVisible();
+    expect(screen.queryByText("还没有录播任务")).not.toBeInTheDocument();
+    expect(calls.filter(([path]) => path.startsWith("/api/runs?")).length).toBeGreaterThanOrEqual(2);
+  });
+
   it("uses one persistent status and no toast for review automation results", async () => {
     installFetchMock({
       "/api/review-automation/run-due": {
