@@ -153,7 +153,7 @@ def test_project_pins_lightweight_model_hub_dependencies_and_freezes_them():
     assert "--collect-all modelscope_hub" in build_script
 
 
-def test_release_versions_are_frozen_at_0_3_5():
+def test_release_versions_are_frozen_at_0_3_6():
     pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
     desktop_package = json.loads(Path("desktop/package.json").read_text(encoding="utf-8"))
     desktop_lock = json.loads(Path("desktop/package-lock.json").read_text(encoding="utf-8"))
@@ -170,8 +170,8 @@ def test_release_versions_are_frozen_at_0_3_5():
         frontend_lock["packages"][""]["version"],
     }
 
-    assert release_versions == {"0.3.5"}
-    assert "## 0.3.5 - 2026-08-17" in Path("CHANGELOG.md").read_text(encoding="utf-8")
+    assert release_versions == {"0.3.6"}
+    assert "## 0.3.6 - 2026-08-20" in Path("CHANGELOG.md").read_text(encoding="utf-8")
 
 
 def test_electron_runtime_is_supported_secure_release():
@@ -179,7 +179,7 @@ def test_electron_runtime_is_supported_secure_release():
     lock = json.loads(Path("desktop/package-lock.json").read_text(encoding="utf-8"))
     root = lock["packages"][""]
 
-    assert package["version"] == lock["version"] == root["version"] == "0.3.5"
+    assert package["version"] == lock["version"] == root["version"] == "0.3.6"
     assert package["scripts"]["postinstall"] == "install-electron"
     assert package["dependencies"] == {"electron-updater": "^6.3.0"}
     assert package["devDependencies"] == {

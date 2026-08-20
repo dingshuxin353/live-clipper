@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.6 - 2026-08-20
+
+### Changed
+
+- Task result tabs now show complete phase counts, stable pagination, and queue positions instead of treating the first page as the full task history.
+- Scan summaries now distinguish recordings discovered in the current scan, pipelines started in the current pass, and the total queue remaining afterward.
+
+### Fixed
+
+- Phase filters now run against the complete task collection before pagination, so queued, processing, review, rendered, and failed tasks remain visible after more than 20 historical runs.
+- Legacy task phases now map consistently to their user-facing tabs, and request failures no longer appear as an empty task history.
+
 ## 0.3.5 - 2026-08-17
 
 ### Changed
