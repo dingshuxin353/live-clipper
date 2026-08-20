@@ -92,36 +92,44 @@ def test_advanced_usage_documents_mcp_tools_and_confirmation_safety():
 
 
 def test_web_static_exposes_v3_console_sections():
-    app = _frontend_source("App.tsx", "Settings.tsx")
+    app = _frontend_source("App.tsx")
+    compatibility = _frontend_source("CompatibilityPages.tsx")
+    settings = _frontend_source("Settings.tsx")
 
-    for label in ["服务", "任务", "文件清理", "日志", "配置"]:
+    for label in ["工作室", "项目", "待审", "资源", "设置", "＋ 新建项目"]:
         assert label in app
-    assert "/api/confirmations/batch-approve" in app
-    assert "/api/service/scan-now" in app
-    assert "confirmation_required" in app
+    for path in ["/studio", "/projects", "/review", "/resources", "/settings"]:
+        assert f'<Route path="{path}"' in app
+    for label in ["资源", "待审", "需要修复资源？"]:
+        assert label in compatibility
+    for label in ["配置体检", "基础设置", "自动化", "高级设置"]:
+        assert label in settings
+    for endpoint in ["/api/config", "/api/service", "/api/asr/models"]:
+        assert endpoint in compatibility
 
 
 def test_web_static_exposes_v4_config_editor():
-    app = _frontend_source("App.tsx", "Settings.tsx")
+    settings = _frontend_source("Settings.tsx")
 
     for label in ["基础设置", "录播文件夹", "AI 服务地址", "语音识别方式", "启用自动处理引擎", "检查配置", "保存配置", "重启服务"]:
-        assert label in app
-    assert "/api/config" in app
-    assert "/api/config/validate" in app
-    assert "/api/config/restart-service" in app
+        assert label in settings
+    assert "/api/config" in settings
+    assert "/api/config/validate" in settings
+    assert "/api/config/restart-service" in settings
 
 
 def test_web_static_exposes_v5_scheduler_config_section():
-    app = _frontend_source("App.tsx", "Settings.tsx")
+    settings = _frontend_source("Settings.tsx")
+    compatibility = _frontend_source("CompatibilityPages.tsx")
 
     for label in ["自动化", "每周录播扫描", "每周审阅检查", "按时间表自动扫描和检查（默认每周日）"]:
-        assert label in app
-    for label in ["立即执行", "暂停", "启用"]:
-        assert label in app
-    assert "/api/scheduler" in app
-    assert "/api/scheduler/jobs" in app
-    assert "/run-now" in app
-    assert "自动化引擎随 App 运行" in app
+        assert label in settings
+    for label in ["保存定时任务", "启用任务", "重启服务"]:
+        assert label in settings
+    assert "/api/scheduler" in compatibility
+    assert "/api/scheduler/jobs" in settings
+    assert "编辑高级定时任务" in settings
+    assert "自动化引擎随 App 运行" in settings
 
 
 def test_advanced_usage_documents_v3_web_console_confirmation_flow():
@@ -159,17 +167,17 @@ def test_advanced_usage_documents_v5_internal_scheduler_without_v6_ai_review():
 
 
 def test_web_static_exposes_v6_ai_review_automation_controls():
-    app = _frontend_source("App.tsx", "Settings.tsx")
+    app = _frontend_source("App.tsx")
+    compatibility = _frontend_source("CompatibilityPages.tsx")
+    settings = _frontend_source("Settings.tsx")
 
-    assert "AI 审阅" in app
-    assert "让 AI 自动选片（不用人工挑）" in app
-    assert "测试 AI 审阅环境" in app
-    assert "立即 AI 审阅" in app
-    assert "/api/review-automation" in app
-    assert "/api/review-automation/check" in app
-    assert "/api/review-automation/run-due" in app
-    assert "/ai-review" in app
-    assert "ai_review" in app
+    assert '<Route path="/review"' in app
+    assert "待审" in compatibility
+    for label in ["AI 审阅", "让 AI 自动选片（不用人工挑）", "测试 AI 审阅环境", "全自动出片"]:
+        assert label in settings
+    assert "/api/review-automation" in compatibility
+    assert 'review_automation.enabled' in settings
+    assert '"ai_review"' in settings
 
 
 def test_web_static_exposes_v7_layered_config_page():
