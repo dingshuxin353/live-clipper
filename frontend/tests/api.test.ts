@@ -18,7 +18,7 @@ describe("typed API client", () => {
   it("maps network and invalid JSON failures without logging payloads", async () => {
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new Error("secret-token"))));
-    await expect(api("/api/config")).rejects.toEqual(new ApiError("网络连接失败"));
+    await expect(api("/api/config")).rejects.toEqual(new ApiError("网络连接失败", 0, "network_error"));
     expect(consoleSpy).not.toHaveBeenCalled();
     consoleSpy.mockRestore();
   });
@@ -31,5 +31,25 @@ describe("typed API client", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
     await api("/api/service", {}, controller.signal);
+  });
+
+  it("maps frozen project API error envelopes without stringifying objects", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => jsonResponse({
+      ok: false,
+      error: { code: "validation_failed", message: "项目配置未通过校验", fields: { name: "必填字段" } },
+    }, 422)));
+
+    await expect(api("/api/projects")).rejects.toEqual(expect.objectContaining({
+      name: "ApiError",
+      message: "项目配置未通过校验",
+      status: 422,
+      code: "validation_failed",
+      fields: { name: "必填字段" },
+    }));
+  });
+
+  it("normalizes unrecognized backend error codes to the stable fallback", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => jsonResponse({ ok: false, error: { code: "future_backend_code", message: "未知错误", fields: {} } }, 500)));
+    await expect(api("/api/projects")).rejects.toEqual(expect.objectContaining({ code: "unknown_error" }));
   });
 });

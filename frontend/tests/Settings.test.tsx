@@ -1,14 +1,29 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
-import { App } from "../src/App";
+import { Settings } from "../src/Settings";
+import { defaultConfig } from "../src/config";
 import { formatLocalTime } from "../src/ui/presentation";
 import { installFetchMock, MODELS } from "./helpers";
+
+function renderSettings(models = MODELS) {
+  return render(<Settings
+    configPayload={{ ok: true, config: defaultConfig(), config_path: "live-clipper.toml", exists: true, env_status: {}, warnings: [] }}
+    service={{ status: "stopped" }}
+    scheduler={{ scheduler: { enabled: true } }}
+    reviewAutomation={{ review_automation: { enabled: false }, environment: {} }}
+    models={models}
+    reloadConfig={vi.fn(async () => undefined)}
+    refreshModels={vi.fn(async () => undefined)}
+    refreshAll={vi.fn(async () => undefined)}
+    notify={vi.fn()}
+    schedulerDraft={null}
+  />);
+}
 
 describe("Astryx settings migration", () => {
   it("maps the 43 active non-secret config fields to an Astryx form control", async () => {
     installFetchMock();
-    render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: /设置/ }));
+    renderSettings();
     const controls = [...document.querySelectorAll<HTMLElement>("[data-config-field]")];
     expect(controls).toHaveLength(43);
     expect(document.querySelector('[data-config-field="service.enabled"]')).not.toBeInTheDocument();
@@ -22,8 +37,7 @@ describe("Astryx settings migration", () => {
 
   it("keeps SettingsSection content spanning the outer settings grid", async () => {
     installFetchMock();
-    render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: /设置/ }));
+    renderSettings();
 
     const fileSection = screen.getByRole("heading", { name: "文件位置" }).closest(".settings-section");
     const modelSection = screen.getByRole("heading", { name: "本地语音模型" }).closest(".settings-section");
@@ -33,8 +47,7 @@ describe("Astryx settings migration", () => {
 
   it("renders ordinary settings guidance as non-live supporting text without banners", async () => {
     installFetchMock();
-    render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: /设置/ }));
+    renderSettings();
 
     for (const message of [
       "配好三件事就能用",
@@ -52,8 +65,7 @@ describe("Astryx settings migration", () => {
 
   it("distinguishes configuration health states with semantic card tones", async () => {
     installFetchMock();
-    render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: /设置/ }));
+    renderSettings();
 
     const health = document.getElementById("configHealth");
     expect(health).not.toBeNull();
@@ -74,8 +86,7 @@ describe("Astryx settings migration", () => {
 
   it("marks the legacy time-window setting as informational only", async () => {
     installFetchMock();
-    render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: /设置/ }));
+    renderSettings();
     fireEvent.click(screen.getByText("高级设置（一般不需要改）"));
 
     const legacyField = screen.getByLabelText("历史扫描时间范围（仅兼容旧配置）");
@@ -86,8 +97,7 @@ describe("Astryx settings migration", () => {
   it("uses an Astryx AlertDialog instead of window.confirm for restoring defaults", async () => {
     installFetchMock();
     const confirmSpy = vi.spyOn(window, "confirm");
-    render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: /设置/ }));
+    renderSettings();
     fireEvent.click(screen.getByRole("button", { name: "恢复默认" }));
     expect(screen.getByRole("alertdialog")).toHaveTextContent("恢复默认配置");
     expect(confirmSpy).not.toHaveBeenCalled();
@@ -104,8 +114,7 @@ describe("Astryx settings migration", () => {
       "/api/asr/models": { ok: true, models, download_source: "modelscope" },
       "/api/asr/models/delete": () => new Promise<Response>(() => undefined),
     });
-    render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: /设置/ }));
+    renderSettings(models);
     const medium = (await screen.findByText("Medium")).closest(".asr-model-row") as HTMLElement;
     fireEvent.click(within(medium).getByRole("button", { name: "删除" }));
     fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
