@@ -25,6 +25,8 @@ Venus 的 React 界面使用以下精确版本：
 - `@astryxdesign/core` 0.1.9 — MIT License
 - `@astryxdesign/theme-stone` 0.1.9 — MIT License
 - `@stylexjs/stylex` 0.19.0 — MIT License
+- react-router-dom 7.18.2 — MIT License（直接运行时依赖）
+- react-router 7.18.2 — MIT License（运行时传递依赖）
 
 正式前端包还包含这些运行时传递依赖：
 

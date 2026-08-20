@@ -96,12 +96,15 @@ def test_react_renderer_package_and_frozen_build_contract():
         "@stylexjs/stylex": "0.19.0",
         "react": "19.2.8",
         "react-dom": "19.2.8",
+        "react-router-dom": "7.18.2",
     }
     assert package["scripts"]["theme:build"] == "node scripts/build-venus-stone-overrides.mjs"
     assert package["scripts"]["build"].startswith("npm run theme:build")
     assert lock["lockfileVersion"] == 3
     for dependency, version in package["dependencies"].items():
         assert lock["packages"][""]["dependencies"][dependency] == version
+    assert lock["packages"]["node_modules/react-router-dom"]["version"] == "7.18.2"
+    assert lock["packages"]["node_modules/react-router"]["version"] == "7.18.2"
     assert "npm --prefix frontend ci" in build_script
     assert "npm --prefix frontend run check" in build_script
     assert "git diff --exit-code -- src/live_clipper/web_static/react" in build_script
@@ -139,6 +142,8 @@ def test_astryx_stone_theme_is_generated_offline_and_not_recompiled():
     for dependency, version in package["dependencies"].items():
         assert dependency in notice or dependency in {"react", "react-dom"}
         assert version not in {"latest", "next", "canary"}
+    assert "react-router-dom 7.18.2 — MIT License" in notice
+    assert "react-router 7.18.2 — MIT License" in notice
 
 
 def test_project_pins_lightweight_model_hub_dependencies_and_freezes_them():

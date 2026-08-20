@@ -434,7 +434,9 @@ def test_static_assets_disable_cache_and_serve_hashed_react_js(tmp_path):
         assert app_response.status == 200
         assert "javascript" in app_response.headers["Content-Type"]
         assert app_response.headers["Cache-Control"] == "no-store"
-        assert b"/api/review-automation/run-due" in app_response.read()
+        bundle = app_response.read()
+        assert b"/api/studio" in bundle
+        assert b"/api/projects" in bundle
     finally:
         server.shutdown()
         server.server_close()
