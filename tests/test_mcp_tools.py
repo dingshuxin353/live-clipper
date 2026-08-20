@@ -123,6 +123,34 @@ def test_tool_manifest_exposes_v2_tool_names_and_schemas():
     assert delete_clip_schema["required"] == ["run_id", "clip_filename", "reason"]
 
 
+def test_list_runs_keeps_exact_phase_filter_and_default_limit_contract(tmp_path):
+    service_dir = tmp_path / "service"
+    runs = [
+        {
+            "run_id": f"review-{index}",
+            "phase": "needs_review",
+            "run_dir": str(tmp_path / "output" / f"review-{index}"),
+            "source_path": str(tmp_path / "source" / f"review-{index}.mp4"),
+        }
+        for index in range(25)
+    ] + [
+        {
+            "run_id": "queued-run",
+            "phase": "queued",
+            "run_dir": str(tmp_path / "output" / "queued-run"),
+        }
+    ]
+    write_json(service_dir / "runs.json", {"runs": runs})
+
+    payload = mcp_tools.list_runs(phase="needs_review", service_dir=service_dir)
+
+    assert payload["ok"] is True
+    assert payload["count"] == 20
+    assert payload["total"] == 25
+    assert len(payload["runs"]) == 20
+    assert all(run["phase"] == "needs_review" for run in payload["runs"])
+
+
 def test_call_tool_validates_required_arguments_and_dispatches(tmp_path):
     service_dir = tmp_path / "service"
     write_json(service_dir / "service.json", {"status": "stopped", "pid": None})
@@ -286,7 +314,7 @@ def test_scan_now_and_start_run_for_source_use_service_core(tmp_path, monkeypatc
 
     assert scan["ok"] is True
     assert scan["started_runs"] == 1
-    assert scan["message"].startswith("发现 1 个未处理录像，已开始 1 个，排队 0 个；")
+    assert scan["message"].startswith("本次发现 1 个，本轮启动 1 个，当前总排队 0 个；")
     assert "不支持格式 0 个" in scan["message"]
     assert duplicate["ok"] is False
     assert duplicate["error_code"] == "duplicate_run"

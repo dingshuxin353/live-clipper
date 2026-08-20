@@ -23,7 +23,16 @@ import { VisuallyHidden } from "@astryxdesign/core/VisuallyHidden";
 import { api, post } from "./api";
 import { Onboarding } from "./Onboarding";
 import { Settings } from "./Settings";
-import type { AppSnapshot, GenericRecord, Model, Run, TabId } from "./types";
+import type {
+  AppSnapshot,
+  GenericRecord,
+  Model,
+  PhaseCounts,
+  Run,
+  RunListState,
+  RunsPayload,
+  TabId,
+} from "./types";
 import { formatLocalTime, semanticToneStyles, type SemanticTone } from "./ui/presentation";
 
 const EMPTY_SNAPSHOT: AppSnapshot = {
@@ -35,6 +44,27 @@ const EMPTY_SNAPSHOT: AppSnapshot = {
   scheduler: null,
   reviewAutomation: null,
   models: [],
+};
+
+const RUN_PAGE_SIZE = 20;
+const EMPTY_PHASE_COUNTS: PhaseCounts = {
+  all: 0,
+  queued: 0,
+  processing: 0,
+  needs_review: 0,
+  rendered: 0,
+  failed: 0,
+  other: 0,
+};
+const EMPTY_RUN_LIST: RunListState = {
+  loaded: false,
+  count: 0,
+  total: 0,
+  offset: 0,
+  limit: RUN_PAGE_SIZE,
+  has_more: false,
+  phase: null,
+  phase_counts: EMPTY_PHASE_COUNTS,
 };
 
 const VENUS_I18N_OVERRIDES = {
@@ -59,6 +89,7 @@ const phaseLabels: Record<string, string> = {
   ready_to_render: "可渲染",
   needs_codex_selection: "待审阅",
   running: "运行中",
+  failed_needs_codex: "失败",
   degraded: "服务异常，正在重试",
   paused: "已暂停",
   waiting_or_manual: "等待处理",
@@ -107,7 +138,26 @@ function canonicalPhase(phase: unknown) {
   if (["rendering", "running", "ready_to_render"].includes(value)) return "processing";
   if (value === "cleanup_ready") return "rendered";
   if (value === "needs_codex_selection") return "needs_review";
+  if (value === "failed_needs_codex") return "failed";
   return value;
+}
+
+function normalizeRunsPayload(payload: RunsPayload, offset: number): RunListState {
+  const runs = payload.runs ?? [];
+  const total = Number.isFinite(Number(payload.total)) ? Number(payload.total) : runs.length;
+  const phaseCounts = payload.phase_counts
+    ? { ...EMPTY_PHASE_COUNTS, ...payload.phase_counts, all: Number(payload.phase_counts.all ?? total) }
+    : { ...EMPTY_PHASE_COUNTS, all: total };
+  return {
+    loaded: true,
+    count: Number.isFinite(Number(payload.count)) ? Number(payload.count) : runs.length,
+    total,
+    offset: Number.isFinite(Number(payload.offset)) ? Number(payload.offset) : offset,
+    limit: Number.isFinite(Number(payload.limit)) ? Number(payload.limit) : RUN_PAGE_SIZE,
+    has_more: Boolean(payload.has_more ?? offset + runs.length < total),
+    phase: payload.phase ?? null,
+    phase_counts: phaseCounts,
+  };
 }
 
 function formatBytes(bytes: unknown) {
@@ -186,7 +236,9 @@ function VenusNavigationItems({
 function AppContent() {
   const [activeTab, setActiveTab] = useState<TabId>("clips");
   const [phase, setPhase] = useState("");
+  const [page, setPage] = useState(0);
   const [snapshot, setSnapshot] = useState<AppSnapshot>(EMPTY_SNAPSHOT);
+  const [runList, setRunList] = useState<RunListState>(EMPTY_RUN_LIST);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [detail, setDetail] = useState<GenericRecord | null>(null);
   const [selectedConfirmations, setSelectedConfirmations] = useState<string[]>([]);
@@ -196,6 +248,9 @@ function AppContent() {
   const [loadError, setLoadError] = useState("");
   const [scanning, setScanning] = useState(false);
   const mounted = useRef(true);
+  const loadedSnapshot = useRef(false);
+  const refreshSequence = useRef(0);
+  const selectionReset = useRef(false);
   const pollingJobs = useRef(new Set<string>());
   const scanningRef = useRef(false);
 
@@ -219,11 +274,15 @@ function AppContent() {
   }, []);
 
   const refreshAll = useCallback(async (signal?: AbortSignal) => {
-    const suffix = phase ? `?phase=${encodeURIComponent(phase)}` : "";
+    const requestId = ++refreshSequence.current;
+    const offset = page * RUN_PAGE_SIZE;
+    const query = new URLSearchParams({ offset: String(offset), limit: String(RUN_PAGE_SIZE) });
+    if (phase) query.set("phase", phase);
+    const suffix = `?${query.toString()}`;
     try {
       const [service, runsPayload, confirmationsPayload, eventsPayload, configPayload, scheduler, reviewAutomation, modelPayload] = await Promise.all([
         api<GenericRecord>("/api/service", {}, signal),
-        api<{ runs?: Run[] }>(`/api/runs${suffix}`, {}, signal),
+        api<RunsPayload>(`/api/runs${suffix}`, {}, signal),
         api<{ confirmations?: GenericRecord[] }>("/api/confirmations", {}, signal),
         api<{ events?: GenericRecord[] }>("/api/events", {}, signal),
         api<GenericRecord>("/api/config", {}, signal),
@@ -231,8 +290,13 @@ function AppContent() {
         api<GenericRecord>("/api/review-automation", {}, signal),
         api<{ models?: Model[] }>("/api/asr/models", {}, signal),
       ]);
-      if (!mounted.current || signal?.aborted) return;
+      if (!mounted.current || signal?.aborted || requestId !== refreshSequence.current) return;
       const runs = runsPayload.runs ?? [];
+      const nextRunList = normalizeRunsPayload(runsPayload, offset);
+      if (nextRunList.total > 0 && offset >= nextRunList.total) {
+        setPage(Math.max(0, Math.ceil(nextRunList.total / RUN_PAGE_SIZE) - 1));
+        return;
+      }
       setSnapshot({
         service,
         runs,
@@ -243,15 +307,24 @@ function AppContent() {
         reviewAutomation,
         models: modelPayload.models ?? [],
       });
-      setSelectedRunId((current) => current && runs.some((run) => run.run_id === current)
-        ? current
-        : runs[0]?.run_id ?? null);
+      setRunList(nextRunList);
+      setSelectedRunId((current) => {
+        if (current) return runs.some((run) => run.run_id === current) ? current : null;
+        if (selectionReset.current) {
+          selectionReset.current = false;
+          return null;
+        }
+        return runs[0]?.run_id ?? null;
+      });
+      loadedSnapshot.current = true;
       setLoadError("");
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
-      if (mounted.current) setLoadError((error as Error).message);
+      if (mounted.current && requestId === refreshSequence.current) {
+        setLoadError(`${loadedSnapshot.current ? "刷新失败" : "初次加载失败"}：${(error as Error).message}`);
+      }
     }
-  }, [phase]);
+  }, [page, phase]);
 
   useEffect(() => {
     mounted.current = true;
@@ -265,6 +338,21 @@ function AppContent() {
       window.clearInterval(timer);
     };
   }, [refreshAll]);
+
+  const changePhase = useCallback((nextPhase: string) => {
+    selectionReset.current = true;
+    setPhase(nextPhase);
+    setPage(0);
+    setSelectedRunId(null);
+    setDetail(null);
+  }, []);
+
+  const changePage = useCallback((nextPage: number) => {
+    selectionReset.current = true;
+    setPage(Math.max(0, nextPage));
+    setSelectedRunId(null);
+    setDetail(null);
+  }, []);
 
   const pollAiReviewJob = useCallback(async (runId: string, jobId: string) => {
     if (!jobId || pollingJobs.current.has(jobId)) return;
@@ -405,12 +493,14 @@ function AppContent() {
         variant="elevated"
       >
         <div className="main-content">
-          {loadError && <Text as="div" role="alert" type="supporting" xstyle={semanticToneStyles.error}>{`初次加载失败：${loadError}`}</Text>}
+          {loadError && <Text as="div" role="alert" type="supporting" xstyle={semanticToneStyles.error}>{loadError}</Text>}
           <section className={`page ${activeTab === "clips" ? "active" : ""}`} id="section-clips">
             <Clips
               phase={phase}
-              setPhase={setPhase}
+              onPhaseChange={changePhase}
               runs={snapshot.runs}
+              runList={runList}
+              loadError={loadError}
               detail={detail}
               selectedRunId={selectedRunId}
               selectRun={setSelectedRunId}
@@ -422,6 +512,7 @@ function AppContent() {
               runAction={runAction}
               scanNow={scanNow}
               scanning={scanning}
+              onPageChange={changePage}
             />
           </section>
           <section className={`page ${activeTab === "automation" ? "active" : ""}`} id="section-automation">
@@ -483,8 +574,10 @@ function AppContent() {
 
 interface ClipsProps {
   phase: string;
-  setPhase(value: string): void;
+  onPhaseChange(value: string): void;
   runs: Run[];
+  runList: RunListState;
+  loadError: string;
   detail: GenericRecord | null;
   selectedRunId: string | null;
   selectRun(value: string): void;
@@ -496,21 +589,59 @@ interface ClipsProps {
   runAction(path: string, payload?: unknown, showToast?: boolean): Promise<GenericRecord>;
   scanNow(): Promise<void>;
   scanning: boolean;
+  onPageChange(page: number): void;
 }
 
 function Clips(props: ClipsProps) {
-  const { phase, setPhase, runs, detail, selectedRunId, selectRun, setActiveTab, setLog, notify, refreshAll, pollAiReviewJob, runAction, scanNow, scanning } = props;
-  const clipCount = runs.reduce((total, run) => total + Number(run.clip_count || 0), 0);
-  const queuedCount = runs.filter((run) => String(run.phase) === "queued").length;
-  const processingCount = runs.filter((run) => ["processing", "rendering", "running", "ready_to_render"].includes(String(run.phase))).length;
-  const reviewCount = runs.filter((run) => canonicalPhase(run.phase) === "needs_review").length;
-  const parts = [
-    clipCount ? `生成 ${clipCount} 个成片` : "",
-    queuedCount ? `${queuedCount} 场排队中` : "",
-    processingCount ? `${processingCount} 场正在处理` : "",
-    reviewCount ? `${reviewCount} 场待审阅` : "",
+  const {
+    phase,
+    onPhaseChange,
+    runs,
+    runList,
+    loadError,
+    detail,
+    selectedRunId,
+    selectRun,
+    setActiveTab,
+    setLog,
+    notify,
+    refreshAll,
+    pollAiReviewJob,
+    runAction,
+    scanNow,
+    scanning,
+    onPageChange,
+  } = props;
+  const phaseCounts = runList.phase_counts;
+  const subtitleParts = [
+    phaseCounts.rendered ? `${phaseCounts.rendered} 个已成片` : "",
+    phaseCounts.queued ? `${phaseCounts.queued} 个排队中` : "",
+    phaseCounts.processing ? `${phaseCounts.processing} 个处理中` : "",
+    phaseCounts.needs_review ? `${phaseCounts.needs_review} 个待审阅` : "",
+    phaseCounts.failed ? `${phaseCounts.failed} 个失败` : "",
   ].filter(Boolean);
-  const subtitle = runs.length ? `AI 已从 ${runs.length} 场直播中 ${parts.length ? parts.join("，") : "整理处理状态"}` : "查看录播处理、AI 审阅和成片结果";
+  const subtitle = runList.loaded
+    ? `共 ${phaseCounts.all} 个任务${subtitleParts.length ? `：${subtitleParts.join("，")}` : ""}`
+    : "查看录播处理、AI 审阅和成片结果";
+  const phaseTabs: Array<[string, string, number]> = [
+    ["", "全部", phaseCounts.all],
+    ["queued", "排队中", phaseCounts.queued],
+    ["processing", "处理中", phaseCounts.processing],
+    ["needs_review", "待审阅", phaseCounts.needs_review],
+    ["rendered", "已成片", phaseCounts.rendered],
+    ["failed", "失败", phaseCounts.failed],
+  ];
+  const emptyTitles: Record<string, string> = {
+    "": "还没有录播任务",
+    queued: "当前没有排队任务",
+    processing: "当前没有处理中的任务",
+    needs_review: "当前没有待审阅任务",
+    rendered: "当前没有已成片任务",
+    failed: "当前没有失败任务",
+  };
+  const totalPages = Math.max(1, Math.ceil(runList.total / RUN_PAGE_SIZE));
+  const currentPage = Math.min(totalPages, Math.floor(runList.offset / RUN_PAGE_SIZE) + 1);
+  const showEmpty = runList.loaded && !loadError && runList.total === 0;
   return (
     <>
       <div className="page-heading">
@@ -520,12 +651,17 @@ function Clips(props: ClipsProps) {
           <Button id="scanNowBtn" isDisabled={scanning} label={scanning ? "扫描中…" : "立即扫描录播"} onClick={() => void scanNow().catch(() => undefined)} variant="primary" />
         </div>
       </div>
-      <TabList aria-label="任务阶段筛选" className="phase-filters" id="phaseFilters" onChange={setPhase} size="sm" value={phase}>
-        {[["", "全部"], ["queued", "排队中"], ["processing", "处理中"], ["needs_review", "待审阅"], ["rendered", "已成片"], ["failed", "失败"]].map(([id, label]) => (
-          <Tab key={id} label={label} value={id} />
+      <TabList aria-label="任务阶段筛选" className="phase-filters" id="phaseFilters" onChange={onPhaseChange} size="sm" value={phase}>
+        {phaseTabs.map(([id, label, count]) => (
+          <Tab key={id} label={`${label} ${count}`} value={id} />
         ))}
       </TabList>
-      {!runs.length && <EmptyState description="可以先点击「立即扫描录播」。" title="还没有录播任务" />}
+      {showEmpty && (
+        <EmptyState
+          description={phase ? "可以切换其他阶段或刷新任务列表。" : "可以先点击「立即扫描录播」。"}
+          title={emptyTitles[phase] || "当前没有任务"}
+        />
+      )}
       <List className="run-list" density="compact" hasDividers id="runList">
         {runs.map((run) => {
           const active = run.run_id === selectedRunId;
@@ -536,7 +672,12 @@ function Clips(props: ClipsProps) {
               description={(
                 <div className="run-row-detail">
                   <span className="run-meta">
-                    {[formatLocalTime(run.updated_at || run.created_at), `${Number(run.clip_count || 0)} 个成片`, `${Number(run.candidate_count || 0)} 个候选`].join(" · ")}
+                    {[
+                      run.queue_position ? `队列第 ${run.queue_position} 位` : "",
+                      formatLocalTime(run.updated_at || run.created_at),
+                      `${Number(run.clip_count || 0)} 个成片`,
+                      `${Number(run.candidate_count || 0)} 个候选`,
+                    ].filter(Boolean).join(" · ")}
                   </span>
                   {run.stuck && (
                     <div className="status-copy">
@@ -565,6 +706,30 @@ function Clips(props: ClipsProps) {
           );
         })}
       </List>
+      {runList.total > RUN_PAGE_SIZE && (
+        <nav aria-label="任务分页" className="run-pagination">
+          <Button
+            aria-label="上一页"
+            isDisabled={currentPage <= 1}
+            label="上一页"
+            onClick={() => onPageChange(currentPage - 2)}
+            size="sm"
+          />
+          <span aria-live="polite">第 {currentPage} / {totalPages} 页</span>
+          <Button
+            aria-label="下一页"
+            isDisabled={!runList.has_more}
+            label="下一页"
+            onClick={() => onPageChange(currentPage)}
+            size="sm"
+          />
+        </nav>
+      )}
+      {runList.total > 0 && (
+        <div className="run-range" aria-live="polite">
+          {runList.offset + 1}–{runList.offset + runList.count} / 共 {runList.total} 个任务
+        </div>
+      )}
       <div id="runDetail" className="visually-hidden" aria-hidden="true">
         {detail?.ok && <InfoRows rows={[
           ["任务", detail.run?.run_id], ["阶段", labelFor(detail.run?.phase)], ["源文件", detail.run?.source_path],
