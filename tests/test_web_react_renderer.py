@@ -81,6 +81,24 @@ def test_head_has_no_body_and_traversal_stays_rejected(tmp_path):
     assert _static_path("/static/%2e%2e/web.py") is None
 
 
+def test_core_workbench_deep_links_serve_the_react_entry(tmp_path):
+    expected = (REACT_DIR / "index.html").read_bytes()
+    deep_links = [
+        "/studio",
+        "/projects",
+        "/projects/project-1",
+        "/projects/project-1/runs/run-1",
+    ]
+
+    with _server(tmp_path) as port:
+        for path in deep_links:
+            status, headers, body = _request(port, "GET", path)
+            assert status == 200
+            assert body == expected
+            assert headers["Content-Type"].startswith("text/html")
+            assert headers["Cache-Control"] == "no-store"
+
+
 def test_production_build_is_flat_nonempty_and_secret_free():
     files = sorted(path for path in REACT_DIR.rglob("*") if path.is_file())
     relative = [path.relative_to(REACT_DIR) for path in files]

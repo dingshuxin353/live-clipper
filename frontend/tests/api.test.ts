@@ -32,4 +32,19 @@ describe("typed API client", () => {
     vi.stubGlobal("fetch", fetchMock);
     await api("/api/service", {}, controller.signal);
   });
+
+  it("maps frozen project API error envelopes without stringifying objects", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => jsonResponse({
+      ok: false,
+      error: { code: "validation_failed", message: "项目配置未通过校验", fields: { name: "必填字段" } },
+    }, 422)));
+
+    await expect(api("/api/projects")).rejects.toEqual(expect.objectContaining({
+      name: "ApiError",
+      message: "项目配置未通过校验",
+      status: 422,
+      code: "validation_failed",
+      fields: { name: "必填字段" },
+    }));
+  });
 });
