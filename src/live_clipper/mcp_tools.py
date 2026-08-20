@@ -352,6 +352,8 @@ def scan_now(
 ) -> dict[str, Any]:
     try:
         report = service.run_service_once(_settings(settings), service_dir=service_dir)
+    except service.ProjectScopeRequiredError as exc:
+        return _error("project_scope_required", str(exc))
     except service.ScanBusyError as exc:
         return _error("scan_busy", str(exc))
     except service.PipelineConfigurationError as exc:
