@@ -81,6 +81,22 @@ def _inside(path: Path, root: Path) -> bool:
     return True
 
 
+def output_directory_is_writable(output: Path) -> bool:
+    if not output.is_dir() or not os.access(output, os.W_OK):
+        return False
+    probe_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(prefix=".venus-write-probe-", dir=output, delete=False) as probe:
+            probe_path = Path(probe.name)
+    except OSError:
+        return False
+    try:
+        probe_path.unlink()
+    except OSError:
+        return False
+    return True
+
+
 class ProjectManager:
     def __init__(self, repository: ProjectRepository, settings: Settings) -> None:
         self.repository = repository
@@ -157,18 +173,8 @@ class ProjectManager:
         normalized["output"]["directory"] = str(output)
         if not source.is_dir() or not os.access(source, os.R_OK):
             blockers.append(ValidationIssue("source.directory", "source_unavailable", "录像目录不存在或不可读"))
-        if not output.is_dir() or not os.access(output, os.W_OK):
+        if not output_directory_is_writable(output):
             blockers.append(ValidationIssue("output.directory", "output_unwritable", "输出目录不存在或不可写"))
-        else:
-            probe_path: Path | None = None
-            try:
-                with tempfile.NamedTemporaryFile(prefix=".venus-write-probe-", dir=output, delete=False) as probe:
-                    probe_path = Path(probe.name)
-            except OSError:
-                blockers.append(ValidationIssue("output.directory", "output_unwritable", "输出目录不可写"))
-            finally:
-                if probe_path is not None:
-                    probe_path.unlink(missing_ok=True)
         if source != output and _inside(output, source):
             blockers.append(ValidationIssue("output.directory", "output_inside_source", "输出目录不能位于录像目录内"))
         elif source == output:

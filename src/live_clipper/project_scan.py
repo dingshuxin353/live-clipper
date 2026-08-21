@@ -13,6 +13,7 @@ from .automation import SUPPORTED_VIDEO_EXTENSIONS
 from .config import Settings
 from .project_domain import normalize_utc
 from .project_resources import ResourceUnavailableError, resolve_parameter_snapshot
+from .project_service import output_directory_is_writable
 from .project_storage import ProjectRepository
 
 
@@ -139,6 +140,9 @@ def scan_project(
     source_root = Path(str(config["source"]["directory"])).resolve(strict=False)
     if not source_root.is_dir():
         raise ProjectScanError("source_unavailable", "项目录像目录不可用")
+    output_root = Path(str(config["output"]["directory"])).resolve(strict=False)
+    if not output_directory_is_writable(output_root):
+        raise ProjectScanError("output_unwritable", "项目输出目录不可写")
     try:
         snapshot = resolve_parameter_snapshot(config, settings)
     except ResourceUnavailableError as exc:
