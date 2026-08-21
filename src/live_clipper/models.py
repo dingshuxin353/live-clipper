@@ -4,7 +4,6 @@ import re
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-
 SAFE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 
@@ -21,7 +20,7 @@ class TranscriptSentence(BaseModel):
     speaker: str | None = None
 
     @model_validator(mode="after")
-    def validate_time_range(self) -> "TranscriptSentence":
+    def validate_time_range(self) -> TranscriptSentence:
         if self.start >= self.end:
             raise ValueError("start must be before end")
         return self
@@ -34,7 +33,7 @@ class TranscriptWindow(BaseModel):
     sentences: list[TranscriptSentence]
 
     @model_validator(mode="after")
-    def validate_time_range(self) -> "TranscriptWindow":
+    def validate_time_range(self) -> TranscriptWindow:
         if self.start >= self.end:
             raise ValueError("start must be before end")
         return self
@@ -55,7 +54,7 @@ class TranscriptCorrection(BaseModel):
     confidence: float = Field(ge=0, le=1)
 
     @model_validator(mode="after")
-    def validate_time_range(self) -> "TranscriptCorrection":
+    def validate_time_range(self) -> TranscriptCorrection:
         if self.start >= self.end:
             raise ValueError("start must be before end")
         return self
@@ -85,7 +84,7 @@ class ClipCandidate(BaseModel):
         return validate_safe_id(value, "id")
 
     @model_validator(mode="after")
-    def validate_time_range(self) -> "ClipCandidate":
+    def validate_time_range(self) -> ClipCandidate:
         if self.start >= self.end:
             raise ValueError("start must be before end")
         return self
@@ -130,7 +129,7 @@ class SelectedClip(BaseModel):
         return validate_safe_id(value, "clip_id")
 
     @model_validator(mode="after")
-    def validate_time_range(self) -> "SelectedClip":
+    def validate_time_range(self) -> SelectedClip:
         if self.source_start >= self.source_end:
             raise ValueError("source_start must be before source_end")
         return self

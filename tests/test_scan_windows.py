@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
 
 from live_clipper.scan_windows import scan_windows_file
 from live_clipper.utils import read_json, write_json

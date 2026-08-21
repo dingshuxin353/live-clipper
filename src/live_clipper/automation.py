@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 import os
-from pathlib import Path
 import subprocess
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from .status import build_run_status
 from .utils import ensure_dir, read_json, self_command, write_json
-
 
 DEFAULT_NAS_DIR = Path("recordings")
 DEFAULT_STATE_DIR = Path("work") / "automation_state"
@@ -19,7 +18,7 @@ SUPPORTED_VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".m4v"}
 
 
 def _now_utc() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _pid_is_running(pid: int) -> bool:

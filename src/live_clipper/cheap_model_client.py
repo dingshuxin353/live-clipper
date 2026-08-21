@@ -3,15 +3,14 @@
 from __future__ import annotations
 
 import json
-from json import JSONDecodeError
 import time
+from json import JSONDecodeError
 from typing import Any
 
 import requests
 
 from .config import Settings
 from .utils import write_failure_log
-
 
 DEFAULT_REQUEST_ATTEMPTS = 5
 DEFAULT_RETRY_DELAY_SECONDS = 3.0
