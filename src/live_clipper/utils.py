@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -43,5 +43,5 @@ def write_json(path: Path, data: Any) -> Path:
 
 
 def write_failure_log(prefix: str, data: Any) -> Path:
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     return write_json(Path("work") / "logs" / f"{prefix}_{timestamp}.json", data)

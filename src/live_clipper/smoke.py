@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import subprocess
+from pathlib import Path
 
 from .build_codex_brief import build_codex_brief_file
 from .models import ClipCandidate, CorrectedTranscript, SelectedClip, TranscriptSentence

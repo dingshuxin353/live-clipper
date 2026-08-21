@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import shutil
 import subprocess
+from pathlib import Path
 
 from .models import CorrectedTranscript, SelectedClip
 from .subtitles import write_srt_file

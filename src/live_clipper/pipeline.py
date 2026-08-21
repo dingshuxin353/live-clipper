@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from .utils import ensure_dir, read_json, write_json
-
 
 COPY_CHUNK_SIZE = 16 * 1024 * 1024
 
@@ -79,7 +78,7 @@ def record_pipeline_metadata(run_dir: Path, original_source_path: Path, local_so
         **metadata.get("pipeline", {}),
         "original_source_path": str(original_source_path),
         "local_source_path": str(local_source_path),
-        "staged_at": datetime.now(timezone.utc).isoformat(),
+        "staged_at": datetime.now(UTC).isoformat(),
     }
     write_json(metadata_path, metadata)
 
@@ -153,7 +152,7 @@ def cleanup_local_artifacts(
     metadata = read_json(metadata_path)
     metadata["pipeline"] = {
         **metadata.get("pipeline", {}),
-        "cleanup_checked_at": datetime.now(timezone.utc).isoformat(),
+        "cleanup_checked_at": datetime.now(UTC).isoformat(),
         "cleanup_confirmed": confirm,
         "cleanup_deleted": deleted,
     }

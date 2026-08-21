@@ -1,11 +1,10 @@
 from __future__ import annotations
 
+import shutil
 from importlib import resources
 from pathlib import Path
-import shutil
 
 from .utils import read_required_text
-
 
 PROMPT_FILES = [
     "cheap_correct_transcript.md",
