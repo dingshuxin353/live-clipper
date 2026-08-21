@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -40,8 +40,18 @@ def test_scan_deduplicates_within_project_and_lists_relative_sources(tmp_path):
 
 def test_selected_scan_rejects_traversal_and_isolates_file_failure(tmp_path):
     repo, project, source, settings = _project(tmp_path)
-    (source / "ok.mp4").write_bytes(b"ok")
-    (source / "bad.mp4").write_bytes(b"bad")
+    fixed_now = datetime(2026, 8, 21, tzinfo=UTC)
+    stable_mtime = (fixed_now - timedelta(seconds=1)).timestamp()
+    repo.update_runtime(
+        project.project_id,
+        discovery_baseline=(fixed_now - timedelta(seconds=2)).isoformat(),
+    )
+    ok_path = source / "ok.mp4"
+    bad_path = source / "bad.mp4"
+    ok_path.write_bytes(b"ok")
+    bad_path.write_bytes(b"bad")
+    os.utime(ok_path, (stable_mtime, stable_mtime))
+    os.utime(bad_path, (stable_mtime, stable_mtime))
     with pytest.raises(ProjectScanError) as error:
         scan_project(
             repo,
@@ -64,7 +74,7 @@ def test_selected_scan_rejects_traversal_and_isolates_file_failure(tmp_path):
         settings=settings,
         service_dir=tmp_path / "service",
         identity_fn=identity,
-        now=datetime(2026, 8, 21, tzinfo=UTC),
+        now=fixed_now,
     )
     assert report.status == "partial"
     assert report.created_count == 1 and report.failed_count == 1
@@ -77,6 +87,7 @@ def test_recent_selected_and_cross_project_content_identity(tmp_path):
     output_b = tmp_path / "output-b"
     for path in (source_a, source_b, output_a, output_b):
         path.mkdir()
+    recent_now = datetime(2026, 8, 20, tzinfo=UTC)
     recent = source_a / "recent.mp4"
     old = source_a / "old.mp4"
     recent.write_bytes(b"same")
@@ -95,7 +106,7 @@ def test_recent_selected_and_cross_project_content_identity(tmp_path):
     repo.update_runtime(project_a.project_id, discovery_baseline="2026-08-20T00:00:00Z")
 
     recent_report = scan_project(
-        repo, project_a.project_id, settings=settings, service_dir=tmp_path / "service", now=datetime(2026, 8, 20, tzinfo=UTC)
+        repo, project_a.project_id, settings=settings, service_dir=tmp_path / "service", now=recent_now
     )
     selected_report = scan_project(
         repo,
@@ -104,9 +115,13 @@ def test_recent_selected_and_cross_project_content_identity(tmp_path):
         selected_relative_paths=["old.mp4"],
         settings=settings,
         service_dir=tmp_path / "service",
-        now=datetime(2026, 8, 20, tzinfo=UTC),
+        now=recent_now,
     )
-    (source_b / "copy.mp4").write_bytes(b"same")
+    cross_now = datetime(2026, 8, 21, tzinfo=UTC)
+    copy_path = source_b / "copy.mp4"
+    copy_path.write_bytes(b"same")
+    copy_mtime = (cross_now - timedelta(seconds=1)).timestamp()
+    os.utime(copy_path, (copy_mtime, copy_mtime))
     config_b = default_project_config(source_b, output_b)
     project_b = manager.create_project(name="B", config=config_b, activation_state="active")
     cross_report = scan_project(
@@ -116,7 +131,7 @@ def test_recent_selected_and_cross_project_content_identity(tmp_path):
         selected_relative_paths=["copy.mp4"],
         settings=settings,
         service_dir=tmp_path / "service",
-        now=datetime(2026, 8, 21, tzinfo=UTC),
+        now=cross_now,
     )
 
     assert recent_report.created_count == 1 and recent_report.excluded_count == 1
