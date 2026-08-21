@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import stat
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -154,3 +156,31 @@ def test_paused_project_allows_manual_scan_but_inactive_does_not(tmp_path):
     with pytest.raises(ProjectScanError) as error:
         scan_project(repo, inactive.project_id, settings=settings, service_dir=tmp_path / "service")
     assert error.value.code == "project_inactive"
+
+
+def test_scan_rechecks_output_writability_before_creating_scan_or_run(tmp_path):
+    repo, project, source, settings = _project(tmp_path)
+    candidate = source / "unwritable.mp4"
+    candidate.write_bytes(b"synthetic")
+    revision = repo.get_config_revision(project.project_id)
+    assert revision is not None
+    output = Path(revision.config["output"]["directory"])
+    original_mode = stat.S_IMODE(output.stat().st_mode)
+    output.chmod(original_mode & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
+
+    try:
+        with pytest.raises(ProjectScanError) as error:
+            scan_project(
+                repo,
+                project.project_id,
+                scope="selected",
+                selected_relative_paths=[candidate.name],
+                settings=settings,
+                service_dir=tmp_path / "service",
+            )
+    finally:
+        output.chmod(original_mode)
+
+    assert error.value.code == "output_unwritable"
+    assert repo.list_scan_events(project.project_id) == []
+    assert repo.list_runs(project.project_id) == []

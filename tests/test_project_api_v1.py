@@ -1,4 +1,6 @@
-from live_clipper.config import Settings
+import stat
+
+from live_clipper.config import RecordingSourceDefaultConfig, Settings
 from live_clipper.project_api import ProjectAPI
 from live_clipper.project_domain import default_project_config
 from live_clipper.project_scan import ProjectScanError
@@ -169,3 +171,52 @@ def test_initial_scan_failure_returns_coherent_created_project(tmp_path, monkeyp
     assert runtime.first_scan_state == "pending"
     assert runtime.readiness_state == "blocked" and runtime.failure_code == "source_unavailable"
     assert api.repository.list_workspace_events()[-1].event_type == "scan_failed"
+
+
+def test_manual_scan_returns_output_unwritable_without_creating_scan_or_run(tmp_path):
+    source = tmp_path / "source"
+    output = tmp_path / "output"
+    source.mkdir()
+    output.mkdir()
+    settings = Settings(
+        cheap_model_api_key="fake",
+        recording_source_default=RecordingSourceDefaultConfig(min_age_minutes=0, stable_check_seconds=0),
+    )
+    api = ProjectAPI(tmp_path / "service", settings)
+    status, created = api.handle(
+        "POST",
+        "/api/projects",
+        body={
+            "request_id": "create-output-guard",
+            "activation_state": "active",
+            "project": {
+                "name": "output-guard",
+                "description": "",
+                "config": default_project_config(source, output),
+            },
+        },
+    )
+    assert status == 201
+    project_id = created["project"]["project_id"]
+    candidate = source / "unwritable.mp4"
+    candidate.write_bytes(b"synthetic")
+    original_mode = stat.S_IMODE(output.stat().st_mode)
+    output.chmod(original_mode & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
+
+    try:
+        status, payload = api.handle(
+            "POST",
+            f"/api/projects/{project_id}/scans",
+            body={
+                "request_id": "scan-output-guard",
+                "scope": "selected",
+                "selected_relative_paths": [candidate.name],
+            },
+        )
+    finally:
+        output.chmod(original_mode)
+
+    assert status == 409
+    assert payload["error"]["code"] == "output_unwritable"
+    assert api.repository.list_scan_events(project_id) == []
+    assert api.repository.list_runs(project_id) == []
