@@ -12,7 +12,6 @@ from .prompt_loader import load_prompt
 from .transcribe import transcript_sentences_from_raw
 from .utils import read_json, write_failure_log, write_json
 
-
 DEFAULT_CORRECTION_BATCH_SIZE = 80
 
 

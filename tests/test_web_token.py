@@ -7,6 +7,7 @@ import urllib.request
 from http.server import ThreadingHTTPServer
 
 import pytest
+
 from live_clipper.web import LiveClipperRequestHandler, WebPaths
 
 

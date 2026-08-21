@@ -3,8 +3,8 @@ from __future__ import annotations
 import pytest
 
 from live_clipper.models import CorrectedTranscript, TranscriptSentence
-from live_clipper.windows import split_transcript_into_windows, write_windows_file
 from live_clipper.utils import read_json
+from live_clipper.windows import split_transcript_into_windows, write_windows_file
 
 
 def test_split_transcript_into_overlapping_windows():

@@ -16,24 +16,29 @@ def _styles() -> str:
 
 def test_v8_console_contract_moved_to_react_dom_tests():
     app = _source("App.tsx")
+    compatibility = _source("CompatibilityPages.tsx")
+    studio = _source("StudioProjects.tsx")
+    dialogs = _source("ProjectDialogs.tsx")
 
-    expected_tabs = ['["clips", "切片结果"]', '["automation", "自动化"]', '["confirmations", "文件清理"]', '["settings", "设置"]']
-    assert [app.index(tab) for tab in expected_tabs] == sorted(app.index(tab) for tab in expected_tabs)
-    for component in ["AppShell", "SideNav", "SideNavHeading", "SideNavItem", "SideNavSection"]:
+    expected_nav = ["/studio", "/projects", "/review", "/resources", "/settings"]
+    assert [app.index(f'<NavLink to="{path}"') for path in expected_nav] == sorted(
+        app.index(f'<NavLink to="{path}"') for path in expected_nav
+    )
+    for component in ["BrowserRouter", "AppShell", "NavLink", "Routes", "Route"]:
         assert component in app
-    for old_tab in [
-        '["clips", "▶", "切片结果"]',
-        '["automation", "◷", "自动化"]',
-        '["confirmations", "✓", "确认"]',
-        '["settings", "☰", "设置"]',
-    ]:
-        assert old_tab not in app
-    for legacy_tab in ['"service"', '"runs"', '"logs"', '"config"']:
-        assert f"data-tab={legacy_tab}" not in app
-    for label in ["立即扫描录播", "运行日志", "AI 自动审阅", "没有待确认的清理操作"]:
+    for path in ["/studio", "/projects", "/review", "/resources", "/settings"]:
+        assert f'<Route path="{path}"' in app
+    for label in ["工作室", "项目", "待审", "资源", "设置", "＋ 新建项目"]:
         assert label in app
-    for endpoint in ["/api/service/scan-now", "/api/review-automation/run-due", "/api/runs/", "/ai-review"]:
-        assert endpoint in app
+    assert 'params.get("dialog") === "new-project"' in app
+    assert "<NewProjectDialog notify={setNotice} />" in app
+    assert '<div className="toast" role="status">' in app
+    for label in ["需要你处理", "正在发生", "项目运行状态", "最近结果"]:
+        assert label in studio
+    for label in ["资源", "待审", "需要修复资源？"]:
+        assert label in compatibility
+    for label in ["新建项目", "基本信息", "扫描设置", "处理与输出", "确认配置"]:
+        assert label in dialogs
 
 
 def test_v8_config_fields_remain_unique_and_complete():
@@ -146,10 +151,12 @@ def test_v8_astryx_shell_and_misans_contract():
 
     assert "max-width: 100vw" in mobile_styles
     assert "min-width: max-content" not in mobile_styles
-    assert "<AppShell" in app
-    assert 'mobileNav={{ breakpoint: "sm" }}' in app
-    assert 'mobileNav={{ breakpoint: "none"' not in app
-    assert "hasToggle: false" not in app
+    assert "function AppShell()" in app
+    assert '<div className="workbench-shell">' in app
+    assert '<header className="top-navigation">' in app
+    assert '<nav aria-label="主导航">' in app
+    assert '<main className="main-content">' in app
+    assert "<BrowserRouter><AppShell /></BrowserRouter>" in app
     assert root_match
     assert (
         'font-family: "MiSans", "SF Pro Text", "PingFang SC", "Microsoft YaHei", '
@@ -160,15 +167,19 @@ def test_v8_astryx_shell_and_misans_contract():
 
 def test_v8_automation_service_grids_have_positive_spacing():
     styles = _styles()
-    app = _source("App.tsx")
-    summary_rule = re.search(r"\.service-summary-grid\s*\{([^}]+)\}", styles, flags=re.DOTALL)
+    settings = _source("Settings.tsx")
+    grids_rule = re.search(
+        r"\.info-grid,\s*\.metrics-grid,\s*\.scheduler-summary,\s*\.health-grid,\s*\.env-grid\s*\{([^}]+)\}",
+        styles,
+        flags=re.DOTALL,
+    )
 
-    assert 'id="serviceMetrics" className="metrics-grid"' in app
-    assert 'id="serviceSummary" className="info-grid service-summary-grid"' in app
-    assert summary_rule
-    margin = re.search(r"margin-top:\s*([0-9.]+)px", summary_rule.group(1))
-    assert margin
-    assert float(margin.group(1)) > 0
+    assert 'id="configHealth" className="health-grid"' in settings
+    assert 'data-config-layer="automation"' in settings
+    assert grids_rule
+    gap = re.search(r"gap:\s*([0-9.]+)px", grids_rule.group(1))
+    assert gap
+    assert float(gap.group(1)) > 0
 
 
 def test_v8_automation_nested_grids_can_shrink_without_clipping():
@@ -287,18 +298,21 @@ def test_v8_busy_and_toast_accessibility_use_supported_astryx_contracts():
     app = _source("App.tsx")
     onboarding = _source("Onboarding.tsx")
     settings = _source("Settings.tsx")
+    dialogs = _source("ProjectDialogs.tsx")
 
-    assert app.count("@astryx.") == 6
-    assert '"@astryx.toast.dismiss": "关闭通知"' in app
-    assert 'from "@astryxdesign/core/Spinner"' in app
-    assert 'from "@astryxdesign/core/VisuallyHidden"' in app
-    assert "AI 审阅正在进行" in app
+    assert '<div className="toast" role="status">' in app
+    assert 'aria-label="关闭通知"' in app
+    assert 'onClick={() => setNotice("")}' in app
+    assert 'role={alert ? "alertdialog" : "dialog"}' in dialogs
+    assert 'aria-modal="true"' in dialogs
+    assert "disabled={busy" in dialogs
+    for busy_label in ["创建中…", "扫描中…", "暂停中…"]:
+        assert busy_label in dialogs
     assert "isLoading=" not in app + onboarding
     assert "isActionLoading=" not in settings
     assert "aria-busy=" not in app + onboarding + settings
-    assert app.count("data-busy=") == 1
+    assert "data-busy=" not in app
     assert onboarding.count("data-busy=") == 4
-    assert app.count("<VisuallyHidden") == 1
     assert onboarding.count("<VisuallyHidden") == 3
     assert "setDeleteModel(null);" in settings
     assert 'void act(model, "delete")' in settings

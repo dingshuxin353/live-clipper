@@ -4,7 +4,6 @@ from pathlib import Path
 
 from live_clipper.prompt_loader import export_prompts, load_prompt
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 

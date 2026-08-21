@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 
 import pytest
+
 from live_clipper import service
 from live_clipper.config import RecordingSourceDefaultConfig, Settings
 from live_clipper.utils import read_json
