@@ -839,9 +839,16 @@ h4 {
   }
 }
 
-/* ===== V9c app-shell adjustments (only active inside the Electron shell) ===== */
-body.in-app-shell .astryx-app-shell-sidenav .venus-side-nav {
-  padding-top: 56px;
+/* ===== Electron app-shell adjustments ===== */
+body.in-app-shell .top-navigation {
+  padding-left: 96px;
+}
+
+body.in-app-shell .top-navigation a,
+body.in-app-shell .top-navigation button {
+  position: relative;
+  z-index: 41;
+  -webkit-app-region: no-drag;
 }
 
 body.in-app-shell::before {
