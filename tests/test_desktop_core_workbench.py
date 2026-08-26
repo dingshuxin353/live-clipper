@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -44,3 +45,29 @@ def test_shutdown_and_activate_share_runtime_guards_and_badge_refresh():
     assert "badgePoller?.activate()" in main
     assert 'proc.kill("SIGTERM")' in main
     assert 'proc.kill("SIGKILL")' in main
+
+
+def test_electron_titlebar_keeps_traffic_lights_clear_of_workbench_navigation():
+    styles = (ROOT / "frontend" / "src" / "styles.css").read_text(encoding="utf-8")
+
+    shell_navigation = re.search(
+        r"body\.in-app-shell \.top-navigation\s*\{(?P<rule>[^}]*)\}",
+        styles,
+    )
+    assert shell_navigation is not None
+
+    safe_inset = re.search(
+        r"padding-(?:left|inline-start):\s*(?P<pixels>\d+)px",
+        shell_navigation.group("rule"),
+    )
+    assert safe_inset is not None
+    assert int(safe_inset.group("pixels")) >= 80
+
+    interactive_navigation = re.search(
+        r"body\.in-app-shell \.top-navigation a\s*,\s*"
+        r"body\.in-app-shell \.top-navigation button\s*\{(?P<rule>[^}]*)\}",
+        styles,
+    )
+    assert interactive_navigation is not None
+    assert "-webkit-app-region: no-drag" in interactive_navigation.group("rule")
+    assert ".astryx-app-shell-sidenav .venus-side-nav" not in styles
