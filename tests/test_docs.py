@@ -96,10 +96,12 @@ def test_web_static_exposes_v3_console_sections():
     compatibility = _frontend_source("CompatibilityPages.tsx")
     settings = _frontend_source("Settings.tsx")
 
-    for label in ["工作室", "项目", "待审", "资源", "设置", "＋ 新建项目"]:
+    for label in ["工作室", "项目", "成片", "资源", "设置", "＋ 新建项目"]:
         assert label in app
-    for path in ["/studio", "/projects", "/review", "/resources", "/settings"]:
+    for path in ["/studio", "/projects", "/clips", "/review", "/resources", "/settings"]:
         assert f'<Route path="{path}"' in app
+    assert '<NavLink to="/clips"' in app
+    assert '<NavLink to="/review"' not in app
     for label in ["资源", "待审", "需要修复资源？"]:
         assert label in compatibility
     for label in ["配置体检", "基础设置", "自动化", "高级设置"]:
