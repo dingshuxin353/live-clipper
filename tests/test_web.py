@@ -4,7 +4,11 @@ import json
 import re
 from http.server import ThreadingHTTPServer
 from threading import Thread
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+
+import pytest
+from test_project_result_api_v2 import result_api_fixture
 
 from live_clipper import web
 from live_clipper.config import Settings
@@ -586,3 +590,42 @@ def test_http_recent_project_creation_completes_initial_scan(tmp_path, monkeypat
     assert scan.trigger_source == "manual"
     assert repository.get_runtime(payload["project"]["project_id"]).first_scan_state == "completed"
     repository.close()
+
+
+def test_http_output_media_range_head_auth_and_416(tmp_path):
+    repository, _api, _project, _run, _path, media = result_api_fixture(tmp_path)
+    repository.close()
+    config_path = tmp_path / "live-clipper.toml"
+    config_path.write_text(
+        f'[paths]\nwork_dir = "{tmp_path / "work"}"\noutput_root = "{tmp_path / "output"}"\n',
+        encoding="utf-8",
+    )
+
+    class TestHandler(LiveClipperRequestHandler):
+        paths = WebPaths(service_dir=tmp_path / "service", config_path=config_path)
+        access_token = "test-token"
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), TestHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    url = f"http://127.0.0.1:{server.server_address[1]}/api/outputs/output-1/media"
+    try:
+        ranged = urlopen(Request(url, headers={"Authorization": "Bearer test-token", "Range": "bytes=2-5"}), timeout=5)
+        assert ranged.status == 206 and ranged.read() == media[2:6]
+        assert ranged.headers["Content-Range"] == f"bytes 2-5/{len(media)}"
+
+        head = urlopen(Request(url, headers={"Authorization": "Bearer test-token"}, method="HEAD"), timeout=5)
+        assert head.status == 200 and head.read() == b"" and int(head.headers["Content-Length"]) == len(media)
+
+        with pytest.raises(HTTPError) as invalid:
+            urlopen(Request(url, headers={"Authorization": "Bearer test-token", "Range": "bytes=99-100"}), timeout=5)
+        assert invalid.value.code == 416
+        assert invalid.value.headers["Content-Range"] == f"bytes */{len(media)}"
+
+        with pytest.raises(HTTPError) as unauthorized:
+            urlopen(url, timeout=5)
+        assert unauthorized.value.code == 401
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)

@@ -53,6 +53,24 @@ def resource_map(settings: Settings) -> dict[str, ResourceOption]:
     return {resource.resource_id: resource for resource in compatibility_resources(settings)}
 
 
+def resource_repair_context(settings: Settings, resource_id: str, *, issue_id: str) -> dict[str, Any]:
+    resource = resource_map(settings).get(resource_id)
+    if resource is None:
+        raise KeyError(resource_id)
+    inline = resource.resource_type == "analysis" and resource_id == "legacy.analysis.default"
+    return {
+        "resource_id": resource.resource_id,
+        "display_name": resource.display_name,
+        "resource_type": resource.resource_type,
+        "api_base": settings.cheap_model_api_base if inline else None,
+        "model": resource.version,
+        "credential_state": "configured" if resource.ready else "missing",
+        "repair_capability": "inline_connection" if inline else "settings_only",
+        "settings_url": "/settings",
+        "issue_id": issue_id,
+    }
+
+
 def resolve_parameter_snapshot(config: dict[str, Any], settings: Settings) -> dict[str, Any]:
     refs = config["resources"]
     available = resource_map(settings)

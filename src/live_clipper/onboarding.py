@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -181,7 +182,26 @@ def _write_env_key(env_path: Path, key: str, value: str) -> None:
             break
     if not replaced:
         lines.append(f"{key}={value}")
-    env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    encoded = "\n".join(lines) + "\n"
+    temp_name: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            delete=False,
+            dir=str(env_path.parent),
+            prefix=f".{env_path.name}.",
+            suffix=".tmp",
+        ) as handle:
+            temp_name = handle.name
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        Path(temp_name).chmod(0o600)
+        Path(temp_name).replace(env_path)
+    finally:
+        if temp_name:
+            Path(temp_name).unlink(missing_ok=True)
 
 
 def save_llm_api_key(
