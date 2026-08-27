@@ -18,6 +18,8 @@ from .automation import DEFAULT_LOG_DIR, DEFAULT_STATE_DIR, _pid_is_running, che
 from .config import RecordingSourceDefaultConfig, ServiceConfig, Settings, load_settings
 from .pipeline import cleanup_local_artifacts, cleanup_plan
 from .project_api import ProjectAPI
+from .project_result_api import ProjectResultAPI, ResultAPIError
+from .project_result_api import _error as _result_error
 from .project_storage import ProjectRepository, database_path
 from .render_clips import render_selected_clips
 from .status import build_run_status
@@ -130,7 +132,18 @@ def _is_project_api_route(method: str, parts: list[str], paths: WebPaths) -> boo
         return False
     if len(parts) >= 2 and parts[1] in {"project-form-options", "projects", "studio"}:
         return True
-    return method == "GET" and len(parts) == 3 and parts[1] == "runs" and _project_mode_active(paths)
+    if not _project_mode_active(paths):
+        return False
+    return len(parts) >= 2 and parts[1] in {
+        "clips",
+        "runs",
+        "outputs",
+        "issues",
+        "issue-groups",
+        "resources",
+        "desktop",
+        "legacy",
+    }
 
 
 def _structured_error(error_code: str, message: str) -> dict[str, Any]:
@@ -591,6 +604,10 @@ def handle_api_request(
     request_path: str,
     paths: WebPaths | None = None,
     body: dict[str, Any] | None = None,
+    *,
+    auth_context: str = "browser",
+    range_header: str | None = None,
+    head_only: bool = False,
 ) -> tuple[int, dict[str, str], Any]:
     paths = paths or WebPaths()
     parsed = urlparse(request_path)
@@ -598,8 +615,49 @@ def handle_api_request(
     query = parse_qs(parsed.query, keep_blank_values=True)
     parts = [unquote(part) for part in parsed_path.split("/") if part]
     try:
+        if (
+            method in {"GET", "HEAD"}
+            and len(parts) == 4
+            and parts[:2] == ["api", "outputs"]
+            and parts[3] == "media"
+            and _project_mode_active(paths)
+        ):
+            if parsed.query:
+                return _json_response(
+                    {
+                        "ok": False,
+                        "error": {
+                            "code": "validation_failed",
+                            "message": "媒体接口不接受查询参数",
+                            "fields": {"query": "不支持 path、file、root 或其他查询参数"},
+                        },
+                    },
+                    status=422,
+                )
+            with ProjectRepository(paths.service_dir) as repository:
+                api = ProjectResultAPI(
+                    repository,
+                    _settings_for_paths(paths),
+                    service_dir=paths.service_dir,
+                    auth_context=auth_context,
+                    config_path=paths.config_path,
+                )
+                try:
+                    media = api.media(parts[2], range_header, head_only=head_only or method == "HEAD")
+                except ResultAPIError as exc:
+                    status, headers, payload = _json_response(_result_error(exc), status=exc.status)
+                    if exc.code == "range_not_satisfiable" and isinstance(exc.current, dict):
+                        headers["Content-Range"] = f"bytes */{exc.current.get('size', 0)}"
+                        headers["Accept-Ranges"] = "bytes"
+                    return status, headers, payload
+            return media.status, media.headers, media.body
         if _is_project_api_route(method, parts, paths):
-            api = ProjectAPI(paths.service_dir, _settings_for_paths(paths))
+            api = ProjectAPI(
+                paths.service_dir,
+                _settings_for_paths(paths),
+                auth_context=auth_context,
+                config_path=paths.config_path,
+            )
             try:
                 status, payload = api.handle(method, request_path, body=body)
             finally:
@@ -754,8 +812,8 @@ def handle_api_request(
                 )
             try:
                 reload_result = _restart_service_from_config(paths)
-            except Exception as exc:  # noqa: BLE001 - selection is saved even when service reload raises.
-                reload_result = {"ok": False, "error": str(exc)}
+            except Exception:  # noqa: BLE001 - selection is saved even when service reload raises.
+                reload_result = {"ok": False, "error": "服务重载失败"}
             response = {
                 "ok": bool(reload_result.get("ok")),
                 "saved": True,
@@ -912,8 +970,8 @@ def handle_api_request(
             if service.find_run(parts[2], paths.service_dir):
                 return _json_response(mcp_tools.delete_clip(parts[2], parts[4], reason="web clip deletion", service_dir=paths.service_dir))
             return _json_response(_delete_clip(paths.output_root / parts[2], parts[4]))
-    except Exception as exc:  # noqa: BLE001 - local UI should surface actionable failures.
-        return _json_response(_structured_error("internal_error", str(exc)), status=500)
+    except Exception:  # noqa: BLE001 - API responses must not expose raw exceptions.
+        return _json_response(_structured_error("internal_error", "服务暂时无法完成请求"), status=500)
     return _json_response(_structured_error("route_not_found", "API 路由不存在"), status=404)
 
 
@@ -1086,14 +1144,17 @@ class LiveClipperRequestHandler(BaseHTTPRequestHandler):
     paths = WebPaths()
     access_token: str | None = None
 
-    def _authorized(self) -> bool:
+    def _auth_context(self) -> str:
         token = self.access_token
         if not token:
-            return True
+            return "bearer" if self.headers.get("Authorization", "").startswith("Bearer ") else "browser"
         if self.headers.get("Authorization", "") == f"Bearer {token}":
-            return True
+            return "bearer"
         cookie = self.headers.get("Cookie", "")
-        return f"lc_token={token}" in cookie
+        return "browser" if f"lc_token={token}" in cookie else "none"
+
+    def _authorized(self) -> bool:
+        return self._auth_context() != "none"
 
     def _reject_unauthorized(self) -> None:
         body = json.dumps(_structured_error("unauthorized", "缺少或错误的访问令牌")).encode("utf-8")
@@ -1114,11 +1175,7 @@ class LiveClipperRequestHandler(BaseHTTPRequestHandler):
         if not parsed_path.startswith("/api/"):
             self._serve_spa(head_only=True)
             return
-        status, headers, _payload = handle_api_request("GET", self.path, self.paths)
-        self.send_response(status)
-        for key, value in headers.items():
-            self.send_header(key, value)
-        self.end_headers()
+        self._serve_api("HEAD", head_only=True)
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         parsed_path = urlparse(self.path).path
@@ -1145,7 +1202,7 @@ class LiveClipperRequestHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
         return
 
-    def _serve_api(self, method: str) -> None:
+    def _serve_api(self, method: str, *, head_only: bool = False) -> None:
         if not self._authorized():
             self._reject_unauthorized()
             return
@@ -1156,14 +1213,24 @@ class LiveClipperRequestHandler(BaseHTTPRequestHandler):
             if length:
                 raw_body = self.rfile.read(length).decode("utf-8")
                 body_payload = json.loads(raw_body) if raw_body else None
-        status, headers, payload = handle_api_request(method, self.path, self.paths, body=body_payload)
-        body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+        status, headers, payload = handle_api_request(
+            method,
+            self.path,
+            self.paths,
+            body=body_payload,
+            auth_context=self._auth_context(),
+            range_header=self.headers.get("Range"),
+            head_only=head_only,
+        )
+        body = payload if isinstance(payload, bytes) else json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
         self.send_response(status)
         for key, value in headers.items():
             self.send_header(key, value)
-        self.send_header("Content-Length", str(len(body)))
+        if "Content-Length" not in headers:
+            self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        if not head_only:
+            self.wfile.write(body)
 
     def _serve_static(self, *, head_only: bool = False) -> None:
         target = STATIC_DIR / "react" / "index.html" if self.path == "/" else _static_path(self.path)

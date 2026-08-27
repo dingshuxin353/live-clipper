@@ -9,7 +9,8 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from .config import Settings
 from .project_domain import stable_json
-from .project_projection import project_projection, queue_positions
+from .project_projection import project_projection_v2, queue_positions, result_workload_counts
+from .project_result_api import ProjectResultAPI
 from .project_scan import ProjectScanError, list_source_files, scan_preview, scan_project
 from .project_service import ProjectError, ProjectManager, open_project_repository
 
@@ -32,11 +33,25 @@ def _hash(payload: dict[str, Any]) -> str:
 
 
 class ProjectAPI:
-    def __init__(self, service_dir: str | Path, settings: Settings) -> None:
+    def __init__(
+        self,
+        service_dir: str | Path,
+        settings: Settings,
+        *,
+        auth_context: str = "browser",
+        config_path: str | Path = "live-clipper.toml",
+    ) -> None:
         self.service_dir = Path(service_dir).expanduser().resolve()
         self.settings = settings
         self.repository = open_project_repository(self.service_dir)
         self.manager = ProjectManager(self.repository, settings)
+        self.results = ProjectResultAPI(
+            self.repository,
+            settings,
+            service_dir=self.service_dir,
+            auth_context=auth_context,
+            config_path=config_path,
+        )
 
     def close(self) -> None:
         self.repository.close()
@@ -53,6 +68,9 @@ class ProjectAPI:
         query = parse_qs(parsed.query, keep_blank_values=True)
         payload = body or {}
         try:
+            result_response = self.results.handle(method, request_path, body=payload)
+            if result_response is not None:
+                return result_response
             if method == "GET" and parts == ["api", "project-form-options"]:
                 return 200, {"ok": True, **self.manager.form_options()}
             if method == "POST" and parts == ["api", "projects", "scan-preview"]:
@@ -199,9 +217,18 @@ class ProjectAPI:
                 if run is None:
                     raise ProjectError("run_not_found", "剪辑记录不存在", status=404)
                 positions = queue_positions(self.repository.list_runs())
+                result = self.repository.get_run_result(run.run_id)
+                active_issues = self.repository.list_issues(run_id=run.run_id, active_only=True)
                 return 200, {
                     "ok": True,
-                    "run": {**asdict(run), "queue_position": positions.get(run.run_id)},
+                    "run": {
+                        **self._run_identity(run),
+                        "queue_position": positions.get(run.run_id),
+                        "has_result": result is not None,
+                        "result_summary": self.results.result_summary(result) if result else None,
+                        "active_issue_summary": self.results.issue_summary(active_issues[0]) if active_issues else None,
+                        "legacy_awaiting_review": run.status == "awaiting_review",
+                    },
                     "stage_events": [asdict(item) for item in self.repository.list_stage_events(run.run_id)],
                 }
             raise ProjectError("route_not_found", "API 路由不存在", status=404)
@@ -289,19 +316,18 @@ class ProjectAPI:
             raise ProjectError("project_not_found", "项目不存在", status=404)
         runtime = self.repository.get_runtime(project_id)
         runs = self.repository.list_runs(project_id)
-        projected = project_projection(
+        results = self.repository.list_run_results(project_id=project_id)
+        active_issues = self.repository.list_issues(project_id=project_id, active_only=True)
+        projected = project_projection_v2(
             activation_state=project.activation_state,
             runs=runs,
-            blocked=bool(runtime and runtime.readiness_state == "blocked"),
+            results=results,
+            blocking_issue=bool(runtime and runtime.readiness_state == "blocked") or bool(active_issues),
         )
         scans = self.repository.list_scan_events(project_id)
-        active_runs = [run for run in runs if run.status in {"processing", "queued", "awaiting_review"}]
+        active_runs = [run for run in runs if run.status in {"processing", "queued"}]
         current_run = active_runs[0] if active_runs else None
-        result_runs = sorted(
-            (run for run in runs if run.status in {"completed", "failed"}),
-            key=lambda run: (run.updated_at, run.run_id),
-            reverse=True,
-        )
+        recent_result = results[0] if results else None
         revision = self.repository.get_config_revision(project_id)
         result = {
             **asdict(project),
@@ -310,13 +336,18 @@ class ProjectAPI:
             "readiness_state": runtime.readiness_state if runtime else "blocked",
             "runtime": asdict(runtime) if runtime else None,
             "latest_scan": asdict(scans[0]) if scans else None,
-            "current_run": asdict(current_run) if current_run else None,
-            "recent_result": asdict(result_runs[0]) if result_runs else None,
-            "blocking_issues": (
-                [{"code": runtime.failure_code, "message": runtime.failure_summary}]
-                if runtime and runtime.failure_code
-                else []
-            ),
+            "current_run": self._run_identity(current_run) if current_run else None,
+            "recent_result": self.results.result_summary(recent_result) if recent_result else None,
+            "unseen_result_count": self.results.unseen_result_count(project_id),
+            "issue_groups": self._issue_groups(active_issues),
+            "blocking_issues": [
+                *(
+                    [{"code": runtime.failure_code, "message": runtime.failure_summary}]
+                    if runtime and runtime.failure_code
+                    else []
+                ),
+                *(self.results.issue_summary(issue) for issue in active_issues if issue.impact_level == "blocking"),
+            ],
             "schedule": (
                 {
                     "enabled": revision.config["schedule"]["enabled"],
@@ -343,12 +374,19 @@ class ProjectAPI:
             raise ProjectError("validation_failed", "limit 必须在 1 到 100 之间", status=422)
         statuses = {
             "active": {"queued", "processing"},
-            "attention": {"awaiting_review", "failed"},
+            "attention": {"failed"},
             "completed": {"completed"},
         }
         runs = self.repository.list_runs(project_id)
         if filter_name != "all":
-            runs = [run for run in runs if run.status in statuses[filter_name]]
+            if filter_name == "attention":
+                issue_run_ids = {
+                    item.run_id for item in self.repository.list_issues(project_id=project_id, active_only=True)
+                    if item.run_id
+                }
+                runs = [run for run in runs if run.status in statuses[filter_name] or run.run_id in issue_run_ids]
+            else:
+                runs = [run for run in runs if run.status in statuses[filter_name]]
         cursor_value = (query.get("cursor") or [None])[0]
         if cursor_value:
             try:
@@ -365,7 +403,7 @@ class ProjectAPI:
         positions = queue_positions(self.repository.list_runs())
         return {
             "ok": True,
-            "runs": [{**asdict(run), "queue_position": positions.get(run.run_id)} for run in page],
+            "runs": [self._run_summary(run, positions.get(run.run_id)) for run in page],
             "cursor": next_cursor,
             "has_more": len(runs) > len(page),
         }
@@ -375,13 +413,8 @@ class ProjectAPI:
         last_seen = int(view["last_seen_event_id"]) if view else 0
         events = self.repository.list_workspace_events(after_event_id=last_seen)
         runs = self.repository.list_runs()
-        counts = {status: sum(run.status == status for run in runs) for status in (
-            "queued",
-            "processing",
-            "awaiting_review",
-            "failed",
-            "completed",
-        )}
+        results = self.repository.list_run_results()
+        counts = result_workload_counts(runs, results).as_dict()
         run_by_id = {run.run_id: run for run in runs}
 
         def changed_runs(status: str | None = None, *, created: bool = False) -> list[dict[str, Any]]:
@@ -394,27 +427,23 @@ class ProjectAPI:
                     selected[run.run_id] = run
                 elif status is not None and event.payload.get("status") == status and run.status == status:
                     selected[run.run_id] = run
-            return [asdict(run) for run in selected.values()]
+            return [self._run_identity(run) for run in selected.values()]
 
         project_summaries = [self._project_summary(project.project_id) for project in self.repository.list_projects()]
-        failed = [asdict(run) for run in runs if run.status == "failed"]
-        processing = [asdict(run) for run in runs if run.status == "processing"]
-        queued = [asdict(run) for run in runs if run.status == "queued"]
-        completed = sorted(
-            (run for run in runs if run.status == "completed"),
-            key=lambda run: (run.completed_at or "", run.run_id),
-            reverse=True,
-        )[:20]
+        active_issues = self.repository.list_issues(active_only=True)
+        failed = [self._run_identity(run) for run in runs if run.status == "failed"]
+        processing = [self._run_identity(run) for run in runs if run.status == "processing"]
+        queued = [self._run_identity(run) for run in runs if run.status == "queued"]
         return {
             "ok": True,
             "through_event_id": self.repository.max_workspace_event_id(),
             "changes": [asdict(event) for event in events],
-            "pending_review_count": counts["awaiting_review"],
+            "unseen_result_count": self.results.unseen_result_count(),
+            "legacy_awaiting_review_count": sum(run.status == "awaiting_review" for run in runs),
             "workload": counts,
             "unattended_changes": {
                 "created": changed_runs(created=True),
                 "completed": changed_runs("completed"),
-                "awaiting_review": changed_runs("awaiting_review"),
                 "failed": changed_runs("failed"),
             },
             "needs_attention": {
@@ -422,9 +451,65 @@ class ProjectAPI:
                 "blocked_project_ids": [
                     project["project_id"] for project in project_summaries if project["main_status"] == "blocked"
                 ],
+                "issue_groups": self._issue_groups(active_issues),
             },
             "in_progress": {"processing": processing, "queued": queued},
-            "recent_results": [asdict(run) for run in completed],
+            "recent_results": [
+                self.results.result_summary(result)
+                for result in results[:20]
+                if result.result_type in {"clips_ready", "no_clip", "partial"}
+            ],
             "project_health": project_summaries,
             "projects": project_summaries,
         }
+
+    def _run_summary(self, run: Any, queue_position: int | None) -> dict[str, Any]:
+        result = self.repository.get_run_result(run.run_id)
+        issues = self.repository.list_issues(run_id=run.run_id, active_only=True)
+        return {
+            **self._run_identity(run),
+            "queue_position": queue_position,
+            "has_result": result is not None,
+            "result_summary": self.results.result_summary(result) if result else None,
+            "active_issue_summary": self.results.issue_summary(issues[0]) if issues else None,
+            "legacy_awaiting_review": run.status == "awaiting_review",
+        }
+
+    @staticmethod
+    def _run_identity(run: Any) -> dict[str, Any]:
+        return {
+            "run_id": run.run_id,
+            "project_id": run.project_id,
+            "content_id": run.content_id,
+            "processing_sequence": run.processing_sequence,
+            "origin_run_id": run.origin_run_id,
+            "source_scan_id": run.source_scan_id,
+            "source_name": Path(run.latest_seen_path).name,
+            "trigger_source": run.trigger_source,
+            "status": run.status,
+            "current_stage": run.current_stage,
+            "config_revision": run.config_revision,
+            "queued_at": run.queued_at,
+            "started_at": run.started_at,
+            "review_at": run.review_at,
+            "completed_at": run.completed_at,
+            "updated_at": run.updated_at,
+            "error_code": run.error_code,
+            "error_summary": run.error_summary,
+        }
+
+    def _issue_groups(self, issues: list[Any]) -> list[dict[str, Any]]:
+        groups: dict[str, list[Any]] = {}
+        for issue in issues:
+            groups.setdefault(issue.issue_group_key, []).append(issue)
+        return [
+            {
+                "group_key": key,
+                "count": len(items),
+                "title": items[0].title,
+                "impact_level": items[0].impact_level,
+                "issue_ids": [item.issue_id for item in items],
+                "available_actions": sorted({action for item in items for action in self.results.issue_actions(item)}),
+            }
+            for key, items in sorted(groups.items())
+        ]

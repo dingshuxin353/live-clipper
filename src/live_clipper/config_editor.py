@@ -205,6 +205,22 @@ def save_editable_config(
     }
 
 
+def save_llm_api_base(api_base: str, *, config_path: Path = DEFAULT_CONFIG_PATH) -> dict[str, Any]:
+    """Update only the non-secret LLM endpoint through the normal validated config writer."""
+    loaded = load_editable_config(config_path=config_path)
+    if not loaded.get("ok"):
+        return loaded
+    draft = deepcopy(loaded["config"])
+    llm = draft.setdefault("llm", {})
+    llm["api_base"] = api_base
+    return save_editable_config(
+        draft,
+        config_path=config_path,
+        backup_root=config_path.parent / "work" / "config_backups",
+        base_dir=config_path.parent,
+    )
+
+
 def save_asr_model_selection(
     backend: str,
     model: str,
