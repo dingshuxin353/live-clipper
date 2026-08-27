@@ -1,5 +1,5 @@
 import { api, patch, post } from "./api";
-import type { FormOptionsPayload, ProjectConfig, ProjectSummary, Run, RunFilter, ScanEvent, ScanPreviewPayload, SourceFile, StageEvent, StudioPayload, ValidationPayload } from "./project-dto";
+import type { ClipsPayload, FormOptionsPayload, IssueDetail, OutputMaterial, ProjectConfig, ProjectSummary, RecoveryAttempt, RepairContext, Run, RunFilter, RunOutput, RunResultPayload, ScanEvent, ScanPreviewPayload, SourceFile, StageEvent, StudioPayload, ValidationPayload } from "./project-dto";
 
 export const projectApi = {
   studio: (signal?: AbortSignal) => api<StudioPayload>("/api/studio", {}, signal),
@@ -17,6 +17,20 @@ export const projectApi = {
   scan: (projectId: string, id: string, scope: "new" | "selected", selectedRelativePaths: string[] = []) => post<{ ok: true; scan: ScanEvent; reused?: boolean }>(`/api/projects/${projectId}/scans`, { request_id: id, scope, selected_relative_paths: selectedRelativePaths }),
   latestScan: (projectId: string, signal?: AbortSignal) => api<{ ok: true; scan: ScanEvent | null }>(`/api/projects/${projectId}/scans/latest`, {}, signal),
   sourceFiles: (projectId: string, signal?: AbortSignal) => api<{ ok: true; files: SourceFile[] }>(`/api/projects/${projectId}/source-files`, {}, signal),
+  clips: (view: "new" | "all", cursor?: string | null, signal?: AbortSignal) => { const search = new URLSearchParams({ view, limit: "24" }); if (cursor) search.set("cursor", cursor); return api<ClipsPayload>(`/api/clips?${search}`, {}, signal); },
+  runResult: (runId: string, signal?: AbortSignal) => api<RunResultPayload>(`/api/runs/${runId}/result`, {}, signal),
+  markResultSeen: (runId: string, id: string, expectedRevision: number) => post<{ ok: true; result: RunResultPayload["result"]; unseen_result_count: number; reused: boolean }>(`/api/runs/${runId}/result/seen`, { request_id: id, expected_result_revision: expectedRevision }),
+  output: (outputId: string, signal?: AbortSignal) => api<{ ok: true; output: RunOutput }>(`/api/outputs/${outputId}`, {}, signal),
+  material: (outputId: string, signal?: AbortSignal) => api<{ ok: true; material: OutputMaterial }>(`/api/outputs/${outputId}/material`, {}, signal),
+  saveMaterial: (outputId: string, id: string, material: OutputMaterial) => patch<{ ok: true; material: OutputMaterial; reused: boolean }>(`/api/outputs/${outputId}/material`, { request_id: id, expected_revision: material.material_revision, titles: material.titles, preferred_title_id: material.preferred_title_id, description: material.description, tags: material.tags }),
+  issue: (issueId: string, signal?: AbortSignal) => api<{ ok: true; issue: IssueDetail }>(`/api/issues/${issueId}`, {}, signal),
+  issueCheck: (issueId: string, expectedRevision: number, selection?: { kind: "source" | "recovery-output"; token: string }) => post<{ ok: true; issue: IssueDetail; reused: boolean }>(`/api/issues/${issueId}/${selection?.kind ?? "recheck"}`, { request_id: requestId("issue-check"), expected_issue_revision: expectedRevision, ...(selection ? { selection_token: selection.token } : {}) }),
+  issueRecover: (issueId: string, action: "continue" | "retry-output" | "retry-material", expectedRevision: number) => post<RecoveryAttempt>(`/api/issues/${issueId}/${action}`, { request_id: requestId("issue-recover"), expected_issue_revision: expectedRevision }),
+  groupRecheck: (groupKey: string, issueRevisions: Record<string, number>) => post<{ ok: true; group_key: string; issues: IssueDetail[]; reused: boolean }>(`/api/issue-groups/${encodeURIComponent(groupKey)}/recheck`, { request_id: requestId("issue-group"), issue_revisions: issueRevisions }),
+  repairContext: (resourceId: string, issueId: string, signal?: AbortSignal) => api<{ ok: true; repair_context: RepairContext }>(`/api/resources/${encodeURIComponent(resourceId)}/repair-context?issue_id=${encodeURIComponent(issueId)}`, {}, signal),
+  updateConnection: (resourceId: string, issueId: string, apiBase: string, apiKey: string) => patch<{ ok: true; resource_id: string; api_base: string; model: string; credential_updated: boolean; reused: boolean }>(`/api/resources/${encodeURIComponent(resourceId)}/connection`, { request_id: requestId("resource-save"), issue_id: issueId, api_base: apiBase, ...(apiKey.trim() ? { api_key: apiKey } : {}) }),
+  testConnection: (resourceId: string, issueId: string) => post<{ ok: true; resource_id: string; success: boolean; tested_at: string; reused: boolean }>(`/api/resources/${encodeURIComponent(resourceId)}/connection-test`, { request_id: requestId("resource-test"), issue_id: issueId }),
+  legacyAwaitingReview: (signal?: AbortSignal) => api<{ ok: true; runs: Array<{ run: Run; project: { project_id: string; name: string }; detail_url: string }>; count: number }>("/api/legacy/awaiting-review", {}, signal),
 };
 
 export function requestId(prefix: string): string { return `${prefix}-${crypto.randomUUID()}`; }

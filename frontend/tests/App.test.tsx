@@ -26,7 +26,7 @@ describe("Venus 1.0 core workbench", () => {
   it("uses frozen navigation order and routes deep links with browser history", async () => {
     installFetchMock(); render(<App />);
     const navigation = await screen.findByRole("navigation", { name: "主导航" });
-    expect(within(navigation).getAllByRole("link").map((link) => link.textContent)).toEqual(["工作室", "项目", "待审", "资源", "设置"]);
+    expect(within(navigation).getAllByRole("link").map((link) => link.textContent)).toEqual(["工作室", "项目", "成片", "资源", "设置"]);
     fireEvent.click(within(navigation).getByRole("link", { name: "项目" }));
     expect(await screen.findByRole("heading", { name: "项目" })).toBeVisible();
     expect(window.location.pathname).toBe("/projects");
@@ -85,6 +85,7 @@ describe("Venus 1.0 core workbench", () => {
     await waitFor(() => expect(attempts).toBe(2));
     const bodies = calls.filter(([path, options]) => path === "/api/projects" && options?.method === "POST").map(([, options]) => JSON.parse(String(options?.body)));
     expect(bodies[0].request_id).toBe(bodies[1].request_id);
+    expect(bodies[1].project.config).toMatchObject({ schema_version: 2, resources: { review_ref: "analysis.main" }, processing: { review_strategy: "ai_auto" } });
   });
 
   it("locks the manual scan button and prevents duplicate writes", async () => {
@@ -111,7 +112,7 @@ describe("Venus 1.0 core workbench", () => {
   });
 
   it("loads the newly created project when navigation reuses the detail route", async () => {
-    const created = { ...PROJECT, project_id: "project-2", name: "新项目 B", description: "新项目详情", activation_state: "inactive", main_status: "inactive", workload: { processing: 0, queued: 0, awaiting_review: 0, failed: 0, completed: 0 } };
+    const created = { ...PROJECT, project_id: "project-2", name: "新项目 B", description: "新项目详情", activation_state: "inactive", main_status: "inactive", workload: { processing: 0, queued: 0, failed: 0, completed: 0, new_results: 0 } };
     installFetchMock({
       "/api/projects": (options?: RequestInit) => options?.method === "POST" ? jsonResponse({ ok: true, project: created, initial_scan: null }, 201) : jsonResponse({ ok: true, projects: [PROJECT] }),
       "/api/projects/project-2": { ok: true, project: created },
@@ -140,11 +141,11 @@ describe("Venus 1.0 core workbench", () => {
     expect(screen.queryByRole("button", { name: /删除|新增|编辑/ })).not.toBeInTheDocument();
   });
 
-  it("shows the current pending review count in the top navigation", async () => {
-    installFetchMock({ "/api/studio": { ok: true, through_event_id: 0, changes: [], pending_review_count: 3, workload: PROJECT.workload, unattended_changes: { created: [], completed: [], awaiting_review: [], failed: [] }, needs_attention: { failed_runs: [], blocked_project_ids: [] }, in_progress: { processing: [], queued: [] }, recent_results: [], project_health: [PROJECT], projects: [PROJECT] } });
+  it("shows the current unseen result count in the top navigation", async () => {
+    installFetchMock({ "/api/studio": { ok: true, through_event_id: 0, changes: [], unseen_result_count: 3, legacy_awaiting_review_count: 0, workload: PROJECT.workload, unattended_changes: { created: [], completed: [], failed: [] }, needs_attention: { failed_runs: [], blocked_project_ids: [], issue_groups: [] }, in_progress: { processing: [], queued: [] }, recent_results: [], project_health: [PROJECT], projects: [PROJECT] } });
     render(<App />);
     const navigation = await screen.findByRole("navigation", { name: "主导航" });
-    expect(await within(navigation).findByLabelText("3 条待审")).toHaveTextContent("3");
+    expect(await within(navigation).findByLabelText("3 条新成片")).toHaveTextContent("3");
   });
 
   it("requires an explicit explanation and confirmation before pausing", async () => {
@@ -191,6 +192,6 @@ describe("Venus 1.0 core workbench", () => {
     installFetchMock({ "/api/runs/run-1": { ok: true, run: RUN, stage_events: [] } }); route("/projects/project-1/runs/run-1"); render(<App />);
     expect(await screen.findByRole("heading", { name: "night.mkv" })).toBeVisible();
     const rail = screen.getByRole("region", { name: "处理阶段" });
-    expect(within(rail).getAllByText(/读取录像|语音转写|内容分析|结果仲裁|人工审阅|渲染成片/)).toHaveLength(6);
+    expect(within(rail).getAllByText(/读取录像|语音转写|内容分析|结果仲裁|AI 审阅|渲染成片/)).toHaveLength(6);
   });
 });
