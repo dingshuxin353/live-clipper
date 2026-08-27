@@ -20,15 +20,16 @@ def test_v8_console_contract_moved_to_react_dom_tests():
     studio = _source("StudioProjects.tsx")
     dialogs = _source("ProjectDialogs.tsx")
 
-    expected_nav = ["/studio", "/projects", "/review", "/resources", "/settings"]
+    expected_nav = ["/studio", "/projects", "/clips", "/resources", "/settings"]
     assert [app.index(f'<NavLink to="{path}"') for path in expected_nav] == sorted(
         app.index(f'<NavLink to="{path}"') for path in expected_nav
     )
     for component in ["BrowserRouter", "AppShell", "NavLink", "Routes", "Route"]:
         assert component in app
-    for path in ["/studio", "/projects", "/review", "/resources", "/settings"]:
+    for path in ["/studio", "/projects", "/clips", "/review", "/resources", "/settings"]:
         assert f'<Route path="{path}"' in app
-    for label in ["工作室", "项目", "待审", "资源", "设置", "＋ 新建项目"]:
+    assert '<NavLink to="/review"' not in app
+    for label in ["工作室", "项目", "成片", "资源", "设置", "＋ 新建项目"]:
         assert label in app
     assert 'params.get("dialog") === "new-project"' in app
     assert "<NewProjectDialog notify={setNotice} />" in app
