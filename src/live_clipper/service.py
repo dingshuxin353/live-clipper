@@ -204,7 +204,11 @@ def _embedded_service_loop(
             if not enabled_event.is_set():
                 stop_event.wait(2)
                 continue
-            source_configured = settings.recording_source_default.source_dir or settings.recording_source.source_dir
+            source_configured = (
+                project_mode_active(service_dir)
+                or settings.recording_source_default.source_dir
+                or settings.recording_source.source_dir
+            )
             if source_configured is None:
                 _record_tick_success(
                     service_dir,
@@ -222,6 +226,9 @@ def _embedded_service_loop(
             _record_tick_failure(service_dir, pid, settings, exc)
             append_event(service_dir, "service_error", error=_error_summary(exc, settings))
             stop_event.wait(min(settings.scheduler.tick_seconds, 60) if settings is not None else 60)
+    from .project_result_runtime import shutdown_project_result_workers
+
+    shutdown_project_result_workers(service_dir, wait=True)
     _write_service_state(service_dir, {"status": "stopped", "pid": pid, "stopped_at": now_utc()})
 
 
@@ -1548,6 +1555,9 @@ def service_loop(settings: Settings, *, service_dir: Path = DEFAULT_SERVICE_DIR)
             _record_tick_failure(service_dir, pid, settings, exc)
             append_event(service_dir, "service_error", error=_error_summary(exc, settings))
             time.sleep(min(settings.scheduler.tick_seconds, 60))
+    from .project_result_runtime import shutdown_project_result_workers
+
+    shutdown_project_result_workers(service_dir, wait=True)
     _write_service_state(service_dir, {"status": "stopped", "pid": pid, "stopped_at": now_utc()})
     append_event(service_dir, "service_stopped", pid=pid)
 

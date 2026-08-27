@@ -59,3 +59,28 @@ def test_output_nested_in_source_is_a_blocker_even_through_symlink(tmp_path):
     manager = ProjectManager(open_project_repository(tmp_path / "service"), Settings(cheap_model_api_key="fake"))
     result = manager.validate_project(name="项目", config=config, activation_state="active")
     assert any(issue.code == "output_inside_source" for issue in result.blockers)
+
+
+def test_existing_v1_project_upgrades_current_config_once_without_rewriting_run_snapshot(tmp_path):
+    repository = open_project_repository(tmp_path / "service")
+    config_v1 = _ready_config(tmp_path)
+    project = repository.create_project("旧项目", config_v1, activation_state="inactive")
+    run = repository.create_normal_run(
+        project_id=project.project_id,
+        content_id="legacy-content",
+        trigger_source="manual",
+        first_seen_path=str(tmp_path / "source" / "legacy.mp4"),
+        latest_seen_path=str(tmp_path / "source" / "legacy.mp4"),
+        parameter_snapshot={"schema_version": 1, "legacy": True},
+    ).run
+    manager = ProjectManager(repository, Settings(cheap_model_api_key="fake"))
+
+    revision = manager.ensure_v2_config(project.project_id)
+    repeated = manager.ensure_v2_config(project.project_id)
+
+    assert revision == repeated == 2
+    assert repository.get_config_revision(project.project_id).schema_version == 2
+    assert repository.get_config_revision(project.project_id, 1).config == config_v1
+    assert repository.get_run(run.run_id).parameter_snapshot == {"schema_version": 1, "legacy": True}
+    events = [item for item in repository.list_workspace_events() if item.event_type == "project_config_upgraded_v2"]
+    assert len(events) == 1

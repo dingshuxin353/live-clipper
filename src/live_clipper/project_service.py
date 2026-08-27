@@ -11,6 +11,7 @@ from .config import Settings
 from .project_domain import (
     Project,
     normalize_utc,
+    project_config_v2,
     stable_json,
     validate_project_config,
 )
@@ -145,17 +146,21 @@ class ProjectManager:
             fatal.append(ValidationIssue("activation_state", "invalid_activation_state", "创建时只能选择未启用或启用"))
         try:
             normalized = validate_project_config(config)
+            if normalized["schema_version"] == 1:
+                normalized = project_config_v2(normalized)
         except (KeyError, TypeError, ValueError) as exc:
             fatal.append(ValidationIssue("config", "invalid_config", str(exc)))
         if normalized is None:
             return ProjectValidation(tuple(fatal), tuple(blockers), tuple(warnings), None)
 
         if normalized["processing"] != {
-            "review_strategy": "manual",
+            "review_strategy": "ai_auto",
+            "review_policy_version": "auto_review_v1",
+            "material_policy_version": "publish_material_v1",
             "output_profile": "current_renderer",
             "naming_policy": "system_safe",
         }:
-            fatal.append(ValidationIssue("processing", "unsupported_processing_policy", "当前版本只支持固定的人工审阅与渲染策略"))
+            fatal.append(ValidationIssue("processing", "unsupported_processing_policy", "当前版本只支持固定的 AI 审阅与渲染策略"))
         if normalized["output"]["original_media_policy"] != "never_delete":
             fatal.append(ValidationIssue("output.original_media_policy", "unsafe_media_policy", "原始录像必须永不自动删除"))
         if normalized["output"]["final_media_policy"] != "keep":
@@ -182,7 +187,7 @@ class ProjectManager:
 
         resources = resource_map(self.settings)
         refs = normalized["resources"]
-        for field in ("asr_ref", "analysis_ref"):
+        for field in ("asr_ref", "analysis_ref", "review_ref"):
             resource_id = str(refs[field])
             resource = resources.get(resource_id)
             if resource is None or not resource.ready:
@@ -200,6 +205,25 @@ class ProjectManager:
         if normalized["source"]["first_scan_mode"] == "recent" and normalized["source"]["lookback_days"] == 30:
             warnings.append(ValidationIssue("source.lookback_days", "large_backfill", "回溯 30 天可能创建较多剪辑记录"))
         return ProjectValidation(tuple(fatal), tuple(blockers), tuple(warnings), normalized)
+
+    def ensure_v2_config(self, project_id: str) -> int:
+        """Upgrade only the current project config; historical revisions and Run snapshots stay immutable."""
+        current = self.repository.get_config_revision(project_id)
+        if current is None:
+            raise ProjectError("project_not_found", "项目不存在", status=404)
+        if current.schema_version == 2:
+            return current.revision
+        revision = self.repository.add_config_revision(
+            project_id,
+            project_config_v2(current.config),
+            expected_revision=current.revision,
+        )
+        self.repository.append_workspace_event(
+            "project_config_upgraded_v2",
+            project_id=project_id,
+            payload={"from_revision": current.revision, "to_revision": revision.revision},
+        )
+        return revision.revision
 
     def _idempotent_project(self, scope: str, request_id: str | None, payload: dict[str, Any]) -> Project | None:
         if not request_id:

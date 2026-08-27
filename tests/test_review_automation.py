@@ -20,6 +20,7 @@ from live_clipper.review_automation import (
     read_review_automation_events,
     run_ai_review_for_run,
     run_due_ai_reviews,
+    run_structured_review_adapter,
 )
 from live_clipper.utils import read_json, write_json
 
@@ -322,3 +323,48 @@ def test_check_environment_reports_tools_and_llm_key_without_secret(monkeypatch)
     assert result["llm"]["api_key_env"] == "CHEAP_MODEL_API_KEY"
     assert result["llm"]["api_key_configured"] is True
     assert "sk-secret" not in str(result)
+
+
+def test_structured_project_adapter_uses_one_request_and_versioned_object():
+    settings = Settings(
+        cheap_model_api_key="fake-key",
+        review_automation=ReviewAutomationConfig(
+            mode="model",
+            model=ReviewAutomationModelConfig(model="review-model", retry_attempts=2),
+        ),
+    )
+
+    class FakeClient:
+        def complete_json(self, system_prompt, payload, **_kwargs):
+            assert "format_version" in system_prompt
+            assert payload["candidates"][0]["candidate_id"] == "one"
+            return {
+                "format_version": 1,
+                "overall_summary": "none",
+                "warnings": [],
+                "decisions": [
+                    {
+                        "candidate_id": "one",
+                        "decision": "rejected",
+                        "rank": 1,
+                        "reason": "low value",
+                        "rejection_reason_code": "low_value",
+                        "selected_clip": None,
+                        "material": None,
+                    }
+                ],
+            }
+
+    def factory(_settings, timeout, request_attempts):
+        assert timeout == 3600
+        assert request_attempts == 1
+        return FakeClient()
+
+    result = run_structured_review_adapter(
+        settings,
+        {"candidates": [{"candidate_id": "one"}]},
+        client_factory=factory,
+    )
+
+    assert result["format_version"] == 1
+    assert result["decisions"][0]["decision"] == "rejected"
