@@ -88,6 +88,7 @@ def test_core_workbench_deep_links_serve_the_react_entry(tmp_path):
         "/projects",
         "/projects/project-1",
         "/projects/project-1/runs/run-1",
+        "/clips",
     ]
 
     with _server(tmp_path) as port:

@@ -36,25 +36,27 @@ export const PROJECT = {
   activated_at: "2026-08-20T01:00:00Z",
   paused_at: null,
   main_status: "processing",
-  workload: { processing: 1, queued: 1, awaiting_review: 0, failed: 0, completed: 2 },
+  workload: { processing: 1, queued: 1, failed: 0, completed: 2, new_results: 0 },
   readiness_state: "ready",
   runtime: { project_id: "project-1", readiness_state: "ready", auto_scan_state: "off", last_scan_at: null, next_scan_at: null, failure_code: null, failure_summary: null, discovery_baseline: null, first_scan_state: "not_required", schedule_cursor: null },
   latest_scan: null,
   current_run: null,
   recent_result: null,
+  unseen_result_count: 0,
+  issue_groups: [],
   blocking_issues: [],
   schedule: { enabled: false, timezone: "Asia/Tokyo", next_scan_at: null },
   config: {
     project_id: "project-1",
     revision: 1,
-    schema_version: 1,
+    schema_version: 2,
     created_at: "2026-08-20T01:00:00Z",
     config: {
-      schema_version: 1,
+      schema_version: 2,
       source: { directory: "/recordings", supported_extensions: [".m4v", ".mkv", ".mov", ".mp4", ".webm"], include_patterns: [], exclude_patterns: [], first_scan_mode: "new_only", lookback_days: null },
       schedule: { enabled: false, mode: "daily", daily_time: "22:00", interval_minutes: null, timezone: "Asia/Tokyo" },
-      resources: { asr_ref: "asr.local", analysis_ref: "analysis.main", arbitration_mode: "reuse_analysis", arbitration_ref: null },
-      processing: { review_strategy: "manual", output_profile: "current_renderer", naming_policy: "system_safe" },
+      resources: { asr_ref: "asr.local", analysis_ref: "analysis.main", review_ref: "analysis.main", arbitration_mode: "reuse_analysis", arbitration_ref: null },
+      processing: { review_strategy: "ai_auto", output_profile: "current_renderer", naming_policy: "system_safe", review_policy_version: "auto_review_v1", material_policy_version: "publish_material_v1" },
       output: { directory: "/outputs", intermediate_retention: "remind_after_7_days", original_media_policy: "never_delete", final_media_policy: "keep" },
     },
   },
@@ -62,11 +64,11 @@ export const PROJECT = {
 
 export const RUN = {
   run_id: "run-1", project_id: "project-1", content_id: "content-1", processing_sequence: 1,
-  origin_run_id: null, source_scan_id: null, trigger_source: "manual", first_seen_path: "night.mkv",
-  latest_seen_path: "night.mkv", status: "processing", current_stage: "analyze", config_revision: 1,
-  parameter_snapshot: {}, queued_at: "2026-08-20T01:00:00Z", started_at: "2026-08-20T01:01:00Z",
+  origin_run_id: null, source_scan_id: null, trigger_source: "manual", source_name: "night.mkv",
+  status: "processing", current_stage: "analyze", config_revision: 1,
+  queued_at: "2026-08-20T01:00:00Z", started_at: "2026-08-20T01:01:00Z",
   review_at: null, completed_at: null, updated_at: "2026-08-20T02:00:00Z", error_code: null,
-  error_summary: null, queue_position: null,
+  error_summary: null, queue_position: null, has_result: false, result_summary: null, active_issue_summary: null, legacy_awaiting_review: false,
 };
 
 export function jsonResponse(body: unknown, status = 200) {
@@ -114,10 +116,11 @@ export function installFetchMock(overrides: Record<string, unknown> = {}) {
       ok: true,
       through_event_id: 0,
       changes: [],
-      pending_review_count: 0,
+      unseen_result_count: 0,
+      legacy_awaiting_review_count: 0,
       workload: PROJECT.workload,
-      unattended_changes: { created: [], completed: [], awaiting_review: [], failed: [] },
-      needs_attention: { failed_runs: [], blocked_project_ids: [] },
+      unattended_changes: { created: [], completed: [], failed: [] },
+      needs_attention: { failed_runs: [], blocked_project_ids: [], issue_groups: [] },
       in_progress: { processing: [RUN], queued: [] },
       recent_results: [],
       project_health: [PROJECT],
@@ -127,8 +130,8 @@ export function installFetchMock(overrides: Record<string, unknown> = {}) {
       ok: true,
       data_mode: "projects",
       resources: [
-        { resource_id: "asr.local", display_name: "本地 ASR", resource_type: "asr", ready: true, status: "ready" },
-        { resource_id: "analysis.main", display_name: "主分析模型", resource_type: "analysis", ready: true, status: "ready" },
+        { resource_id: "asr.local", display_name: "本地 ASR", resource_type: "asr", ready: true, problem: null, version: "small" },
+        { resource_id: "analysis.main", display_name: "主分析模型", resource_type: "analysis", ready: true, problem: null, version: "review-model" },
       ],
       first_scan_modes: ["new_only", "recent", "choose_existing"],
       lookback_days: [3, 7, 30],
@@ -140,6 +143,8 @@ export function installFetchMock(overrides: Record<string, unknown> = {}) {
     },
     "/api/projects/scan-preview": { ok: true, estimated_files: 1, supported_files: 1, processable_files: 1, warnings: [] },
     "/api/projects/validate": { ok: true, valid: true, fatal: [], blockers: [], warnings: [], normalized_config: PROJECT.config.config },
+    "/api/clips": { ok: true, view: "new", unseen_result_count: 0, results: [], cursor: null, has_more: false },
+    "/api/legacy/awaiting-review": { ok: true, runs: [], count: 0 },
   };
   const payloads = { ...base, ...overrides };
   vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, options?: RequestInit) => {
