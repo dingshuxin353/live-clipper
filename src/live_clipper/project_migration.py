@@ -74,6 +74,24 @@ class MigrationResult:
     needs_user_review: bool
 
 
+@dataclass(frozen=True)
+class MigrationV2Plan:
+    """An explicit extension describing which imported Runs may later be result-indexed."""
+
+    foundation: MigrationPlan
+    result_index_run_ids: tuple[str, ...]
+    compatibility_run_ids: tuple[str, ...]
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "schema_version": 2,
+            "foundation": self.foundation.summary(),
+            "result_index_run_ids": list(self.result_index_run_ids),
+            "compatibility_run_ids": list(self.compatibility_run_ids),
+            "automatic_result_index": False,
+        }
+
+
 def _fingerprint(files: list[Path]) -> str:
     digest = hashlib.sha256()
     for path in sorted(files, key=lambda item: (item.name, str(item))):
@@ -236,6 +254,20 @@ def build_migration_plan(inspection: LegacyInspection) -> MigrationPlan:
         runs=tuple(planned_runs),
         quarantined_runs=tuple(quarantined),
         needs_user_review=inspection.weekly_scan,
+    )
+
+
+def build_migration_v2_plan(inspection: LegacyInspection) -> MigrationV2Plan:
+    """Extend the conversion plan without reading result artifacts or changing data mode."""
+    foundation = build_migration_plan(inspection)
+    return MigrationV2Plan(
+        foundation=foundation,
+        result_index_run_ids=tuple(
+            item["run_id"] for item in foundation.runs if item["status"] == "completed"
+        ),
+        compatibility_run_ids=tuple(
+            item["run_id"] for item in foundation.runs if item["status"] == "awaiting_review"
+        ),
     )
 
 

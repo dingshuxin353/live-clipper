@@ -244,11 +244,34 @@ def default_project_config(source_directory: str | Path, output_directory: str |
     }
 
 
+def project_config_v2(config_v1: Mapping[str, Any]) -> dict[str, Any]:
+    """Build a frozen schema-v2 config without mutating the historical v1 value."""
+    validated = validate_project_config(config_v1)
+    if validated["schema_version"] != 1:
+        raise ValueError("project_config_v2 requires a schema v1 source config")
+    return {
+        **validated,
+        "schema_version": 2,
+        "resources": {
+            **validated["resources"],
+            "review_ref": validated["resources"]["analysis_ref"],
+        },
+        "processing": {
+            "review_strategy": "ai_auto",
+            "review_policy_version": "auto_review_v1",
+            "material_policy_version": "publish_material_v1",
+            "output_profile": validated["processing"]["output_profile"],
+            "naming_policy": validated["processing"]["naming_policy"],
+        },
+    }
+
+
 def validate_project_config(config: Mapping[str, Any]) -> dict[str, Any]:
     assert_secret_free(config)
     expected = {"schema_version", "source", "schedule", "resources", "processing", "output"}
-    if set(config) != expected or config.get("schema_version") != 1:
-        raise ValueError("project config must use the frozen schema_version 1 structure")
+    version = config.get("schema_version")
+    if set(config) != expected or version not in {1, 2}:
+        raise ValueError("project config must use a frozen schema_version 1 or 2 structure")
     required = {
         "source": {
             "directory",
@@ -259,8 +282,22 @@ def validate_project_config(config: Mapping[str, Any]) -> dict[str, Any]:
             "lookback_days",
         },
         "schedule": {"enabled", "mode", "daily_time", "interval_minutes", "timezone"},
-        "resources": {"asr_ref", "analysis_ref", "arbitration_mode", "arbitration_ref"},
-        "processing": {"review_strategy", "output_profile", "naming_policy"},
+        "resources": (
+            {"asr_ref", "analysis_ref", "arbitration_mode", "arbitration_ref"}
+            if version == 1
+            else {"asr_ref", "analysis_ref", "arbitration_mode", "arbitration_ref", "review_ref"}
+        ),
+        "processing": (
+            {"review_strategy", "output_profile", "naming_policy"}
+            if version == 1
+            else {
+                "review_strategy",
+                "review_policy_version",
+                "material_policy_version",
+                "output_profile",
+                "naming_policy",
+            }
+        ),
         "output": {
             "directory",
             "intermediate_retention",
@@ -270,7 +307,7 @@ def validate_project_config(config: Mapping[str, Any]) -> dict[str, Any]:
     }
     for section, keys in required.items():
         if not isinstance(config.get(section), Mapping) or set(config[section]) != keys:
-            raise ValueError(f"project config section {section!r} does not match schema v1")
+            raise ValueError(f"project config section {section!r} does not match schema v{version}")
     source = config["source"]
     if source["supported_extensions"] != list(PROJECT_VIDEO_EXTENSIONS):
         raise ValueError("supported_extensions must use the current Venus video formats")
@@ -308,7 +345,17 @@ def validate_project_config(config: Mapping[str, Any]) -> dict[str, Any]:
     if not all(isinstance(resources[field], str) and resources[field] for field in ("asr_ref", "analysis_ref")):
         raise ValueError("ASR and analysis resource references are required")
     if resources["arbitration_mode"] != "reuse_analysis" or resources["arbitration_ref"] is not None:
-        raise ValueError("schema v1 arbitration must reuse the analysis resource")
+        raise ValueError("arbitration must reuse the analysis resource")
+    if version == 2:
+        if not isinstance(resources["review_ref"], str) or not resources["review_ref"]:
+            raise ValueError("schema v2 review_ref is required")
+        processing = config["processing"]
+        if processing["review_strategy"] != "ai_auto":
+            raise ValueError("schema v2 review_strategy must be ai_auto")
+        if processing["review_policy_version"] != "auto_review_v1":
+            raise ValueError("invalid review_policy_version")
+        if processing["material_policy_version"] != "publish_material_v1":
+            raise ValueError("invalid material_policy_version")
     if config["output"]["intermediate_retention"] not in {
         "remind_immediately",
         "remind_after_7_days",
