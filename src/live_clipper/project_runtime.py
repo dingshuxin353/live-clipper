@@ -18,6 +18,12 @@ class RuntimeReport:
     recovered_run_ids: tuple[str, ...] = ()
 
 
+class ProjectRuntimeStartError(RuntimeError):
+    def __init__(self, code: str, message: str) -> None:
+        self.code = code
+        super().__init__(message)
+
+
 def run_work_dir(work_dir: str | Path, run: Run) -> Path:
     return Path(work_dir).expanduser().resolve() / "projects" / run.project_id / "runs" / run.run_id
 
@@ -29,11 +35,18 @@ def dispatch_queued(
     processor: Callable[[Run, Path], Any],
     capacity: int = 1,
 ) -> RuntimeReport:
-    processing = sum(run.status == "processing" for run in repository.list_runs())
+    processing = sum(
+        run.status == "processing" and run.current_stage not in {"review", "render"}
+        for run in repository.list_runs()
+    )
     available = max(0, capacity - processing)
     started: list[str] = []
     failed: list[str] = []
-    for run in (item for item in repository.list_runs() if item.status == "queued"):
+    for run in (
+        item
+        for item in repository.list_runs()
+        if item.status == "queued" and item.current_stage not in {"review", "render"}
+    ):
         if len(started) >= available:
             break
         target = run_work_dir(work_dir, run)
@@ -47,16 +60,24 @@ def dispatch_queued(
         )
         try:
             processor_result = processor(run, target)
-        except Exception:  # noqa: BLE001 - one failed start must not block the FIFO.
+        except Exception as exc:  # noqa: BLE001 - one failed start must not block the FIFO.
+            error_code = str(getattr(exc, "code", "processor_start_failed"))
             repository.transition_run(
                 run.run_id,
                 status="failed",
                 stage="read_source",
                 event_type="failed",
-                detail={"reason": "processor_start_failed"},
-                error_code="processor_start_failed",
-                error_summary="处理任务启动失败",
+                detail={"reason": error_code},
+                error_code=error_code,
+                error_summary="处理资源不可用" if error_code.endswith("resource_unavailable") else "处理任务启动失败",
             )
+            if run.parameter_snapshot.get("schema_version") == 2 and error_code in {
+                "asr_resource_unavailable",
+                "ai_resource_unavailable",
+            }:
+                from .project_result_runtime import _functional_issue
+
+                _functional_issue(repository, run, error_code)
             failed.append(run.run_id)
             continue
         repository.append_stage_event(
@@ -107,7 +128,14 @@ def _launch_with_existing_pipeline(settings: Settings, service_dir: Path) -> Cal
     def launch(run: Run, target: Path) -> int:
         from . import service
 
-        service.require_pipeline_configuration(settings)
+        if run.parameter_snapshot.get("schema_version") == 2:
+            asr = run.parameter_snapshot.get("resources", {}).get("asr", {})
+            if asr.get("backend") == "openai" and not settings.asr_api_key:
+                raise ProjectRuntimeStartError("asr_resource_unavailable", "ASR resource is unavailable")
+            if not settings.cheap_model_api_key:
+                raise ProjectRuntimeStartError("ai_resource_unavailable", "analysis resource is unavailable")
+        else:
+            service.require_pipeline_configuration(settings)
         source = Path(run.latest_seen_path)
         if not source.is_file():
             raise FileNotFoundError(source)
@@ -155,12 +183,21 @@ def reconcile_processing(repository: ProjectRepository, *, work_dir: str | Path,
             repository.transition_run(run.run_id, status="completed", stage="render", event_type="completed")
             changed.append(run.run_id)
         elif (target / "codex_brief.json").is_file():
-            repository.transition_run(
-                run.run_id,
-                status="awaiting_review",
-                stage="review",
-                event_type="awaiting_review",
-            )
+            if run.parameter_snapshot.get("schema_version") == 2:
+                if run.current_stage != "review":
+                    repository.transition_run(
+                        run.run_id,
+                        status="processing",
+                        stage="review",
+                        event_type="review_ready",
+                    )
+            else:
+                repository.transition_run(
+                    run.run_id,
+                    status="awaiting_review",
+                    stage="review",
+                    event_type="awaiting_review",
+                )
             changed.append(run.run_id)
         else:
             updated = datetime.fromisoformat(run.updated_at.replace("Z", "+00:00"))
@@ -244,6 +281,15 @@ def tick_project_runtime(settings: Settings, *, service_dir: Path) -> dict[str, 
     with ProjectRepository(service_dir) as repository:
         if repository.get_data_mode() != "projects":
             return {"ok": True, "mode": "legacy"}
+        from .project_service import ProjectManager
+
+        manager = ProjectManager(repository, settings)
+        upgraded_project_ids: list[str] = []
+        for project in repository.list_projects():
+            revision = repository.get_config_revision(project.project_id)
+            if revision is not None and revision.schema_version == 1:
+                manager.ensure_v2_config(project.project_id)
+                upgraded_project_ids.append(project.project_id)
         reconciled = reconcile_processing(
             repository,
             work_dir=settings.paths.work_dir,
@@ -256,6 +302,13 @@ def tick_project_runtime(settings: Settings, *, service_dir: Path) -> dict[str, 
             capacity=1,
         )
         retention_run_ids = ensure_retention_confirmations(repository, settings, service_dir=service_dir)
+        from .project_result_runtime import tick_project_result_workers
+
+        worker_report = tick_project_result_workers(
+            repository,
+            settings,
+            work_dir=settings.paths.work_dir,
+        )
         return {
             "ok": True,
             "mode": "projects",
@@ -263,4 +316,9 @@ def tick_project_runtime(settings: Settings, *, service_dir: Path) -> dict[str, 
             "started_run_ids": list(report.started_run_ids),
             "failed_run_ids": list(report.failed_run_ids),
             "retention_confirmation_run_ids": retention_run_ids,
+            "upgraded_project_ids": upgraded_project_ids,
+            "review_worker_run_ids": list(worker_report.scheduled_review_run_ids),
+            "render_worker_run_ids": list(worker_report.scheduled_render_run_ids),
+            "completed_worker_run_ids": list(worker_report.completed_run_ids),
+            "failed_worker_run_ids": list(worker_report.failed_run_ids),
         }

@@ -113,6 +113,50 @@ def concat_segments(segment_paths: list[Path], concat_list_path: Path, output_pa
     )
 
 
+def render_single_clip(
+    source_video_path: Path,
+    transcript: CorrectedTranscript,
+    clip: SelectedClip,
+    *,
+    work_dir: Path,
+    output_path: Path,
+) -> Path:
+    """Render one validated project output into a caller-owned partial path."""
+    if not source_video_path.is_file():
+        raise FileNotFoundError(source_video_path)
+    work_dir.mkdir(parents=True, exist_ok=True)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if output_path.exists():
+        raise FileExistsError(output_path)
+    subtitle_path = work_dir / "subtitle.srt"
+    write_srt_file(transcript, clip, subtitle_path)
+    segment_paths: list[Path] = []
+    if clip.remove_ranges:
+        parts_dir = work_dir / "parts"
+        if parts_dir.exists():
+            shutil.rmtree(parts_dir)
+        ensure_dir(parts_dir)
+        for index, (start, end) in enumerate(kept_segments_for_clip(clip), start=1):
+            segment_path = parts_dir / f"{index:03d}.mp4"
+            render_segment(source_video_path, start, end, segment_path, reset_timestamps=True)
+            segment_paths.append(segment_path)
+        concat_segments(segment_paths, work_dir / "concat.txt", output_path)
+    else:
+        render_segment(source_video_path, clip.source_start, clip.source_end, output_path)
+    write_json(
+        work_dir / "edit_decision.json",
+        {
+            "clip_id": clip.clip_id,
+            "source_start": clip.source_start,
+            "source_end": clip.source_end,
+            "remove_ranges": clip.remove_ranges,
+            "subtitle_path": subtitle_path.name,
+            "partial_name": output_path.name,
+        },
+    )
+    return output_path
+
+
 def render_selected_clips(selection_path: Path) -> list[Path]:
     run_dir = selection_path.parent
     metadata = read_json(run_dir / "run_metadata.json")

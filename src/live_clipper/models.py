@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -132,4 +133,72 @@ class SelectedClip(BaseModel):
     def validate_time_range(self) -> SelectedClip:
         if self.source_start >= self.source_end:
             raise ValueError("source_start must be before source_end")
+        return self
+
+
+class ReviewMaterial(BaseModel):
+    titles: list[str] = Field(min_length=1, max_length=3)
+    description: str = Field(max_length=2000)
+    tags: list[str] = Field(default_factory=list, max_length=20)
+
+    @field_validator("titles")
+    @classmethod
+    def validate_titles(cls, values: list[str]) -> list[str]:
+        if any(not value.strip() or len(value) > 100 for value in values):
+            raise ValueError("review titles must contain 1 to 100 characters")
+        return [value.strip() for value in values]
+
+    @field_validator("tags")
+    @classmethod
+    def validate_tags(cls, values: list[str]) -> list[str]:
+        if any(not value.strip() or len(value) > 30 for value in values):
+            raise ValueError("review tags must contain 1 to 30 characters")
+        return [value.strip() for value in values]
+
+
+class ReviewDecision(BaseModel):
+    candidate_id: str
+    decision: Literal["selected", "rejected"]
+    rank: int = Field(ge=1)
+    reason: str = Field(min_length=1, max_length=1000)
+    rejection_reason_code: str | None = None
+    selected_clip: SelectedClip | None = None
+    material: ReviewMaterial | None = None
+
+    @field_validator("candidate_id")
+    @classmethod
+    def validate_candidate_id(cls, value: str) -> str:
+        return validate_safe_id(value, "candidate_id")
+
+    @model_validator(mode="after")
+    def validate_decision_shape(self) -> ReviewDecision:
+        if self.decision == "selected":
+            if self.selected_clip is None or self.material is None:
+                raise ValueError("selected decisions require selected_clip and material")
+            if self.selected_clip.clip_id != self.candidate_id:
+                raise ValueError("selected clip must reference the candidate_id")
+            if self.rejection_reason_code is not None:
+                raise ValueError("selected decisions cannot contain rejection_reason_code")
+        else:
+            if self.selected_clip is not None or self.material is not None:
+                raise ValueError("rejected decisions cannot contain selected_clip or material")
+            if not self.rejection_reason_code:
+                raise ValueError("rejected decisions require rejection_reason_code")
+        return self
+
+
+class ProjectReviewResult(BaseModel):
+    format_version: Literal[1]
+    overall_summary: str = Field(max_length=2000)
+    warnings: list[dict[str, object]] = Field(default_factory=list, max_length=50)
+    decisions: list[ReviewDecision]
+
+    @model_validator(mode="after")
+    def validate_unique_decisions(self) -> ProjectReviewResult:
+        candidate_ids = [item.candidate_id for item in self.decisions]
+        ranks = [item.rank for item in self.decisions]
+        if len(set(candidate_ids)) != len(candidate_ids):
+            raise ValueError("review decisions contain duplicate candidate_id")
+        if len(set(ranks)) != len(ranks):
+            raise ValueError("review decisions contain duplicate rank")
         return self

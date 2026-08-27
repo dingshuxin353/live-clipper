@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit
 
 from .config import Settings
 from .project_domain import assert_secret_free
@@ -56,14 +57,18 @@ def resolve_parameter_snapshot(config: dict[str, Any], settings: Settings) -> di
     refs = config["resources"]
     available = resource_map(settings)
     required = [str(refs["asr_ref"]), str(refs["analysis_ref"])]
+    if config.get("schema_version") == 2:
+        required.append(str(refs["review_ref"]))
     if refs.get("arbitration_mode") != "reuse_analysis" and refs.get("arbitration_ref"):
         required.append(str(refs["arbitration_ref"]))
     for resource_id in required:
         resource = available.get(resource_id)
         if resource is None or not resource.ready:
             raise ResourceUnavailableError(resource_id)
+    endpoint = urlsplit(str(settings.cheap_model_api_base or ""))
+    endpoint_summary = f"{endpoint.scheme}://{endpoint.netloc}" if endpoint.scheme and endpoint.netloc else None
     snapshot = {
-        "schema_version": 1,
+        "schema_version": int(config["schema_version"]),
         "resources": {
             "asr_ref": refs["asr_ref"],
             "analysis_ref": refs["analysis_ref"],
@@ -82,5 +87,17 @@ def resolve_parameter_snapshot(config: dict[str, Any], settings: Settings) -> di
         "processing": dict(config["processing"]),
         "output": dict(config["output"]),
     }
+    if config["schema_version"] == 2:
+        snapshot["resources"]["review_ref"] = refs["review_ref"]
+        snapshot["resources"]["review"] = {
+            "provider": settings.llm.provider_label if settings.llm else "OpenAI-compatible LLM",
+            "model": settings.review_automation.model.model or settings.cheap_model_name,
+            "endpoint": endpoint_summary,
+        }
+        snapshot["retry_policy"] = {
+            "version": "project_runtime_retry_v1",
+            "ai": {"max_retries": 2, "delays_seconds": [30, 120]},
+            "render": {"max_retries": 1, "delays_seconds": [30]},
+        }
     assert_secret_free(snapshot)
     return snapshot

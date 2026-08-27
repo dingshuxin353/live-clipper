@@ -16,6 +16,8 @@ from typing import Any
 from .cheap_model_client import CheapModelClient
 from .codex_selection import validate_selected_clips_file
 from .config import Settings
+from .models import ProjectReviewResult
+from .prompt_loader import load_prompt
 from .utils import ensure_dir, read_json, write_json
 
 Runner = Callable[..., dict[str, Any]]
@@ -163,6 +165,70 @@ def extract_selection_json(content: str) -> list[dict[str, Any]]:
         if isinstance(parsed, list):
             return [item for item in parsed if isinstance(item, dict)]
     raise ValueError("AI 输出中没有找到 JSON 数组。")
+
+
+def extract_review_result_json(content: str) -> dict[str, Any]:
+    text = _strip_json_fence(content)
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(text):
+        if char != "{":
+            continue
+        try:
+            parsed, _end = decoder.raw_decode(text[index:])
+        except JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    raise ValueError("AI 输出中没有找到 review_result JSON 对象。")
+
+
+def run_structured_review_adapter(
+    settings: Settings,
+    payload: dict[str, Any],
+    *,
+    local_runner: Runner | None = None,
+    client_factory: ClientFactory | None = None,
+) -> dict[str, Any]:
+    """Invoke the configured model without granting it any project file access."""
+    prompt = load_prompt(
+        "project_auto_review.md",
+        "Return one versioned review_result JSON object and no hidden reasoning.",
+        prompt_dir=settings.prompts.directory,
+    )
+    if settings.review_automation.mode == "model":
+        if not settings.cheap_model_api_key or not settings.cheap_model_name:
+            raise ReviewAutomationError("ai_resource_unavailable", "项目审阅资源尚未就绪。")
+        factory = client_factory or _cheap_model_client
+        client = factory(
+            _settings_for_review_model(settings),
+            timeout=settings.review_automation.timeout_minutes * 60,
+            request_attempts=1,
+        )
+        result = client.complete_json(
+            prompt,
+            payload,
+            max_tokens=settings.review_automation.model.max_tokens,
+            temperature=settings.review_automation.model.temperature,
+        )
+    else:
+        if settings.review_automation.local_agent.allow_agent_file_writes:
+            raise ReviewAutomationError("agent_file_writes_disabled", "项目审阅不允许 Agent 直接写文件。")
+        runner = local_runner or _default_local_runner
+        provider = settings.review_automation.local_agent.provider
+        command_name = "codex" if provider == "codex_cli" else "claude"
+        if local_runner is None and shutil.which(command_name) is None:
+            raise ReviewAutomationError("ai_resource_unavailable", "项目审阅命令资源尚未就绪。")
+        with tempfile.TemporaryDirectory(prefix="live-clipper-project-review-") as isolated_dir:
+            response = runner(
+                f"{prompt}\n\n{json.dumps(payload, ensure_ascii=False)}",
+                provider=provider,
+                cwd=Path(isolated_dir),
+                timeout_seconds=settings.review_automation.local_agent.command_timeout_minutes * 60,
+            )
+        if not response.get("ok"):
+            raise RuntimeError("项目 AI 审阅执行失败")
+        result = extract_review_result_json(str(response.get("stdout") or ""))
+    return ProjectReviewResult.model_validate(result).model_dump(mode="json")
 
 
 def run_ai_review_for_run(
