@@ -20,7 +20,7 @@ from .config import Settings
 from .media_probe import MediaMetadata, probe_media
 from .models import ClipCandidate, CorrectedTranscript, ProjectReviewResult, ReviewDecision, SelectedClip
 from .project_domain import Run, new_id, stable_json
-from .project_result_domain import AIReviewSession, sanitize_persisted_text
+from .project_result_domain import AIReviewSession, RunOutput, sanitize_persisted_text
 from .project_service import output_directory_is_writable
 from .project_storage import ProjectRepository
 from .utils import read_json
@@ -197,6 +197,77 @@ def _atomic_write_json(path: Path, value: Any) -> None:
         handle.flush()
         os.fsync(handle.fileno())
     temp.replace(path)
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _output_integrity_path(run_dir: Path, output_id: str) -> Path:
+    return run_dir / "outputs" / output_id / "media_integrity.json"
+
+
+def _registered_media_metadata(output: RunOutput) -> dict[str, int | str] | None:
+    values = {
+        "duration_ms": output.duration_ms,
+        "width": output.width,
+        "height": output.height,
+        "container": output.container,
+        "video_codec": output.video_codec,
+        "byte_size": output.byte_size,
+    }
+    if any(value is None for value in values.values()):
+        return None
+    return {
+        "duration_ms": int(output.duration_ms),
+        "width": int(output.width),
+        "height": int(output.height),
+        "container": str(output.container),
+        "video_codec": str(output.video_codec),
+        "byte_size": int(output.byte_size),
+    }
+
+
+def _write_output_integrity(run_dir: Path, output_id: str, path: Path, metadata: MediaMetadata) -> None:
+    _atomic_write_json(
+        _output_integrity_path(run_dir, output_id),
+        {
+            "format_version": 1,
+            "output_id": output_id,
+            "sha256": _sha256_file(path),
+            "media_metadata": metadata.as_storage_dict(),
+        },
+    )
+
+
+def _ready_output_is_verified(
+    output: RunOutput,
+    final_path: Path,
+    run_dir: Path,
+    probe: MediaProbe,
+) -> bool:
+    registered = _registered_media_metadata(output)
+    if registered is None:
+        return False
+    metadata = probe(final_path)
+    if metadata.as_storage_dict() != registered:
+        return False
+    evidence = read_json(_output_integrity_path(run_dir, output.output_id))
+    if not isinstance(evidence, dict):
+        return False
+    expected_hash = evidence.get("sha256")
+    return bool(
+        evidence.get("format_version") == 1
+        and evidence.get("output_id") == output.output_id
+        and evidence.get("media_metadata") == registered
+        and isinstance(expected_hash, str)
+        and re.fullmatch(r"[0-9a-f]{64}", expected_hash)
+        and _sha256_file(final_path) == expected_hash
+    )
 
 
 def _functional_issue(
@@ -784,7 +855,19 @@ def render_project_outputs(
         partial = output_dir / f".venus-{output.output_id}.partial.mp4"
         if output.status == "ready":
             if final_path.is_file():
-                reused.append(output.output_id)
+                try:
+                    if _ready_output_is_verified(output, final_path, target, probe):
+                        reused.append(output.output_id)
+                        continue
+                except Exception:  # noqa: BLE001 - any unverifiable ready file must be blocked.
+                    pass
+                repository.update_output_and_reproject_result(
+                    output.output_id,
+                    status="unreadable",
+                    error_code="output_unreadable",
+                    error_summary="已登记成片文件完整性校验失败",
+                )
+                failed.append(output.output_id)
                 continue
             repository.update_output_and_reproject_result(
                 output.output_id,
@@ -799,6 +882,7 @@ def render_project_outputs(
                 metadata = probe(partial)
                 os.link(partial, final_path)
                 partial.unlink()
+                _write_output_integrity(target, output.output_id, final_path, metadata)
                 repository.update_output_and_reproject_result(
                     output.output_id,
                     status="ready",
@@ -812,6 +896,7 @@ def render_project_outputs(
         if output.status == "rendering" and final_path.is_file():
             try:
                 metadata = probe(final_path)
+                _write_output_integrity(target, output.output_id, final_path, metadata)
                 repository.update_output_and_reproject_result(
                     output.output_id,
                     status="ready",
@@ -845,6 +930,7 @@ def render_project_outputs(
             except FileExistsError as exc:
                 raise ProjectRenderError("render_failed", "target output appeared during rendering") from exc
             partial.unlink()
+            _write_output_integrity(target, output.output_id, final_path, metadata)
             repository.update_output_and_reproject_result(
                 output.output_id,
                 status="ready",
