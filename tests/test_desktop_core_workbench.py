@@ -47,6 +47,15 @@ def test_shutdown_and_activate_share_runtime_guards_and_badge_refresh():
     assert 'proc.kill("SIGKILL")' in main
 
 
+def test_dock_badge_uses_only_unseen_results_and_keeps_failed_refreshes_stable():
+    runtime = (ROOT / "desktop" / "runtime-state.js").read_text(encoding="utf-8")
+
+    assert "studio.unseen_result_count" in runtime
+    assert "pending_review_count" not in runtime
+    assert "dock.setBadge(formatBadgeCount(count))" in runtime
+    assert "catch (_error)" in runtime
+
+
 def test_electron_titlebar_keeps_traffic_lights_clear_of_workbench_navigation():
     styles = (ROOT / "frontend" / "src" / "styles.css").read_text(encoding="utf-8")
 
