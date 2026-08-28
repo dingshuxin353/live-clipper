@@ -8,7 +8,7 @@ const {
   formatBadgeCount,
 } = require("../runtime-state");
 
-test("formats only positive pending review counts for the Dock", () => {
+test("formats only positive unseen result counts for the Dock", () => {
   assert.equal(formatBadgeCount(0), "");
   assert.equal(formatBadgeCount(-1), "");
   assert.equal(formatBadgeCount(3), "3");
@@ -20,7 +20,7 @@ test("badge polling refreshes immediately, keeps the previous value on failure, 
   const badgeValues = [];
   let intervalCallback = null;
   let cleared = null;
-  let response = { pending_review_count: 2 };
+  let response = { unseen_result_count: 2 };
   const poller = createBadgePoller({
     client: { getStudio: async () => { if (response instanceof Error) throw response; return response; } },
     dock: { setBadge: (value) => badgeValues.push(value) },
@@ -34,10 +34,16 @@ test("badge polling refreshes immediately, keeps the previous value on failure, 
   response = new Error("offline");
   await poller.refresh();
   assert.deepEqual(badgeValues, ["2"]);
-  response = { pending_review_count: 0 };
+  response = { unseen_result_count: null };
+  await poller.refresh();
+  assert.deepEqual(badgeValues, ["2"]);
+  response = { unseen_result_count: "0" };
+  await poller.refresh();
+  assert.deepEqual(badgeValues, ["2"]);
+  response = { unseen_result_count: 0 };
   await poller.activate();
   assert.deepEqual(badgeValues, ["2", ""]);
-  response = { pending_review_count: 7 };
+  response = { unseen_result_count: 7 };
   await intervalCallback();
   assert.deepEqual(badgeValues, ["2", "", "7"]);
   poller.stop();
@@ -47,7 +53,7 @@ test("badge polling refreshes immediately, keeps the previous value on failure, 
 test("badge polling is a silent no-op away from macOS Dock", async () => {
   let requested = false;
   const poller = createBadgePoller({
-    client: { getStudio: async () => { requested = true; return { pending_review_count: 4 }; } },
+    client: { getStudio: async () => { requested = true; return { unseen_result_count: 4 }; } },
     dock: null,
     platform: "linux",
   });
@@ -59,7 +65,7 @@ test("badge polling is a silent no-op away from macOS Dock", async () => {
 test("starting badge polling twice keeps only one interval", async () => {
   let schedules = 0;
   const poller = createBadgePoller({
-    client: { getStudio: async () => ({ pending_review_count: 1 }) },
+    client: { getStudio: async () => ({ unseen_result_count: 1 }) },
     dock: { setBadge: () => undefined },
     platform: "darwin",
     setIntervalFn: () => { schedules += 1; return 9; },

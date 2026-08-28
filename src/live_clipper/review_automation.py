@@ -182,6 +182,22 @@ def extract_review_result_json(content: str) -> dict[str, Any]:
     raise ValueError("AI 输出中没有找到 review_result JSON 对象。")
 
 
+def _project_review_prompt(settings: Settings) -> str:
+    instructions = load_prompt(
+        "project_auto_review.md",
+        "Return one versioned review_result JSON object and no hidden reasoning.",
+        prompt_dir=settings.prompts.directory,
+    ).rstrip()
+    schema = json.dumps(ProjectReviewResult.model_json_schema(), ensure_ascii=False, separators=(",", ":"))
+    return (
+        f"{instructions}\n\n"
+        "下面的 JSON Schema 与服务端最终校验模型同源，必须完整遵守；不要复述或改写 schema。\n"
+        "<review_result_json_schema>\n"
+        f"{schema}\n"
+        "</review_result_json_schema>\n"
+    )
+
+
 def run_structured_review_adapter(
     settings: Settings,
     payload: dict[str, Any],
@@ -190,11 +206,7 @@ def run_structured_review_adapter(
     client_factory: ClientFactory | None = None,
 ) -> dict[str, Any]:
     """Invoke the configured model without granting it any project file access."""
-    prompt = load_prompt(
-        "project_auto_review.md",
-        "Return one versioned review_result JSON object and no hidden reasoning.",
-        prompt_dir=settings.prompts.directory,
-    )
+    prompt = _project_review_prompt(settings)
     if settings.review_automation.mode == "model":
         if not settings.cheap_model_api_key or not settings.cheap_model_name:
             raise ReviewAutomationError("ai_resource_unavailable", "项目审阅资源尚未就绪。")

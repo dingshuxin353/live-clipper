@@ -56,6 +56,17 @@ class BackendClient {
     return this.request("/api/studio");
   }
 
+  resolveOutputPath(outputId) {
+    return this.request(`/api/desktop/outputs/${encodeURIComponent(outputId)}/path`);
+  }
+
+  registerFileSelection(issueId, kind, selectedPath) {
+    return this.request("/api/desktop/file-selections", {
+      method: "POST",
+      body: { issue_id: issueId, kind, selected_path: selectedPath },
+    });
+  }
+
   stopService(timeoutMs = 3000) {
     return this.request("/api/service/stop", { method: "POST", body: {}, timeoutMs });
   }

@@ -27,6 +27,7 @@ from .project_storage import ProjectRepository
 _ACTIVE_ISSUE_STATUSES = {"retrying", "action_required", "checking", "ready_to_recover", "recovering"}
 _RESULT_LIST_TYPES = {"clips_ready", "no_clip", "partial"}
 _CONTROL_CHARACTER = re.compile(r"[\x00-\x1f\x7f]")
+_MEDIA_TYPES_BY_CONTAINER = {"mp4": "video/mp4"}
 
 
 class ResultAPIError(RuntimeError):
@@ -95,6 +96,14 @@ def _integer(value: Any, field: str) -> int:
 
 def _request_hash(payload: Mapping[str, Any]) -> str:
     return hashlib.sha256(stable_json(dict(payload)).encode("utf-8")).hexdigest()
+
+
+def _media_content_type(container: str | None) -> str:
+    identifiers = {part.strip().lower() for part in str(container or "").split(",") if part.strip()}
+    for identifier, content_type in _MEDIA_TYPES_BY_CONTAINER.items():
+        if identifier in identifiers:
+            return content_type
+    return "application/octet-stream"
 
 
 class ProjectResultAPI:
@@ -493,7 +502,7 @@ class ProjectResultAPI:
             status = 206
         length = max(end - start + 1, 0)
         headers = {
-            "Content-Type": "video/mp4" if str(output.container).lower() == "mp4" else "application/octet-stream",
+            "Content-Type": _media_content_type(output.container),
             "Accept-Ranges": "bytes",
             "Content-Length": str(length),
         }

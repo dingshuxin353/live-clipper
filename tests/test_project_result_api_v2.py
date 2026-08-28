@@ -11,7 +11,7 @@ from live_clipper.project_result_api import ProjectResultAPI
 from live_clipper.project_service import ProjectManager, open_project_repository
 
 
-def result_api_fixture(tmp_path: Path):
+def result_api_fixture(tmp_path: Path, *, output_container: str = "mp4"):
     source_dir = tmp_path / "source"
     output_dir = tmp_path / "output"
     work_dir = tmp_path / "work"
@@ -97,7 +97,7 @@ def result_api_fixture(tmp_path: Path):
             "duration_ms": 3000,
             "width": 1920,
             "height": 1080,
-            "container": "mp4",
+            "container": output_container,
             "video_codec": "h264",
             "byte_size": len(media),
         },
@@ -113,7 +113,7 @@ def result_api_fixture(tmp_path: Path):
             "duration_ms": 3000,
             "width": 1920,
             "height": 1080,
-            "container": "mp4",
+            "container": output_container,
             "video_codec": "h264",
             "byte_size": len(media),
         },

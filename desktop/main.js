@@ -4,7 +4,15 @@ const https = require("https");
 const net = require("net");
 const path = require("path");
 const { BackendClient, redactText } = require("./backend-client");
-const { appUrl, createBadgePoller, createRuntimeState, isInternalAppUrl } = require("./runtime-state");
+const {
+  appUrl,
+  createBadgePoller,
+  createFileSelections,
+  createOutputActions,
+  createRuntimeState,
+  isInternalAppUrl,
+  writeClipboardText,
+} = require("./runtime-state");
 
 let mainWindow = null;
 let tray = null;
@@ -12,6 +20,8 @@ let backendProcess = null;
 let backendPort = null;
 let backendClient = null;
 let badgePoller = null;
+let outputActions = null;
+let fileSelections = null;
 let exitingNow = false;
 const runtime = createRuntimeState();
 const backendToken = require("crypto").randomBytes(16).toString("hex");
@@ -68,7 +78,18 @@ function startBackend(port) {
   return true;
 }
 
-ipcMain.handle("lc:select-folder", async (_event, title) => {
+function assertTrustedRenderer(event) {
+  if (
+    !mainWindow
+    || event.sender !== mainWindow.webContents
+    || !isInternalAppUrl(event.senderFrame?.url, backendPort)
+  ) {
+    throw new Error("桌面操作来源无效");
+  }
+}
+
+ipcMain.handle("lc:select-folder", async (event, title) => {
+  assertTrustedRenderer(event);
   const options = {
     title: typeof title === "string" && title ? title : "选择文件夹",
     properties: ["openDirectory", "createDirectory"],
@@ -77,7 +98,34 @@ ipcMain.handle("lc:select-folder", async (_event, title) => {
   return result.canceled ? null : result.filePaths[0];
 });
 
-ipcMain.handle("lc:read-clipboard-text", () => clipboard.readText());
+ipcMain.handle("lc:read-clipboard-text", (event) => {
+  assertTrustedRenderer(event);
+  return clipboard.readText();
+});
+ipcMain.handle("lc:write-clipboard-text", (event, value) => {
+  assertTrustedRenderer(event);
+  return writeClipboardText(clipboard, runtime, value);
+});
+ipcMain.handle("lc:open-output", (event, outputId) => {
+  assertTrustedRenderer(event);
+  if (!outputActions) throw new Error("后台服务尚未就绪");
+  return outputActions.openOutput(outputId);
+});
+ipcMain.handle("lc:reveal-output", (event, outputId) => {
+  assertTrustedRenderer(event);
+  if (!outputActions) throw new Error("后台服务尚未就绪");
+  return outputActions.revealOutput(outputId);
+});
+ipcMain.handle("lc:select-issue-source", (event, issueId) => {
+  assertTrustedRenderer(event);
+  if (!fileSelections) throw new Error("后台服务尚未就绪");
+  return fileSelections.selectIssueSource(issueId);
+});
+ipcMain.handle("lc:select-recovery-output", (event, issueId) => {
+  assertTrustedRenderer(event);
+  if (!fileSelections) throw new Error("后台服务尚未就绪");
+  return fileSelections.selectRecoveryOutput(issueId);
+});
 
 function createApplicationMenu() {
   const template = [];
@@ -306,6 +354,8 @@ async function shutdownBackend() {
   }
   if (!backendProcess) {
     backendClient = null;
+    outputActions = null;
+    fileSelections = null;
     return;
   }
   const proc = backendProcess;
@@ -326,6 +376,8 @@ async function shutdownBackend() {
     });
   });
   backendClient = null;
+  outputActions = null;
+  fileSelections = null;
 }
 
 async function prepareForQuit() {
@@ -349,6 +401,13 @@ if (!app.requestSingleInstanceLock()) {
     try {
       backendPort = await findFreePort();
       backendClient = new BackendClient({ port: backendPort, token: backendToken });
+      outputActions = createOutputActions({ client: backendClient, shell, runtime });
+      fileSelections = createFileSelections({
+        client: backendClient,
+        dialog,
+        runtime,
+        getWindow: () => mainWindow,
+      });
       startBackend(backendPort);
       await backendClient.waitUntilReady({ isAlive: () => Boolean(backendProcess) });
       await session.defaultSession.cookies.set({

@@ -217,6 +217,41 @@ def test_invalid_or_empty_model_response_is_an_issue_not_no_clip(tmp_path, adapt
     assert not (run_dir / "review_result.json").exists()
 
 
+@pytest.mark.parametrize(
+    "adapter_result",
+    [
+        {
+            "format_version": 1,
+            "warnings": [],
+            "decisions": [_rejected("candidate-1")],
+        },
+        {
+            "format_version": 1,
+            "overall_summary": "没有可发布片段",
+            "warnings": [],
+            "decisions": [{key: value for key, value in _rejected("candidate-1").items() if key != "rank"}],
+        },
+        {
+            "format_version": 1,
+            "overall_summary": "没有可发布片段",
+            "warnings": [],
+            "decisions": [{key: value for key, value in _rejected("candidate-1").items() if key != "reason"}],
+        },
+    ],
+    ids=["missing-overall-summary", "missing-rank", "missing-reason"],
+)
+def test_model_contract_fields_are_not_invented_when_missing(tmp_path, adapter_result):
+    repository, project, run, run_dir, _output = _project_run(tmp_path, candidates=[_candidate("candidate-1")])
+
+    with pytest.raises(ProjectReviewError, match="does not match review_result"):
+        run_project_review(repository, run.run_id, run_dir=run_dir, adapter=lambda _payload: adapter_result)
+
+    assert repository.get_run_result(run.run_id) is None
+    assert repository.get_run(run.run_id).status == "failed"
+    issues = repository.list_issues(project_id=project.project_id, run_id=run.run_id, active_only=True)
+    assert [item.issue_code for item in issues] == ["ai_review_invalid"]
+
+
 def test_model_must_cover_every_candidate_it_received(tmp_path):
     repository, _project, run, run_dir, _output = _project_run(
         tmp_path,
