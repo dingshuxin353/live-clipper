@@ -336,7 +336,18 @@ def test_structured_project_adapter_uses_one_request_and_versioned_object():
 
     class FakeClient:
         def complete_json(self, system_prompt, payload, **_kwargs):
-            assert "format_version" in system_prompt
+            schema_text = system_prompt.split("<review_result_json_schema>\n", 1)[1].split(
+                "\n</review_result_json_schema>",
+                1,
+            )[0]
+            schema = json.loads(schema_text)
+            assert schema["required"] == ["format_version", "overall_summary", "decisions"]
+            assert schema["$defs"]["ReviewDecision"]["required"] == [
+                "candidate_id",
+                "decision",
+                "rank",
+                "reason",
+            ]
             assert payload["candidates"][0]["candidate_id"] == "one"
             return {
                 "format_version": 1,
@@ -368,3 +379,33 @@ def test_structured_project_adapter_uses_one_request_and_versioned_object():
 
     assert result["format_version"] == 1
     assert result["decisions"][0]["decision"] == "rejected"
+
+
+def test_structured_project_adapter_contract_covers_empty_candidates():
+    settings = Settings(
+        cheap_model_api_key="fake-key",
+        review_automation=ReviewAutomationConfig(
+            mode="model",
+            model=ReviewAutomationModelConfig(model="review-model"),
+        ),
+    )
+
+    class FakeClient:
+        def complete_json(self, system_prompt, payload, **_kwargs):
+            assert "没有候选时返回空数组" in system_prompt
+            assert payload["candidates"] == []
+            return {
+                "format_version": 1,
+                "overall_summary": "没有形成候选片段",
+                "warnings": [],
+                "decisions": [],
+            }
+
+    result = run_structured_review_adapter(
+        settings,
+        {"candidates": []},
+        client_factory=lambda *_args, **_kwargs: FakeClient(),
+    )
+
+    assert result["overall_summary"] == "没有形成候选片段"
+    assert result["decisions"] == []
