@@ -593,7 +593,10 @@ def test_http_recent_project_creation_completes_initial_scan(tmp_path, monkeypat
 
 
 def test_http_output_media_range_head_auth_and_416(tmp_path):
-    repository, _api, _project, _run, _path, media = result_api_fixture(tmp_path)
+    repository, _api, _project, _run, _path, media = result_api_fixture(
+        tmp_path,
+        output_container="mov,mp4,m4a,3gp,3g2,mj2",
+    )
     repository.close()
     config_path = tmp_path / "live-clipper.toml"
     config_path.write_text(
@@ -612,10 +615,12 @@ def test_http_output_media_range_head_auth_and_416(tmp_path):
     try:
         ranged = urlopen(Request(url, headers={"Authorization": "Bearer test-token", "Range": "bytes=2-5"}), timeout=5)
         assert ranged.status == 206 and ranged.read() == media[2:6]
+        assert ranged.headers["Content-Type"] == "video/mp4"
         assert ranged.headers["Content-Range"] == f"bytes 2-5/{len(media)}"
 
         head = urlopen(Request(url, headers={"Authorization": "Bearer test-token"}, method="HEAD"), timeout=5)
         assert head.status == 200 and head.read() == b"" and int(head.headers["Content-Length"]) == len(media)
+        assert head.headers["Content-Type"] == "video/mp4"
 
         with pytest.raises(HTTPError) as invalid:
             urlopen(Request(url, headers={"Authorization": "Bearer test-token", "Range": "bytes=99-100"}), timeout=5)
