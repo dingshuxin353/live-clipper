@@ -25,12 +25,10 @@ def test_empty_directory_enters_projects_mode_but_legacy_metadata_does_not(tmp_p
     legacy = tmp_path / "legacy"
     legacy.mkdir()
     (legacy / "runs.json").write_text(json.dumps({"runs": []}), encoding="utf-8")
-    legacy_repo = open_project_repository(legacy)
-    assert legacy_repo.get_data_mode() == "legacy"
-    manager = ProjectManager(legacy_repo, Settings())
     with pytest.raises(ProjectError) as error:
-        manager.create_project(name="blocked", config=_ready_config(tmp_path), activation_state="inactive")
+        open_project_repository(legacy)
     assert error.value.code == "migration_required"
+    assert not (legacy / "venus.sqlite3").exists()
 
 
 def test_validation_and_project_lifecycle(tmp_path):
