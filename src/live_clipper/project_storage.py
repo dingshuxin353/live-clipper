@@ -7,6 +7,13 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from .first_run_state import (
+    FIRST_RUN_SESSION_ID,
+    FirstRunSession,
+    FirstRunStateError,
+    merge_first_run_draft,
+    normalize_first_run_draft,
+)
 from .project_domain import (
     NormalRunCreationResult,
     Project,
@@ -42,7 +49,7 @@ from .project_result_domain import (
     validate_titles,
 )
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def database_path(service_dir: str | Path) -> Path:
@@ -494,6 +501,43 @@ SELECT migration_fault('before_version_record');
 """
 
 
+SCHEMA_V3 = """
+SELECT migration_fault('before_first_run_table');
+CREATE TABLE first_run_sessions (
+    session_id TEXT PRIMARY KEY CHECK (session_id = 'primary'),
+    state TEXT NOT NULL CHECK (state IN ('in_progress', 'paused', 'activation_pending', 'completed')),
+    current_step TEXT NOT NULL CHECK (current_step IN ('welcome', 'asr', 'ai', 'project', 'complete')),
+    revision INTEGER NOT NULL CHECK (revision >= 1),
+    draft_json TEXT NOT NULL,
+    project_request_id TEXT,
+    project_request_hash TEXT,
+    first_project_id TEXT,
+    failure_code TEXT,
+    failure_summary TEXT,
+    started_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    paused_at TEXT,
+    completed_at TEXT,
+    CHECK ((project_request_id IS NULL) = (project_request_hash IS NULL)),
+    CHECK (project_request_hash IS NULL OR (
+      length(project_request_hash) = 64 AND project_request_hash NOT GLOB '*[^0-9a-f]*'
+    )),
+    CHECK (state <> 'paused' OR paused_at IS NOT NULL),
+    CHECK (state = 'paused' OR paused_at IS NULL),
+    CHECK (state <> 'activation_pending' OR (
+      project_request_id IS NOT NULL AND first_project_id IS NOT NULL AND current_step = 'complete'
+    )),
+    CHECK (state <> 'completed' OR (
+      project_request_id IS NOT NULL AND first_project_id IS NOT NULL
+      AND current_step = 'complete' AND completed_at IS NOT NULL
+    )),
+    CHECK (state = 'completed' OR completed_at IS NULL)
+);
+CREATE INDEX first_run_sessions_state ON first_run_sessions(state, updated_at);
+SELECT migration_fault('after_first_run_table');
+"""
+
+
 def connect_database(service_dir: str | Path) -> sqlite3.Connection:
     path = database_path(service_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -519,12 +563,14 @@ def initialize_schema(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'"
     ).fetchone()
     versions = (
-        [int(row[0]) for row in connection.execute("SELECT version FROM schema_migrations")]
+        sorted(int(row[0]) for row in connection.execute("SELECT version FROM schema_migrations"))
         if table_exists
         else []
     )
     if any(version > SCHEMA_VERSION for version in versions):
         raise RuntimeError("database schema is newer than this application")
+    if versions and versions != list(range(1, max(versions) + 1)):
+        raise RuntimeError("database schema history is incomplete")
     if SCHEMA_VERSION in versions:
         return
 
@@ -535,20 +581,36 @@ def initialize_schema(
 
     connection.create_function("migration_fault", 1, inject)
     connection.execute("PRAGMA foreign_keys = OFF")
-    try:
-        connection.executescript(
-            f"""BEGIN IMMEDIATE;
-{SCHEMA_V1}
-INSERT OR IGNORE INTO schema_migrations(version, name, applied_at)
-VALUES (1, 'project foundation v1', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
-INSERT OR IGNORE INTO system_state(key, value, updated_at)
-VALUES ('data_mode', 'legacy', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
-{SCHEMA_V2}
-INSERT INTO schema_migrations(version, name, applied_at)
-VALUES (2, 'result and issue foundation v2', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
-COMMIT;
-"""
+    statements = ["BEGIN IMMEDIATE;"]
+    if 1 not in versions:
+        statements.extend(
+            [
+                SCHEMA_V1,
+                """INSERT INTO schema_migrations(version, name, applied_at)
+VALUES (1, 'project foundation v1', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));""",
+                """INSERT INTO system_state(key, value, updated_at)
+VALUES ('data_mode', 'legacy', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));""",
+            ]
         )
+    if 2 not in versions:
+        statements.extend(
+            [
+                SCHEMA_V2,
+                """INSERT INTO schema_migrations(version, name, applied_at)
+VALUES (2, 'result and issue foundation v2', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));""",
+            ]
+        )
+    statements.extend(
+        [
+            SCHEMA_V3,
+            """INSERT INTO schema_migrations(version, name, applied_at)
+VALUES (3, 'first-run state foundation v3', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));""",
+            "SELECT migration_fault('after_first_run_version');",
+            "COMMIT;",
+        ]
+    )
+    try:
+        connection.executescript("\n".join(statements))
     except BaseException:
         connection.rollback()
         raise
@@ -592,6 +654,29 @@ def _integer(value: Any, *, field: str, minimum: int = 0) -> int:
     return value
 
 
+def _first_run_session(row: Mapping[str, Any]) -> FirstRunSession:
+    draft = parse_json(str(row["draft_json"]))
+    if not isinstance(draft, Mapping):
+        raise RuntimeError("first-run draft is not an object")
+    normalized_draft = normalize_first_run_draft(draft)
+    return FirstRunSession(
+        session_id=str(row["session_id"]),
+        state=str(row["state"]),
+        current_step=str(row["current_step"]),
+        revision=int(row["revision"]),
+        draft=normalized_draft,
+        project_request_id=str(row["project_request_id"]) if row["project_request_id"] is not None else None,
+        project_request_hash=str(row["project_request_hash"]) if row["project_request_hash"] is not None else None,
+        first_project_id=str(row["first_project_id"]) if row["first_project_id"] is not None else None,
+        failure_code=str(row["failure_code"]) if row["failure_code"] is not None else None,
+        failure_summary=str(row["failure_summary"]) if row["failure_summary"] is not None else None,
+        started_at=str(row["started_at"]),
+        updated_at=str(row["updated_at"]),
+        paused_at=str(row["paused_at"]) if row["paused_at"] is not None else None,
+        completed_at=str(row["completed_at"]) if row["completed_at"] is not None else None,
+    )
+
+
 class ProjectRepository:
     def __init__(self, service_dir: str | Path, *, connection: sqlite3.Connection | None = None) -> None:
         self.service_dir = Path(service_dir).expanduser().resolve()
@@ -633,6 +718,280 @@ class ProjectRepository:
                 "UPDATE system_state SET value = ?, updated_at = ? WHERE key = 'data_mode'",
                 (mode, normalize_utc(occurred_at)),
             )
+
+    def get_first_run_session(self) -> FirstRunSession | None:
+        row = _one(
+            self.connection.execute(
+                "SELECT * FROM first_run_sessions WHERE session_id = ?", (FIRST_RUN_SESSION_ID,)
+            )
+        )
+        return _first_run_session(row) if row else None
+
+    def begin_first_run_session(self, *, started_at: str | None = None) -> FirstRunSession:
+        timestamp = normalize_utc(started_at)
+        with self.transaction():
+            current = self.get_first_run_session()
+            if current is None:
+                if self.get_data_mode() != "projects":
+                    raise FirstRunStateError("first-run session requires projects data mode")
+                if self.connection.execute("SELECT 1 FROM projects LIMIT 1").fetchone() is not None:
+                    raise FirstRunStateError("first-run session cannot start after a project exists")
+                if self.connection.execute("SELECT 1 FROM legacy_imports LIMIT 1").fetchone() is not None:
+                    raise FirstRunStateError("first-run session cannot start after a legacy import")
+                self.connection.execute(
+                    """INSERT INTO first_run_sessions(
+                         session_id, state, current_step, revision, draft_json, started_at, updated_at
+                       ) VALUES (?, 'in_progress', 'welcome', 1, '{}', ?, ?)""",
+                    (FIRST_RUN_SESSION_ID, timestamp, timestamp),
+                )
+            elif not (
+                current.state == "in_progress"
+                and current.current_step == "welcome"
+                and current.revision == 1
+                and not current.draft
+                and current.project_request_id is None
+            ):
+                raise FirstRunStateError("first-run session already exists")
+        session = self.get_first_run_session()
+        assert session is not None
+        return session
+
+    @staticmethod
+    def _require_first_run_revision(current: FirstRunSession, expected_revision: int) -> None:
+        if not isinstance(expected_revision, int) or isinstance(expected_revision, bool) or expected_revision < 1:
+            raise ValueError("expected_revision must be a positive integer")
+        if current.revision != expected_revision:
+            raise RevisionConflictError("first-run session revision conflict")
+
+    def update_first_run_draft(
+        self,
+        expected_revision: int,
+        patch: Mapping[str, Any],
+        *,
+        current_step: str | None = None,
+        occurred_at: str | None = None,
+    ) -> FirstRunSession:
+        timestamp = normalize_utc(occurred_at)
+        with self.transaction():
+            current = self.get_first_run_session()
+            if current is None:
+                raise FirstRunStateError("first-run session does not exist")
+            if current.state != "in_progress":
+                raise FirstRunStateError("draft can only be changed while first-run is in progress")
+            target_step = current.current_step if current_step is None else str(current_step)
+            if target_step not in {"welcome", "asr", "ai", "project"}:
+                raise FirstRunStateError("invalid in-progress first-run step")
+            merged = merge_first_run_draft(current.draft, patch)
+            if current.revision != expected_revision:
+                if (
+                    current.revision == expected_revision + 1
+                    and merged == current.draft
+                    and target_step == current.current_step
+                ):
+                    return current
+                raise RevisionConflictError("first-run session revision conflict")
+            if merged == current.draft and target_step == current.current_step:
+                return current
+            self.connection.execute(
+                """UPDATE first_run_sessions
+                   SET draft_json = ?, current_step = ?, revision = revision + 1, updated_at = ?
+                   WHERE session_id = ? AND revision = ?""",
+                (stable_json(merged), target_step, timestamp, FIRST_RUN_SESSION_ID, expected_revision),
+            )
+        session = self.get_first_run_session()
+        assert session is not None
+        return session
+
+    def pause_first_run(self, expected_revision: int, *, occurred_at: str | None = None) -> FirstRunSession:
+        timestamp = normalize_utc(occurred_at)
+        with self.transaction():
+            current = self.get_first_run_session()
+            if current is None:
+                raise FirstRunStateError("first-run session does not exist")
+            if current.state == "paused" and current.revision == expected_revision + 1:
+                return current
+            if current.state != "in_progress":
+                raise FirstRunStateError("only an in-progress first-run session can be paused")
+            self._require_first_run_revision(current, expected_revision)
+            self.connection.execute(
+                """UPDATE first_run_sessions
+                   SET state = 'paused', revision = revision + 1, updated_at = ?, paused_at = ?
+                   WHERE session_id = ? AND revision = ?""",
+                (timestamp, timestamp, FIRST_RUN_SESSION_ID, expected_revision),
+            )
+        session = self.get_first_run_session()
+        assert session is not None
+        return session
+
+    def resume_first_run(self, expected_revision: int, *, occurred_at: str | None = None) -> FirstRunSession:
+        timestamp = normalize_utc(occurred_at)
+        with self.transaction():
+            current = self.get_first_run_session()
+            if current is None:
+                raise FirstRunStateError("first-run session does not exist")
+            if current.state == "in_progress" and current.revision == expected_revision + 1:
+                return current
+            if current.state != "paused":
+                raise FirstRunStateError("only a paused first-run session can be resumed")
+            self._require_first_run_revision(current, expected_revision)
+            self.connection.execute(
+                """UPDATE first_run_sessions
+                   SET state = 'in_progress', revision = revision + 1, updated_at = ?, paused_at = NULL
+                   WHERE session_id = ? AND revision = ?""",
+                (timestamp, FIRST_RUN_SESSION_ID, expected_revision),
+            )
+        session = self.get_first_run_session()
+        assert session is not None
+        return session
+
+    def reserve_first_project_request(
+        self,
+        expected_revision: int,
+        request_id: str,
+        request_hash: str,
+        *,
+        occurred_at: str | None = None,
+    ) -> FirstRunSession:
+        normalized_id = validate_public_identifier(request_id, field="project_request_id")
+        normalized_hash = validate_sha256(request_hash, field="project_request_hash")
+        assert normalized_hash is not None
+        timestamp = normalize_utc(occurred_at)
+        with self.transaction():
+            current = self.get_first_run_session()
+            if current is None:
+                raise FirstRunStateError("first-run session does not exist")
+            if current.state != "in_progress":
+                raise FirstRunStateError("project request can only be reserved while first-run is in progress")
+            if current.project_request_id == normalized_id:
+                if current.project_request_hash != normalized_hash:
+                    raise RequestConflictError("project request identity was reused with different content")
+                if current.revision in {expected_revision, expected_revision + 1}:
+                    return current
+                raise RevisionConflictError("first-run session revision conflict")
+            self._require_first_run_revision(current, expected_revision)
+            if current.project_request_id is not None:
+                existing = self.get_idempotency_key("project.create", current.project_request_id)
+                if existing is not None:
+                    raise RequestConflictError("reserved project request already has a durable result")
+            self.connection.execute(
+                """UPDATE first_run_sessions
+                   SET project_request_id = ?, project_request_hash = ?, first_project_id = NULL,
+                       failure_code = NULL, failure_summary = NULL,
+                       revision = revision + 1, updated_at = ?
+                   WHERE session_id = ? AND revision = ?""",
+                (normalized_id, normalized_hash, timestamp, FIRST_RUN_SESSION_ID, expected_revision),
+            )
+        session = self.get_first_run_session()
+        assert session is not None
+        return session
+
+    def bind_first_project(
+        self,
+        expected_revision: int,
+        request_id: str,
+        project_id: str,
+        *,
+        occurred_at: str | None = None,
+    ) -> FirstRunSession:
+        normalized_request_id = validate_public_identifier(request_id, field="project_request_id")
+        normalized_project_id = validate_public_identifier(project_id, field="first_project_id")
+        timestamp = normalize_utc(occurred_at)
+        with self.transaction():
+            current = self.get_first_run_session()
+            if current is None:
+                raise FirstRunStateError("first-run session does not exist")
+            if (
+                current.state == "activation_pending"
+                and current.project_request_id == normalized_request_id
+                and current.first_project_id == normalized_project_id
+                and current.revision == expected_revision + 1
+            ):
+                return current
+            if current.state != "in_progress":
+                raise FirstRunStateError("first project can only be bound from in-progress state")
+            self._require_first_run_revision(current, expected_revision)
+            if current.project_request_id != normalized_request_id or current.project_request_hash is None:
+                raise RequestConflictError("project binding does not match the reserved request")
+            idempotency = self.get_idempotency_key("project.create", normalized_request_id)
+            if (
+                idempotency is None
+                or idempotency["request_hash"] != current.project_request_hash
+                or idempotency["object_type"] != "project"
+                or idempotency["object_id"] != normalized_project_id
+                or self.get_project(normalized_project_id) is None
+            ):
+                raise RequestConflictError("project binding does not match a durable project.create result")
+            self.connection.execute(
+                """UPDATE first_run_sessions
+                   SET state = 'activation_pending', current_step = 'complete', first_project_id = ?,
+                       failure_code = NULL, failure_summary = NULL,
+                       revision = revision + 1, updated_at = ?
+                   WHERE session_id = ? AND revision = ?""",
+                (normalized_project_id, timestamp, FIRST_RUN_SESSION_ID, expected_revision),
+            )
+        session = self.get_first_run_session()
+        assert session is not None
+        return session
+
+    def record_activation_failure(
+        self,
+        expected_revision: int,
+        code: str,
+        summary: str,
+        *,
+        occurred_at: str | None = None,
+    ) -> FirstRunSession:
+        normalized_code = validate_public_identifier(code, field="failure_code")
+        normalized_summary = sanitize_persisted_text(summary).strip()[:240]
+        timestamp = normalize_utc(occurred_at)
+        with self.transaction():
+            current = self.get_first_run_session()
+            if current is None or current.state != "activation_pending":
+                raise FirstRunStateError("activation failure requires activation_pending state")
+            if current.revision != expected_revision:
+                if (
+                    current.revision == expected_revision + 1
+                    and current.failure_code == normalized_code
+                    and current.failure_summary == normalized_summary
+                ):
+                    return current
+                raise RevisionConflictError("first-run session revision conflict")
+            self.connection.execute(
+                """UPDATE first_run_sessions
+                   SET failure_code = ?, failure_summary = ?, revision = revision + 1, updated_at = ?
+                   WHERE session_id = ? AND revision = ?""",
+                (normalized_code, normalized_summary, timestamp, FIRST_RUN_SESSION_ID, expected_revision),
+            )
+        session = self.get_first_run_session()
+        assert session is not None
+        return session
+
+    def complete_first_run(
+        self, expected_revision: int, *, occurred_at: str | None = None
+    ) -> FirstRunSession:
+        timestamp = normalize_utc(occurred_at)
+        with self.transaction():
+            current = self.get_first_run_session()
+            if current is None:
+                raise FirstRunStateError("first-run session does not exist")
+            if current.state == "completed" and current.revision == expected_revision + 1:
+                return current
+            if current.state != "activation_pending" or current.first_project_id is None:
+                raise FirstRunStateError("only a bound activation_pending session can complete")
+            self._require_first_run_revision(current, expected_revision)
+            if self.get_project(current.first_project_id) is None:
+                raise FirstRunStateError("bound first project is missing")
+            self.connection.execute(
+                """UPDATE first_run_sessions
+                   SET state = 'completed', current_step = 'complete', failure_code = NULL,
+                       failure_summary = NULL, revision = revision + 1,
+                       updated_at = ?, completed_at = ?
+                   WHERE session_id = ? AND revision = ?""",
+                (timestamp, timestamp, FIRST_RUN_SESSION_ID, expected_revision),
+            )
+        session = self.get_first_run_session()
+        assert session is not None
+        return session
 
     def create_project(
         self,

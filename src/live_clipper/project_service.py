@@ -18,8 +18,6 @@ from .project_domain import (
 from .project_resources import compatibility_resources, resource_map
 from .project_storage import ProjectRepository, database_path
 
-LEGACY_METADATA_FILES = ("runs.json", "service.json", "scheduler.json", "scheduler_runs.json", "events.jsonl")
-
 
 class ProjectError(RuntimeError):
     def __init__(
@@ -56,16 +54,27 @@ class ProjectValidation:
         return not self.fatal and not self.blockers
 
 
-def _has_legacy_metadata(service_dir: Path) -> bool:
-    return any((service_dir / name).exists() for name in LEGACY_METADATA_FILES)
+def open_project_repository(
+    service_dir: str | Path,
+    *,
+    config_path: str | Path | None = None,
+    env_path: str | Path | None = None,
+) -> ProjectRepository:
+    from .first_run_detection import inspect_startup
 
-
-def open_project_repository(service_dir: str | Path) -> ProjectRepository:
     service = Path(service_dir).expanduser().resolve()
     existed = database_path(service).exists()
-    legacy = _has_legacy_metadata(service)
+    decision = inspect_startup(
+        config_path=config_path or service / ".first-run-config-not-provided",
+        env_path=env_path or service / ".first-run-env-not-provided",
+        service_dir=service,
+    )
+    if decision.entry == "migration_required":
+        raise ProjectError("migration_required", "检测到旧版数据，需要先完成迁移确认", status=409)
+    if decision.entry == "diagnostic_required":
+        raise ProjectError("diagnostic_required", "启动数据存在冲突，需要先完成诊断", status=409)
     repository = ProjectRepository(service)
-    if not existed and not legacy:
+    if not existed:
         repository.set_data_mode("projects")
     return repository
 
