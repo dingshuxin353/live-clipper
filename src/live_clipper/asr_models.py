@@ -73,7 +73,7 @@ REGISTRY: list[dict[str, Any]] = [
         "ram_note": "预估内存占用适中",
         "speed_note": "预估速度均衡",
         "accuracy_note": "兼顾速度与精度",
-        "recommended": False,
+        "recommended": True,
         "sources": {
             "modelscope": {
                 "repo": "mlx-community/whisper-medium-mlx-q4",
@@ -177,6 +177,38 @@ def _now() -> str:
 
 def _total_bytes(entry: dict[str, Any]) -> int:
     return sum(int(file["bytes"]) for file in entry["files"])
+
+
+def recommended_model() -> dict[str, Any]:
+    """Return the single balanced recommendation used by first-run onboarding."""
+    recommended = [entry for entry in REGISTRY if entry.get("tier") == "balanced" and entry.get("recommended")]
+    if len(recommended) != 1:
+        raise ValueError("ASR 模型目录必须恰好有一个平衡档推荐模型")
+    return dict(recommended[0])
+
+
+def _nearest_existing_parent(path: Path) -> Path | None:
+    candidate = path.expanduser().resolve(strict=False)
+    while not candidate.exists() and candidate != candidate.parent:
+        candidate = candidate.parent
+    return candidate if candidate.exists() else None
+
+
+def download_capacity(model_id: str) -> dict[str, int | str]:
+    """Check writable model storage and required free bytes before a download job."""
+    entry = model_entry(model_id)
+    root = models_root()
+    parent = _nearest_existing_parent(root)
+    if parent is None or not parent.is_dir() or not os.access(parent, os.W_OK):
+        raise OSError("模型目录不可写")
+    staging = partial_dir(model_id)
+    partial = _partial_bytes(staging, entry)
+    # Keep enough room for the verified staging copy and an atomic rename backup.
+    required = max(0, _total_bytes(entry) - partial) + _total_bytes(entry)
+    available = int(shutil.disk_usage(parent).free)
+    if available < required:
+        raise ValueError(f"insufficient_disk_space:{required}:{available}")
+    return {"model_id": model_id, "required_bytes": required, "available_bytes": available, "partial_bytes": partial}
 
 
 def _sha256(path: Path) -> str:
@@ -414,6 +446,8 @@ def download_model(model_id: str, source: str = DEFAULT_MODEL_SOURCE) -> dict[st
     state, _reason = _installation_status(model_id)
     if state == "installed":
         return {"ok": True, "model": model_id, "status": "already_installed"}
+
+    download_capacity(model_id)
 
     target = install_dir(model_id)
     staging = partial_dir(model_id)

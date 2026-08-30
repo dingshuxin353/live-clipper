@@ -378,8 +378,8 @@ def test_scan_and_retry_configuration_errors_use_http_409(tmp_path, monkeypatch)
 
     assert scan_status == 409
     assert retry_status == 409
-    assert scan["error_code"] == retry["error_code"] == "pipeline_configuration_required"
-    assert "设置 → AI 服务" in scan["message"]
+    assert scan["error_code"] == retry["error_code"] == "migration_required"
+    assert "诊断或迁移" in scan["message"]
 
 
 def test_empty_selection_disables_render_and_cleanup_and_returns_http_409(tmp_path):

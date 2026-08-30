@@ -154,7 +154,7 @@ def test_registry_pins_three_model_matrix():
         assert entry["backend"] == "mlx_whisper"
         assert entry["tier"] == contract["tier"]
         assert entry["tier_label"] == contract["tier_label"]
-        assert entry["recommended"] is False
+        assert entry["recommended"] is (entry["id"] == MEDIUM_MODEL_ID)
         assert set(entry["sources"]) == {"modelscope", "huggingface"}
         assert entry["sources"]["huggingface"]["revision"] == contract["hf_revision"]
         assert entry["sources"]["modelscope"]["revision"] == contract["ms_revision"]

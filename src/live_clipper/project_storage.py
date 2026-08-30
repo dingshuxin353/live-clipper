@@ -1035,6 +1035,116 @@ class ProjectRepository:
         assert project is not None
         return project
 
+    def create_project_bundle(
+        self,
+        name: str,
+        config: Mapping[str, Any],
+        *,
+        description: str = "",
+        activation_state: str = "inactive",
+        project_id: str | None = None,
+        created_at: str | None = None,
+        runtime: Mapping[str, Any] | None = None,
+        event_payload: Mapping[str, Any] | None = None,
+        idempotency: Mapping[str, str] | None = None,
+    ) -> Project:
+        """Create a project and all durable side effects in one transaction.
+
+        M1 uses this path so a failure in runtime/event/idempotency persistence
+        cannot leave a project that the first-run session cannot recover.
+        """
+        if activation_state not in {"inactive", "active", "paused"}:
+            raise ValueError("invalid activation_state")
+        validated = validate_project_config(config)
+        schema_version = int(validated["schema_version"])
+        project_id = project_id or new_id()
+        timestamp = normalize_utc(created_at)
+        activated_at = timestamp if activation_state == "active" else None
+        paused_at = timestamp if activation_state == "paused" else None
+        runtime_values = {
+            "readiness_state": "ready",
+            "auto_scan_state": "off",
+            "first_scan_state": "pending",
+            **dict(runtime or {}),
+        }
+        allowed_runtime = {
+            "readiness_state",
+            "auto_scan_state",
+            "last_scan_at",
+            "next_scan_at",
+            "failure_code",
+            "failure_summary",
+            "discovery_baseline",
+            "first_scan_state",
+            "schedule_cursor",
+        }
+        if set(runtime_values) - allowed_runtime:
+            raise ValueError("runtime contains unsupported fields")
+        if idempotency is not None:
+            required_idempotency = {"scope", "request_id", "request_hash"}
+            if not required_idempotency <= set(idempotency):
+                raise ValueError("idempotency is missing required fields")
+            if idempotency.get("object_type", "project") != "project":
+                raise ValueError("project idempotency object_type must be project")
+        event_payload_json = stable_json(event_payload or {})
+        with self.transaction():
+            if idempotency is not None:
+                existing = _one(
+                    self.connection.execute(
+                        "SELECT * FROM idempotency_keys WHERE scope = ? AND request_id = ?",
+                        (idempotency["scope"], idempotency["request_id"]),
+                    )
+                )
+                if existing is not None:
+                    if existing["request_hash"] != idempotency["request_hash"]:
+                        raise RequestConflictError("project request identity was reused with different content")
+                    existing_project = self.get_project(str(existing["object_id"]))
+                    if existing_project is None:
+                        raise RuntimeError("project idempotency record points to a missing project")
+                    return existing_project
+            self.connection.execute(
+                """INSERT INTO projects(
+                     project_id, name, description, activation_state, current_config_revision,
+                     created_at, updated_at, activated_at, paused_at
+                   ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?)""",
+                (project_id, name, description, activation_state, timestamp, timestamp, activated_at, paused_at),
+            )
+            self.connection.execute(
+                """INSERT INTO project_config_revisions(
+                     project_id, revision, config_json, schema_version, created_at
+                   ) VALUES (?, 1, ?, ?, ?)""",
+                (project_id, stable_json(validated), schema_version, timestamp),
+            )
+            runtime_columns = ["project_id", *runtime_values.keys()]
+            runtime_values_sql = [project_id, *runtime_values.values()]
+            placeholders = ", ".join("?" for _ in runtime_columns)
+            self.connection.execute(
+                f"INSERT INTO project_runtime({', '.join(runtime_columns)}) VALUES ({placeholders})",  # noqa: S608
+                runtime_values_sql,
+            )
+            self.connection.execute(
+                """INSERT INTO workspace_events(event_type, project_id, occurred_at, payload_json)
+                   VALUES ('project_created', ?, ?, ?)""",
+                (project_id, timestamp, event_payload_json),
+            )
+            if idempotency is not None:
+                self.connection.execute(
+                    """INSERT INTO idempotency_keys(
+                         scope, request_id, request_hash, object_type, object_id, created_at
+                       ) VALUES (?, ?, ?, ?, ?, ?)""",
+                    (
+                        idempotency["scope"],
+                        idempotency["request_id"],
+                        idempotency["request_hash"],
+                        idempotency.get("object_type", "project"),
+                        project_id,
+                        timestamp,
+                    ),
+                )
+        project = self.get_project(project_id)
+        assert project is not None
+        return project
+
     def get_project(self, project_id: str) -> Project | None:
         row = _one(self.connection.execute("SELECT * FROM projects WHERE project_id = ?", (project_id,)))
         return Project(**row) if row else None

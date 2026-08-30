@@ -116,6 +116,85 @@ def embedded_service_active() -> bool:
     return thread is not None and thread.is_alive()
 
 
+def check_service_ready(
+    *,
+    service_dir: Path = DEFAULT_SERVICE_DIR,
+    project_id: str | None = None,
+    settings_loader: Callable[[], Settings] | None = None,
+) -> dict[str, Any]:
+    """Pure readiness projection used by the M1 finish saga.
+
+    The check never scans recordings or starts a run.  A loader is accepted so
+    App mode can prove the explicit configuration it is about to use without
+    falling back to the process working directory.
+    """
+    from .project_resources import resource_map
+    from .project_storage import ProjectRepository, database_path
+
+    embedded = embedded_service_active()
+    if embedded and not bool(_EMBEDDED.get("enabled_event") and _EMBEDDED["enabled_event"].is_set()):
+        return {"ok": False, "error_code": "service_not_ready", "message": "处理服务已暂停"}
+    if not embedded:
+        status = get_service_status(service_dir=service_dir)
+        if not status.get("running") or status.get("service", {}).get("status") == "paused":
+            return {"ok": False, "error_code": "service_not_ready", "message": "处理服务尚未启动"}
+
+    settings: Settings | None = None
+    if settings_loader is not None:
+        try:
+            settings = settings_loader()
+            validate_service_settings(settings)
+        except Exception:
+            return {"ok": False, "error_code": "service_not_ready", "message": "处理服务配置尚未就绪"}
+        import shutil
+
+        if shutil.which(settings.render.ffmpeg_path) is None or shutil.which("ffprobe") is None:
+            return {"ok": False, "error_code": "service_not_ready", "message": "FFmpeg 运行时尚未就绪"}
+
+    if project_id is not None:
+        if not database_path(service_dir).exists():
+            return {"ok": False, "error_code": "service_not_ready", "message": "项目数据库尚未就绪"}
+        try:
+            with ProjectRepository(service_dir) as repository:
+                project = repository.get_project(project_id)
+                runtime = repository.get_runtime(project_id)
+                config_revision = repository.get_config_revision(project_id)
+                if project is None or runtime is None or project.activation_state != "active":
+                    return {"ok": False, "error_code": "service_not_ready", "message": "首项目尚未启用"}
+                if runtime.readiness_state != "ready":
+                    return {"ok": False, "error_code": "service_not_ready", "message": "首项目尚未就绪"}
+                if settings is not None:
+                    if config_revision is None or config_revision.config["processing"]["review_strategy"] != "ai_auto":
+                        return {"ok": False, "error_code": "service_not_ready", "message": "首项目处理策略尚未就绪"}
+                    resources = resource_map(settings)
+                    refs = config_revision.config["resources"]
+                    for field in ("asr_ref", "analysis_ref", "review_ref"):
+                        resource = resources.get(str(refs[field]))
+                        if resource is None or not resource.ready:
+                            return {"ok": False, "error_code": "service_not_ready", "message": "首项目资源尚未就绪"}
+                try:
+                    quick = repository.connection.execute("PRAGMA quick_check").fetchone()
+                except Exception:
+                    quick = None
+                if not quick or quick[0] != "ok":
+                    return {"ok": False, "error_code": "service_not_ready", "message": "项目数据库检查失败"}
+        except Exception:
+            return {"ok": False, "error_code": "service_not_ready", "message": "项目运行环境尚未就绪"}
+    return {"ok": True, "ready": True}
+
+
+def ensure_service_ready(
+    settings_loader: Callable[[], Settings],
+    *,
+    service_dir: Path = DEFAULT_SERVICE_DIR,
+    project_id: str | None = None,
+) -> dict[str, Any]:
+    """Start/resume the embedded service and return a pure readiness result."""
+    if not embedded_service_active():
+        start_embedded_service(settings_loader, service_dir=service_dir)
+    return check_service_ready(service_dir=service_dir, project_id=project_id, settings_loader=settings_loader)
+
+
 def start_embedded_service(
     settings_loader: Callable[[], Settings],
     *,
