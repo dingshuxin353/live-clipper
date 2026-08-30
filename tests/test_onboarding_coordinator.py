@@ -6,7 +6,11 @@ import pytest
 
 from live_clipper import asr_models, onboarding_resources, service
 from live_clipper.config import Settings
+from live_clipper.first_run_detection import inspect_startup
 from live_clipper.onboarding_coordinator import OnboardingCoordinator, OnboardingError
+from live_clipper.project_domain import default_project_config
+from live_clipper.project_service import open_project_repository
+from live_clipper.project_storage import database_path
 
 
 def _coordinator(tmp_path: Path, *, settings: Settings | None = None) -> tuple[OnboardingCoordinator, Path]:
@@ -95,3 +99,24 @@ def test_finish_failure_keeps_single_project_for_retry(tmp_path: Path, monkeypat
     assert status == 200
     assert completed["session"]["state"] == "completed"
     assert completed["session"]["first_project"]["project_id"] == project_id
+
+
+def test_current_project_runtime_metadata_does_not_conflict_with_completed_projects(tmp_path: Path) -> None:
+    service_dir = tmp_path / "service"
+    source = tmp_path / "source"
+    output = tmp_path / "output"
+    source.mkdir()
+    output.mkdir()
+    with open_project_repository(service_dir) as repository:
+        repository.create_project("已有项目", default_project_config(source, output))
+        state = service._service_state("running", 123, Settings(), service_dir=service_dir)
+        service._write_service_state(service_dir, state)
+        service.append_event(service_dir, "service_started", pid=123, embedded=True)
+
+    assert database_path(service_dir).is_file()
+    decision = inspect_startup(
+        config_path=tmp_path / "missing.toml",
+        env_path=tmp_path / "missing.env",
+        service_dir=service_dir,
+    )
+    assert decision.entry == "workbench"

@@ -269,6 +269,7 @@ def _embedded_service_loop(
         {
             "status": "running",
             "pid": pid,
+            "runtime_mode": "projects" if project_mode_active(service_dir) else "legacy",
             "started_at": now_utc(),
             "last_heartbeat_at": now_utc(),
             "consecutive_errors": 0,
@@ -901,6 +902,9 @@ def _service_state(status: str, pid: int | None, settings: Settings, *, service_
     return {
         "status": status,
         "pid": pid,
+        # Keep provenance for the first-run classifier: current project-mode
+        # service files reuse historical names but are not legacy evidence.
+        "runtime_mode": "projects" if project_mode_active(service_dir) else "legacy",
         "started_at": previous.get("started_at") or (now if status == "running" else None),
         "last_heartbeat_at": now,
         "next_scan_at": _next_scan_at(settings, service_dir) if status in {"running", "degraded"} else None,
