@@ -3,9 +3,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from live_clipper import onboarding
-from live_clipper.config import write_default_config
-from live_clipper.config_editor import load_editable_config
+import pytest
+
 from live_clipper.web import WebPaths, handle_api_request
 
 
@@ -27,100 +26,30 @@ def _react() -> str:
 def test_get_onboarding_needs_true_when_unconfigured(tmp_path):
     status, _headers, payload = handle_api_request("GET", "/api/onboarding", _paths(tmp_path))
     assert status == 200
-    assert payload["needs_onboarding"] is True
-    assert payload["completed"] is False
-    assert payload["skipped"] is False
-    assert payload["initial_asr_mode"] == "local"
-    assert payload["initial_local_model"] == "mlx-community/whisper-small-mlx-q4"
+    assert payload["entry"]["mode"] == "onboarding"
+    assert payload["entry"]["onboarding"] == "new"
+    assert payload["session"] is None
+    assert set(payload) >= {"environment", "resources", "model_catalog", "provider_presets", "suggestions"}
 
 
-def test_post_onboarding_test_source(tmp_path):
-    source = tmp_path / "recordings"
-    source.mkdir()
-    status, _headers, payload = handle_api_request(
-        "POST", "/api/onboarding/test-source", _paths(tmp_path), body={"source_dir": str(source)}
-    )
-    assert status == 200
-    assert payload["ok"] is True
-    assert payload["video_count"] == 0
-
-
-def test_post_onboarding_skip_round_trip(tmp_path):
+@pytest.mark.parametrize("route", ["test-source", "test-llm", "complete", "skip"])
+def test_deprecated_onboarding_routes_are_tombstoned_without_side_effects(tmp_path, route, monkeypatch):
     paths = _paths(tmp_path)
-    status, _headers, payload = handle_api_request("POST", "/api/onboarding/skip", paths, body={})
-    assert status == 200
-    assert payload == {"ok": True, "skipped": True, "completed": False}
-    status, _headers, payload = handle_api_request("GET", "/api/onboarding", paths)
-    assert status == 200
-    assert payload["needs_onboarding"] is False
-    assert payload["completed"] is False
-    assert payload["skipped"] is True
-
-
-def test_post_onboarding_complete_round_trip(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    paths = _paths(tmp_path)
-    write_default_config(paths.config_path)
-    source = tmp_path / "recordings"
-    source.mkdir()
+    config = paths.config_path
+    env = config.parent / ".env"
+    config.write_bytes(b"config-before\n")
+    env.write_bytes(b"KEEP=before\n")
+    before = sorted((item.relative_to(tmp_path), item.stat().st_size, item.stat().st_mtime_ns) for item in tmp_path.rglob("*") if item.is_file())
+    monkeypatch.setattr("live_clipper.onboarding_resources.requests.post", lambda *args, **kwargs: pytest.fail("deprecated route must not call network"))
     status, _headers, payload = handle_api_request(
-        "POST",
-        "/api/onboarding/complete",
-        paths,
-        body={
-            "source_dir": str(source),
-            "llm_api_base": "https://example.test/v1",
-            "llm_model": "test-model",
-            "llm_api_key": "sk-llm-test",
-            "asr_mode": "cloud",
-            "asr_api_base": "https://asr.example.test/v1",
-            "asr_model": "whisper-1",
-            "asr_api_key": "sk-asr-test",
-        },
+        "POST", f"/api/onboarding/{route}", paths, body={"source_dir": str(tmp_path / "missing"), "api_key": "sentinel"}
     )
-    assert status == 200
-    assert payload["ok"] is True
-    status, _headers, payload = handle_api_request("GET", "/api/onboarding", paths)
-    assert status == 200
-    assert payload["needs_onboarding"] is False
-    assert payload["completed"] is True
-    assert payload["skipped"] is False
-    assert payload["asr_api_base"] == "https://asr.example.test/v1"
-    assert payload["asr_model"] == "whisper-1"
-    assert payload["asr_key_present"] is True
-
-
-def test_post_onboarding_complete_local_round_trip(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    paths = _paths(tmp_path)
-    write_default_config(paths.config_path)
-    source = tmp_path / "recordings"
-    source.mkdir()
-    monkeypatch.setattr(onboarding.asr_models, "local_path_for", lambda model_id: tmp_path / "installed")
-    status, _headers, payload = handle_api_request(
-        "POST",
-        "/api/onboarding/complete",
-        paths,
-        body={
-            "source_dir": str(source),
-            "llm_api_base": "https://example.test/v1",
-            "llm_model": "test-model",
-            "llm_api_key": "sk-llm-test",
-            "asr_mode": "local",
-            "asr_model": "mlx-community/whisper-small-mlx-q4",
-            "asr_model_source": "modelscope",
-        },
-    )
-    assert status == 200
-    assert payload["ok"] is True
-    assert payload["asr_mode"] == "local"
-    assert payload["current_backend"] == "mlx_whisper"
-    assert payload["current_model"] == "mlx-community/whisper-small-mlx-q4"
-    loaded = load_editable_config(config_path=paths.config_path)["config"]
-    assert loaded["asr"]["backend"] == "mlx_whisper"
-    assert loaded["asr"]["model"] == "mlx-community/whisper-small-mlx-q4"
-    assert loaded["asr"]["model_source"] == "modelscope"
-    assert "ASR_API_KEY" not in (tmp_path / ".env").read_text(encoding="utf-8")
+    assert status == 410
+    assert payload["error_code"] == "onboarding_contract_replaced"
+    assert payload["ok"] is False
+    after = sorted((item.relative_to(tmp_path), item.stat().st_size, item.stat().st_mtime_ns) for item in tmp_path.rglob("*") if item.is_file())
+    assert after == before
+    assert not (paths.service_dir / "venus.sqlite3").exists()
 
 
 def test_onboarding_react_exposes_four_steps_controls_and_shared_skip_dialog():

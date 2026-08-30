@@ -13,7 +13,17 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-from . import asr_models, config_editor, jobs, mcp_tools, onboarding, review_automation, scheduler, service
+from . import (
+    asr_models,
+    config_editor,
+    jobs,
+    mcp_tools,
+    onboarding,
+    onboarding_coordinator,
+    review_automation,
+    scheduler,
+    service,
+)
 from .automation import DEFAULT_LOG_DIR, DEFAULT_STATE_DIR, _pid_is_running, check_automation_runs
 from .config import RecordingSourceDefaultConfig, ServiceConfig, Settings, load_settings
 from .pipeline import cleanup_local_artifacts, cleanup_plan
@@ -125,6 +135,20 @@ def _project_mode_active(paths: WebPaths) -> bool:
         return False
     with ProjectRepository(paths.service_dir) as repository:
         return repository.get_data_mode() == "projects"
+
+
+def _startup_restricted(paths: WebPaths) -> str | None:
+    """Return the read-only startup gate for mutating legacy/service routes."""
+    decision, _detection = onboarding_coordinator.OnboardingCoordinator(
+        service_dir=paths.service_dir,
+        config_path=paths.config_path,
+        env_path=paths.config_path.parent / ".env",
+        input_dir=paths.input_dir,
+        output_root=paths.output_root,
+    ).decision()
+    if decision.entry in {"migration_required", "diagnostic_required"}:
+        return decision.entry
+    return None
 
 
 def _is_project_api_route(method: str, parts: list[str], paths: WebPaths) -> bool:
@@ -615,6 +639,71 @@ def handle_api_request(
     query = parse_qs(parsed.query, keep_blank_values=True)
     parts = [unquote(part) for part in parsed_path.split("/") if part]
     try:
+        if method == "POST" and parts == ["api", "onboarding", "test-source"]:
+            return _json_response(
+                _structured_error("onboarding_contract_replaced", "旧首次设置接口已停用，请使用新的 onboarding API"),
+                status=410,
+            )
+        if method == "POST" and parts == ["api", "onboarding", "test-llm"]:
+            return _json_response(
+                _structured_error("onboarding_contract_replaced", "旧首次设置接口已停用，请使用新的 onboarding API"),
+                status=410,
+            )
+        if method == "POST" and parts == ["api", "onboarding", "complete"]:
+            return _json_response(
+                _structured_error("onboarding_contract_replaced", "旧首次设置接口已停用，请使用新的 onboarding API"),
+                status=410,
+            )
+        if method == "POST" and parts == ["api", "onboarding", "skip"]:
+            return _json_response(
+                _structured_error("onboarding_contract_replaced", "旧首次设置接口已停用，请使用新的 onboarding API"),
+                status=410,
+            )
+        if parts[:2] == ["api", "onboarding"]:
+            coordinator = onboarding_coordinator.OnboardingCoordinator(
+                service_dir=paths.service_dir,
+                config_path=paths.config_path,
+                env_path=paths.config_path.parent / ".env",
+                input_dir=paths.input_dir,
+                output_root=paths.output_root,
+            )
+            try:
+                routed = coordinator.dispatch(method, request_path, body=body)
+            except onboarding_coordinator.OnboardingError as exc:
+                return _json_response(
+                    {
+                        "ok": False,
+                        "error_code": exc.code,
+                        "message": exc.message,
+                        "error": {"code": exc.code, "message": exc.message, "fields": exc.fields},
+                        "fields": exc.fields,
+                    },
+                    status=exc.status,
+                )
+            if routed is not None:
+                status, payload = routed
+                return _json_response(payload, status=status)
+        restricted_mutations = {
+            ("POST", ("api", "service", "start")),
+            ("POST", ("api", "service", "stop")),
+            ("POST", ("api", "service", "scan-now")),
+            ("POST", ("api", "asr", "models", "download")),
+            ("POST", ("api", "asr", "models", "select")),
+            ("POST", ("api", "asr", "models", "delete")),
+        }
+        restricted_dynamic = (
+            method == "POST"
+            and len(parts) == 4
+            and parts[:2] == ["api", "runs"]
+            and parts[3] == "retry"
+        )
+        if (method, tuple(parts)) in restricted_mutations or restricted_dynamic:
+            restricted_entry = _startup_restricted(paths)
+            if restricted_entry is not None:
+                return _json_response(
+                    _structured_error(restricted_entry, "当前数据需要先完成诊断或迁移"),
+                    status=409,
+                )
         if (
             method in {"GET", "HEAD"}
             and len(parts) == 4
@@ -651,6 +740,13 @@ def handle_api_request(
                         headers["Accept-Ranges"] = "bytes"
                     return status, headers, payload
             return media.status, media.headers, media.body
+        if _is_project_api_route(method, parts, paths) and method not in {"GET", "HEAD"}:
+            restricted_entry = _startup_restricted(paths)
+            if restricted_entry is not None:
+                return _json_response(
+                    _structured_error(restricted_entry, "当前数据需要先完成诊断或迁移"),
+                    status=409,
+                )
         if _is_project_api_route(method, parts, paths):
             api = ProjectAPI(
                 paths.service_dir,
@@ -766,6 +862,32 @@ def handle_api_request(
                 )
             if source not in asr_models.source_ids():
                 return _json_response(_structured_error("unknown_model_source", f"未知模型下载源: {source}"), status=400)
+            # Fail before creating a background job when the model store cannot
+            # hold the verified staging copy and atomic install backup.
+            if asr_models.local_path_for(model_id) is None:
+                try:
+                    capacity = asr_models.download_capacity(model_id)
+                except ValueError as exc:
+                    parts_error = str(exc).split(":")
+                    if len(parts_error) == 3 and parts_error[0] == "insufficient_disk_space":
+                        try:
+                            required_bytes = int(parts_error[1])
+                            available_bytes = int(parts_error[2])
+                        except ValueError:
+                            required_bytes = available_bytes = None
+                        if required_bytes is not None and available_bytes is not None:
+                            return _json_response(
+                                {
+                                    **_structured_error("insufficient_disk_space", "磁盘空间不足，无法下载模型"),
+                                    "required_bytes": required_bytes,
+                                    "available_bytes": available_bytes,
+                                },
+                                status=409,
+                            )
+                    return _json_response(_structured_error("model_download_unavailable", "模型下载目录不可用"), status=409)
+                except OSError:
+                    return _json_response(_structured_error("model_download_unavailable", "模型下载目录不可用"), status=409)
+                del capacity
             job = jobs.start_job(
                 paths.service_dir,
                 kind=asr_models.DOWNLOAD_JOB_KIND,
@@ -885,25 +1007,6 @@ def handle_api_request(
             return _json_response(payload, status=200 if payload.get("ok") else 400)
         if method == "POST" and parts == ["api", "config", "restart-service"]:
             return _json_response(_restart_service_from_config(paths))
-        if method == "GET" and parts == ["api", "onboarding"]:
-            return _json_response(onboarding.onboarding_status(_settings_for_paths(paths), paths.service_dir))
-        if method == "POST" and parts == ["api", "onboarding", "test-source"]:
-            return _json_response(onboarding.test_recording_source(str((body or {}).get("source_dir") or "")))
-        if method == "POST" and parts == ["api", "onboarding", "test-llm"]:
-            data = body or {}
-            return _json_response(
-                onboarding.test_llm(
-                    str(data.get("api_base") or ""),
-                    str(data.get("api_key") or ""),
-                    str(data.get("model") or ""),
-                )
-            )
-        if method == "POST" and parts == ["api", "onboarding", "skip"]:
-            return _json_response(onboarding.skip_onboarding(service_dir=paths.service_dir))
-        if method == "POST" and parts == ["api", "onboarding", "complete"]:
-            return _json_response(
-                onboarding.complete_onboarding(body or {}, config_path=paths.config_path, service_dir=paths.service_dir)
-            )
         if method == "GET" and parts == ["api", "scheduler"]:
             return _json_response(scheduler.get_scheduler_status(_settings_for_paths(paths), service_dir=paths.service_dir))
         if method == "GET" and parts == ["api", "scheduler", "events"]:
@@ -1207,7 +1310,19 @@ class LiveClipperRequestHandler(BaseHTTPRequestHandler):
             self._reject_unauthorized()
             return
         body_payload: dict[str, Any] | None = None
-        if method in {"POST", "PATCH"}:
+        retired_onboarding_route = method == "POST" and urlparse(self.path).path in {
+            "/api/onboarding/test-source",
+            "/api/onboarding/test-llm",
+            "/api/onboarding/complete",
+            "/api/onboarding/skip",
+        }
+        if retired_onboarding_route:
+            # Reject the retired contract before decoding a body that may carry
+            # a secret.  The handler uses the same tombstone response as the
+            # in-process API; closing this HTTP/1.0 request avoids leaving an
+            # unread body on a keep-alive connection.
+            self.close_connection = True
+        elif method in {"POST", "PATCH"}:
             raw_length = self.headers.get("Content-Length")
             length = int(raw_length) if raw_length else 0
             if length:

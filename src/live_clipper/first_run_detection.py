@@ -108,6 +108,24 @@ def _read_database_facts(path: Path) -> _DatabaseFacts:
             connection.close()
 
 
+def _is_current_project_runtime(service: Path, facts: _DatabaseFacts) -> bool:
+    """Recognize metadata written by the current project-mode service.
+
+    The service and scheduler intentionally retain their historical filenames,
+    but those files are not legacy evidence once the authoritative database is
+    in projects mode and ``service.json`` carries the provenance marker. A
+    legacy ``runs.json`` remains an independent signal so mixed installations
+    still route to migration/diagnostics.
+    """
+    if facts.data_mode != "projects":
+        return False
+    try:
+        payload = json.loads((service / "service.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    return isinstance(payload, dict) and payload.get("runtime_mode") == "projects"
+
+
 def _inspect(
     *, config_path: str | Path, env_path: str | Path, service_dir: str | Path
 ) -> tuple[StartupDetection, _DatabaseFacts]:
@@ -115,8 +133,6 @@ def _inspect(
     Path(env_path).expanduser().resolve()  # Explicit boundary; secret contents are intentionally never read.
     service = Path(service_dir).expanduser().resolve()
     evidence: set[str] = set()
-    if any((service / name).exists() for name in LEGACY_METADATA_FILES):
-        evidence.add("legacy_metadata")
     if (service / LEGACY_ONBOARDING_MARKER).exists():
         evidence.add("legacy_onboarding_marker")
     configured_source, unreadable_config = _configured_global_source(config)
@@ -127,6 +143,11 @@ def _inspect(
 
     db_path = database_path(service)
     facts = _read_database_facts(db_path)
+    current_project_runtime = _is_current_project_runtime(service, facts)
+    if any((service / name).exists() for name in LEGACY_METADATA_FILES) and (
+        not current_project_runtime or (service / "runs.json").exists()
+    ):
+        evidence.add("legacy_metadata")
     if facts.has_legacy_import:
         evidence.add("legacy_project_import")
     if facts.data_mode == "legacy":

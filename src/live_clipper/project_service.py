@@ -107,6 +107,43 @@ def output_directory_is_writable(output: Path) -> bool:
     return True
 
 
+def _path_contains_symlink(path: Path) -> bool:
+    """Return whether any existing component of ``path`` is a symlink.
+
+    Resolving a path before checking it would make a symlinked parent look like
+    an ordinary directory.  Output paths are user-controlled, so the check is
+    deliberately component-based and happens before canonicalisation.
+    """
+    candidate = path.expanduser()
+    if not candidate.is_absolute():
+        candidate = Path.cwd() / candidate
+    current = Path(candidate.anchor)
+    trusted_aliases = {Path("/var"), Path("/tmp")}
+    for component in candidate.parts[1:]:
+        current /= component
+        if current.is_symlink() and current not in trusted_aliases:
+            return True
+    return False
+
+
+def output_directory_status(output: Path) -> str:
+    """Classify an output directory without creating it."""
+    raw_output = output.expanduser()
+    if _path_contains_symlink(raw_output):
+        return "blocked"
+    output = raw_output.resolve(strict=False)
+    if output.is_dir() and output_directory_is_writable(output):
+        return "ready"
+    if output.exists():
+        return "blocked"
+    parent = output.parent
+    while not parent.exists() and parent != parent.parent:
+        parent = parent.parent
+    if not parent.is_dir() or not os.access(parent, os.W_OK):
+        return "blocked"
+    return "creatable"
+
+
 class ProjectManager:
     def __init__(self, repository: ProjectRepository, settings: Settings) -> None:
         self.repository = repository
@@ -143,6 +180,7 @@ class ProjectManager:
         config: dict[str, Any],
         activation_state: str,
         exclude_project_id: str | None = None,
+        allow_creatable_output: bool = False,
     ) -> ProjectValidation:
         fatal: list[ValidationIssue] = []
         blockers: list[ValidationIssue] = []
@@ -187,7 +225,10 @@ class ProjectManager:
         normalized["output"]["directory"] = str(output)
         if not source.is_dir() or not os.access(source, os.R_OK):
             blockers.append(ValidationIssue("source.directory", "source_unavailable", "录像目录不存在或不可读"))
-        if not output_directory_is_writable(output):
+        # Check the user-supplied path before resolving it so a symlinked
+        # component cannot be normalised into an apparently safe destination.
+        output_status = output_directory_status(output_raw)
+        if output_status == "blocked" or (output_status == "creatable" and not allow_creatable_output):
             blockers.append(ValidationIssue("output.directory", "output_unwritable", "输出目录不存在或不可写"))
         if source != output and _inside(output, source):
             blockers.append(ValidationIssue("output.directory", "output_inside_source", "输出目录不能位于录像目录内"))
@@ -276,22 +317,54 @@ class ProjectManager:
             fields = {issue.field: issue.message for issue in (*validation.fatal, *validation.blockers)}
             raise ProjectError("validation_failed", "项目配置未通过校验", status=422, fields=fields)
         assert validation.normalized_config is not None
-        project = self.repository.create_project(
+        runtime = self._runtime_values(activation_state, validation.normalized_config, validation=validation)
+        project = self.repository.create_project_bundle(
             name.strip(),
             validation.normalized_config,
             description=description.strip(),
             activation_state=activation_state,
+            runtime=runtime,
+            event_payload={"activation_state": activation_state},
+            idempotency=(
+                {
+                    "scope": "project.create",
+                    "request_id": request_id,
+                    "request_hash": _request_hash(payload),
+                    "object_type": "project",
+                }
+                if request_id
+                else None
+            ),
         )
-        self.repository.append_workspace_event(
-            "project_created",
-            project_id=project.project_id,
-            payload={"activation_state": activation_state},
-        )
-        self._initialize_runtime(project, validation.normalized_config, validation=validation)
-        self._save_idempotency("project.create", request_id, payload, project.project_id)
         result = self.repository.get_project(project.project_id)
         assert result is not None
         return result
+
+    def _runtime_values(
+        self,
+        activation_state: str,
+        config: dict[str, Any],
+        *,
+        validation: ProjectValidation,
+    ) -> dict[str, Any]:
+        mode = config["source"]["first_scan_mode"]
+        first_scan_state = "not_required" if mode == "new_only" else "pending"
+        next_scan_at = None
+        auto_scan_state = "off"
+        if activation_state == "active" and config["schedule"]["enabled"]:
+            from .project_scheduler import next_project_scan_at
+
+            next_scan_at = next_project_scan_at(config)
+            auto_scan_state = "scheduled"
+        return {
+            "readiness_state": "blocked" if validation.blockers else "ready",
+            "failure_code": validation.blockers[0].code if validation.blockers else None,
+            "failure_summary": validation.blockers[0].message if validation.blockers else None,
+            "discovery_baseline": normalize_utc(),
+            "first_scan_state": first_scan_state,
+            "auto_scan_state": auto_scan_state,
+            "next_scan_at": next_scan_at,
+        }
 
     def _initialize_runtime(
         self,
@@ -300,25 +373,7 @@ class ProjectManager:
         *,
         validation: ProjectValidation,
     ) -> None:
-        mode = config["source"]["first_scan_mode"]
-        first_scan_state = "not_required" if mode == "new_only" else "pending"
-        next_scan_at = None
-        auto_scan_state = "off"
-        if project.activation_state == "active" and config["schedule"]["enabled"]:
-            from .project_scheduler import next_project_scan_at
-
-            next_scan_at = next_project_scan_at(config)
-            auto_scan_state = "scheduled"
-        self.repository.update_runtime(
-            project.project_id,
-            readiness_state="blocked" if validation.blockers else "ready",
-            failure_code=validation.blockers[0].code if validation.blockers else None,
-            failure_summary=validation.blockers[0].message if validation.blockers else None,
-            discovery_baseline=normalize_utc(),
-            first_scan_state=first_scan_state,
-            auto_scan_state=auto_scan_state,
-            next_scan_at=next_scan_at,
-        )
+        self.repository.update_runtime(project.project_id, **self._runtime_values(project.activation_state, config, validation=validation))
 
     def update_project(
         self,

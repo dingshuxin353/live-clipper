@@ -225,6 +225,7 @@ def save_asr_model_selection(
     backend: str,
     model: str,
     *,
+    model_source: str | None = None,
     config_path: Path = DEFAULT_CONFIG_PATH,
     backup_root: Path = Path("work") / "config_backups",
 ) -> dict[str, Any]:
@@ -242,6 +243,8 @@ def save_asr_model_selection(
         merged["asr"] = {}
     merged["asr"]["backend"] = backend
     merged["asr"]["model"] = model
+    if model_source is not None:
+        merged["asr"]["model_source"] = model_source
     rendered = _dump_toml(merged)
     existed = config_path.exists()
     original_text = config_path.read_text(encoding="utf-8") if existed else None
@@ -265,8 +268,22 @@ def save_asr_model_selection(
             temp_file.write(rendered)
         Path(temp_name).replace(config_path)
         replaced = True
-        settings = load_settings(config_path)
-        if settings.asr.backend != backend or settings.asr.model != model:
+        # The App may live outside the process working directory.  Read back
+        # the TOML we just replaced without implicitly loading a different
+        # cwd/.env and changing the selected model underneath the caller.
+        from . import config as config_module
+
+        implicit_loader = config_module.load_dotenv
+        config_module.load_dotenv = lambda **_kwargs: False
+        try:
+            settings = load_settings(config_path)
+        finally:
+            config_module.load_dotenv = implicit_loader
+        if (
+            settings.asr.backend != backend
+            or settings.asr.model != model
+            or (model_source is not None and settings.asr.model_source != model_source)
+        ):
             raise ValueError("ASR 模型配置回读不一致")
     except Exception as exc:  # noqa: BLE001 - restore the exact previous config on any write/readback failure.
         if replaced:
