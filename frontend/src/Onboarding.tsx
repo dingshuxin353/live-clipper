@@ -1,826 +1,232 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Button } from "@astryxdesign/core/Button";
-import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
-import { Field } from "@astryxdesign/core/Field";
-import { FormLayout } from "@astryxdesign/core/FormLayout";
-import { List, ListItem } from "@astryxdesign/core/List";
-import { ProgressBar } from "@astryxdesign/core/ProgressBar";
-import { RadioList, RadioListItem } from "@astryxdesign/core/RadioList";
-import { SelectableCard } from "@astryxdesign/core/SelectableCard";
-import { Selector } from "@astryxdesign/core/Selector";
-import { Spinner } from "@astryxdesign/core/Spinner";
-import { Text } from "@astryxdesign/core/Text";
-import { TextInput } from "@astryxdesign/core/TextInput";
+import { useNavigate } from "react-router-dom";
 import { VisuallyHidden } from "@astryxdesign/core/VisuallyHidden";
 
-import { api, post } from "./api";
-import type { GenericRecord, Model } from "./types";
-import { semanticToneStyles } from "./ui/presentation";
+import { ApiError } from "./api";
+import { projectApi, requestId } from "./project-api";
+import type { ModelJob, OnboardingDraft, OnboardingEnvironment, OnboardingModel, OnboardingSession, OnboardingSnapshot, OnboardingStep, OnboardingValidationPayload, SourceFile } from "./project-dto";
 
-interface OnboardingProps {
-  notify(message: string): void;
+const STEPS: Array<{ id: OnboardingStep; label: string; note: string }> = [
+  { id: "welcome", label: "开始", note: "检查运行环境" }, { id: "asr", label: "语音识别", note: "准备转写能力" },
+  { id: "ai", label: "AI 服务", note: "连接内容分析" }, { id: "project", label: "第一个项目", note: "设置录像与输出" },
+  { id: "complete", label: "完成", note: "检查并开始使用" },
+];
+
+type Props = {
+  snapshot: OnboardingSnapshot; onSession(session: OnboardingSession): void;
+  onRefresh(): Promise<OnboardingSnapshot>; onPaused(session: OnboardingSession): void; onClose(): void;
+};
+type SaveItem = { patch: OnboardingDraft; step: OnboardingStep };
+
+function draftFrom(snapshot: OnboardingSnapshot): OnboardingDraft {
+  const draft = snapshot.session?.draft ?? {};
+  return {
+    asr: { mode: "local", local_model_id: snapshot.initial_local_model, model_source: "modelscope", ...(draft.asr ?? {}) },
+    ai: { ...(draft.ai ?? {}) },
+    project: { name: snapshot.suggestions.project_name || "直播录像精选", trigger_mode: "manual", schedule_mode: "daily", daily_time: "22:00", interval_minutes: 60, output_directory: snapshot.suggestions.output_directory, ...(draft.project ?? {}) },
+  };
 }
 
-interface ResultState {
-  ok: boolean;
-  message: string;
+function mergePatch(left: OnboardingDraft, right: OnboardingDraft): OnboardingDraft {
+  return { ...left, ...right, asr: { ...(left.asr ?? {}), ...(right.asr ?? {}) }, ai: { ...(left.ai ?? {}), ...(right.ai ?? {}) }, project: { ...(left.project ?? {}), ...(right.project ?? {}) } };
 }
+function humanBytes(value: number) { if (!Number.isFinite(value) || value <= 0) return "0 B"; const units = ["B", "KiB", "MiB", "GiB"]; const rank = Math.min(units.length - 1, Math.floor(Math.log(value) / Math.log(1024))); return `${(value / 1024 ** rank).toFixed(rank ? 1 : 0)} ${units[rank]}`; }
+function diagnosticId(error: unknown) { return error instanceof ApiError && error.code !== "unknown_error" ? error.code.replaceAll("_", "-").toUpperCase() : null; }
+function friendlyError(error: unknown) { const id = diagnosticId(error); return { message: error instanceof ApiError && error.code !== "unknown_error" ? error.message : "暂时无法完成此操作", id }; }
 
-function Result({
-  value,
-  id,
-}: {
-  value: ResultState | null;
-  id: string;
-}) {
-  if (!value) return null;
-  return (
-    <Text
-      as="div"
-      className="onboarding-result"
-      id={id}
-      role={value.ok ? "status" : "alert"}
-      type="supporting"
-      xstyle={semanticToneStyles[value.ok ? "success" : "error"]}
-    >
-      {value.message}
-    </Text>
-  );
-}
+export function Onboarding({ snapshot, onSession, onRefresh, onPaused, onClose }: Props) {
+  const navigate = useNavigate(); const initialSession = snapshot.session!;
+  const [session, setSession] = useState(initialSession); const sessionRef = useRef(initialSession);
+  const [step, setStep] = useState<OnboardingStep>(initialSession.current_step); const [draft, setDraft] = useState(() => draftFrom(snapshot));
+  const draftRef = useRef(draft); const [environment, setEnvironment] = useState(snapshot.environment); const [models, setModels] = useState(snapshot.model_catalog);
+  const [validation, setValidation] = useState<OnboardingValidationPayload | null>(null); const [error, setError] = useState(""); const [errorId, setErrorId] = useState<string | null>(null);
+  const [conflict, setConflict] = useState(false); const [busy, setBusy] = useState(""); const [saveState, setSaveState] = useState<"saved" | "saving" | "failed">("saved");
+  const [asrStatus, setAsrStatus] = useState(snapshot.resources.asr.ready ? "ready" : "untested"); const [aiStatus, setAiStatus] = useState(snapshot.resources.ai.ready ? "ready" : "untested");
+  const [downloadJob, setDownloadJob] = useState<ModelJob | null>(() => { const item = snapshot.model_catalog.find((model) => model.job_id); return item?.job_id ? { id: item.job_id, status: "running", bytes_downloaded: item.bytes_downloaded, bytes_total: item.bytes_total } : null; });
+  const [trialFiles, setTrialFiles] = useState<SourceFile[] | null>(null); const [trialOpen, setTrialOpen] = useState(false); const [trialFile, setTrialFile] = useState("");
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false); const asrKeyInput = useRef<HTMLInputElement>(null); const aiKeyInput = useRef<HTMLInputElement>(null);
+  const asrKeyRef = useRef(""); const aiKeyRef = useRef(""); const dialogRef = useRef<HTMLElement>(null); const titleRef = useRef<HTMLHeadingElement>(null); const nameEdited = useRef(Boolean(initialSession.draft.project?.name));
+  const saveTimer = useRef<number | null>(null); const pendingSave = useRef<SaveItem | null>(null); const saving = useRef<Promise<void> | null>(null); const finishId = useRef(initialSession.pending_finish_request_id || ""); const environmentProbed = useRef(false);
 
-function formatBytes(value: unknown) {
-  const bytes = Number(value || 0);
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KiB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
-}
-
-function modelStateLabel(model: Model) {
-  if (model.state === "installed") return "已就绪";
-  if (model.state === "downloading") return "下载中";
-  if (model.state === "damaged") return "需要修复";
-  if (Number(model.partial_bytes || 0) > 0) return "可继续下载";
-  return "未下载";
-}
-
-async function readClipboardText() {
-  if (window.liveClipperShell?.readClipboardText) return window.liveClipperShell.readClipboardText();
-  if (navigator.clipboard?.readText) return navigator.clipboard.readText();
-  throw new Error("当前环境无法直接读取剪贴板，请使用 Command+V 粘贴");
-}
-
-function applySecretValue(
-  input: HTMLInputElement | null,
-  secretRef: React.MutableRefObject<string>,
-  rawValue: string,
-) {
-  const value = rawValue.trim();
-  if (!value) throw new Error("剪贴板里没有可用的 API key");
-  if (!input) throw new Error("API key 输入框尚未就绪，请重试");
-  input.value = value;
-  secretRef.current = value;
-  input.focus();
-}
-
-export function Onboarding({ notify }: OnboardingProps) {
-  const [visible, setVisible] = useState(false);
-  const [step, setStep] = useState(1);
-  const [presets, setPresets] = useState<GenericRecord[]>([]);
-  const [presetId, setPresetId] = useState("deepseek");
-  const [sourceDir, setSourceDir] = useState("");
-  const [sourceOk, setSourceOk] = useState(false);
-  const [sourceBusy, setSourceBusy] = useState(false);
-  const [sourceResult, setSourceResult] = useState<ResultState | null>(null);
-  const [asrMode, setAsrMode] = useState<"local" | "cloud">("local");
-  const [modelSource, setModelSource] = useState("modelscope");
-  const [models, setModels] = useState<Model[]>([]);
-  const [initialModel, setInitialModel] = useState("");
-  const [selectedModelId, setSelectedModelId] = useState("");
-  const [activeJobId, setActiveJobId] = useState<string | null>(null);
-  const [downloadActive, setDownloadActive] = useState(false);
-  const [downloadFailure, setDownloadFailure] = useState("");
-  const [progress, setProgress] = useState("");
-  const [asrResult, setAsrResult] = useState<ResultState | null>(null);
-  const [asrBase, setAsrBase] = useState("https://api.openai.com/v1");
-  const [asrModel, setAsrModel] = useState("whisper-1");
-  const [llmBase, setLlmBase] = useState("");
-  const [llmModel, setLlmModel] = useState("");
-  const [llmOk, setLlmOk] = useState(false);
-  const [llmBusy, setLlmBusy] = useState(false);
-  const [llmResult, setLlmResult] = useState<ResultState | null>(null);
-  const [completeResult, setCompleteResult] = useState<ResultState | null>(null);
-  const [completed, setCompleted] = useState(false);
-  const [completeBusy, setCompleteBusy] = useState(false);
-  const [showEnter, setShowEnter] = useState(false);
-  const [skipOpen, setSkipOpen] = useState(false);
-  const [skipBusy, setSkipBusy] = useState(false);
-  const [skipResult, setSkipResult] = useState<ResultState | null>(null);
-  const mounted = useRef(true);
-  const pollTimer = useRef<number | null>(null);
-  const polling = useRef(false);
-  const asrBaseRef = useRef<HTMLInputElement>(null);
-  const asrModelRef = useRef<HTMLInputElement>(null);
-  const asrKeyInputRef = useRef<HTMLInputElement>(null);
-  const llmKeyInputRef = useRef<HTMLInputElement>(null);
-  const sourceInputRef = useRef<HTMLInputElement>(null);
-  const asrKeyRef = useRef("");
-  const llmKeyRef = useRef("");
-
-  const selectedModel = useMemo(
-    () => models.find((model) => model.id === selectedModelId),
-    [models, selectedModelId],
-  );
-  const selectedModelHasActiveDownload = Boolean(
-    selectedModel
-    && downloadActive
-    && activeJobId
-    && selectedModel.job_id === activeJobId
-    && (selectedModel.downloading || selectedModel.state === "downloading"),
-  );
-  const localCanAdvance = selectedModel?.state === "installed" || selectedModelHasActiveDownload;
-  const sourceError = sourceResult && !sourceResult.ok ? sourceResult.message : "";
-  const asrFieldError = asrMode === "cloud" && asrResult && !asrResult.ok
-    ? {
-        "请填写识别服务地址": "onboardingAsrBase",
-        "请填写识别模型": "onboardingAsrModel",
-        "请填写识别 API key": "onboardingAsrKey",
-      }[asrResult.message]
-    : undefined;
-
-  const refreshModels = useCallback(async (initialize = false) => {
-    const payload = await api<{ ok?: boolean; message?: string; models?: Model[]; download_source?: string }>("/api/asr/models");
-    const nextModels = payload.models ?? [];
-    if (
-      nextModels.length !== 3
-      || (initialModel && !nextModels.some((model) => model.id === initialModel))
-    ) {
-      throw new Error("本地模型列表与当前版本不匹配");
-    }
-    if (!mounted.current) return payload;
-    setModels(nextModels);
-    const active = nextModels.find((model) => model.downloading || model.state === "downloading");
-    if (initialize) {
-      setSelectedModelId(active?.id || initialModel);
-      if (["modelscope", "huggingface"].includes(String(payload.download_source))) {
-        setModelSource(String(payload.download_source));
-      }
-    } else {
-      setSelectedModelId((current) => nextModels.some((model) => model.id === current)
-        ? active?.id || current
-        : initialModel);
-    }
-    setDownloadActive(Boolean(active));
-    setActiveJobId(active?.job_id || null);
-    return payload;
-  }, [initialModel]);
-
-  const pollJob = useCallback(async (jobId: string) => {
-    if (!jobId || polling.current) return;
-    polling.current = true;
-    setActiveJobId(jobId);
-    setDownloadActive(true);
-    try {
-      const jobPayload = await api<{ job?: GenericRecord }>(`/api/jobs/${encodeURIComponent(jobId)}`);
-      const job = (jobPayload.job ?? jobPayload) as GenericRecord;
-      await refreshModels();
-      if (!mounted.current) return;
-      const model = models.find((item) => item.id === selectedModelId);
-      const downloaded = Number(job.bytes_downloaded ?? model?.bytes_downloaded ?? model?.partial_bytes ?? 0);
-      const total = Number(job.bytes_total ?? model?.bytes_total ?? 0);
-      const suffix = total > 0 ? ` / ${formatBytes(total)}` : "";
-      const percent = total > 0 ? `（${Math.min(100, Math.round((downloaded / total) * 100))}%）` : "";
-      setProgress(`正在下载 ${model?.display_name || "模型"}：${formatBytes(downloaded)}${suffix}${percent}`);
-      if (job.status === "failed" || job.status === "interrupted") {
-        const message = job.status === "interrupted"
-          ? "模型下载已中断，已保留进度，可继续下载"
-          : String(job.error || job.message || "模型下载失败，可稍后继续");
-        setDownloadFailure(message);
-        setDownloadActive(false);
-        setActiveJobId(null);
-        setAsrResult({ ok: false, message });
-      } else if (job.status === "succeeded") {
-        setDownloadActive(false);
-        setActiveJobId(null);
-        setProgress("");
-        await refreshModels();
-        setDownloadFailure("");
-        setAsrResult({ ok: true, message: "模型已安装，可以继续" });
-      } else {
-        pollTimer.current = window.setTimeout(() => void pollJob(jobId), 1000);
-      }
-    } catch (error) {
-      if (mounted.current) {
-        setAsrResult({ ok: false, message: `暂时无法读取下载进度：${(error as Error).message}` });
-        pollTimer.current = window.setTimeout(() => void pollJob(jobId), 1500);
-      }
-    } finally {
-      polling.current = false;
-    }
-  }, [models, refreshModels, selectedModelId]);
-
-  useEffect(() => {
-    mounted.current = true;
-    const controller = new AbortController();
-    api<GenericRecord>("/api/onboarding", {}, controller.signal)
-      .then(async (status) => {
-        if (!mounted.current || !status.needs_onboarding) return;
-        setVisible(true);
-        setPresets(status.presets ?? []);
-        setInitialModel(String(status.initial_local_model || ""));
-        setSelectedModelId(String(status.initial_local_model || ""));
-        setAsrMode(status.initial_asr_mode === "cloud" ? "cloud" : "local");
-        setSourceDir(String(status.source_dir || ""));
-        setAsrBase(String(status.asr_api_base || "https://api.openai.com/v1"));
-        setAsrModel(status.asr_backend === "openai" ? String(status.asr_model || "whisper-1") : "whisper-1");
-      })
-      .catch((error) => {
-        if (!(error instanceof DOMException && error.name === "AbortError")) {
-          setVisible(true);
-          setCompleteResult({ ok: false, message: `无法加载初始设置：${(error as Error).message}` });
+  const adoptSession = useCallback((next: OnboardingSession) => { sessionRef.current = next; setSession(next); onSession(next); }, [onSession]);
+  const handleFailure = useCallback((caught: unknown, fallback?: string) => { const detail = friendlyError(caught); setError(fallback || detail.message); setErrorId(detail.id); }, []);
+  const drainSave = useCallback(async (): Promise<void> => {
+    if (saving.current) return saving.current;
+    const run = async () => {
+      while (pendingSave.current) {
+        const item = pendingSave.current; pendingSave.current = null; setSaveState("saving");
+        try { const result = await projectApi.onboardingPatch(sessionRef.current.revision, item.step, item.patch); adoptSession(result.session); setSaveState("saved"); }
+        catch (caught) {
+          setSaveState("failed");
+          if (caught instanceof ApiError && caught.code === "onboarding_revision_conflict") { setConflict(true); setError("设置已在另一个窗口更新"); }
+          else handleFailure(caught, "暂时无法保存设置");
+          throw caught;
         }
-      });
-    return () => {
-      mounted.current = false;
-      controller.abort();
-      if (pollTimer.current) window.clearTimeout(pollTimer.current);
+      }
     };
-  }, []);
+    saving.current = run().finally(() => { saving.current = null; }); return saving.current;
+  }, [adoptSession, handleFailure]);
+  const queueSave = useCallback((patch: OnboardingDraft, nextStep = step) => {
+    pendingSave.current = pendingSave.current ? { patch: mergePatch(pendingSave.current.patch, patch), step: nextStep } : { patch, step: nextStep };
+    if (saveTimer.current) window.clearTimeout(saveTimer.current);
+    saveTimer.current = window.setTimeout(() => { saveTimer.current = null; void drainSave().catch(() => undefined); }, 500);
+  }, [drainSave, step]);
+  const flush = useCallback(async (nextStep?: OnboardingStep) => {
+    if (saveTimer.current) { window.clearTimeout(saveTimer.current); saveTimer.current = null; }
+    if (nextStep) pendingSave.current = pendingSave.current ? { ...pendingSave.current, step: nextStep } : { patch: {}, step: nextStep };
+    await drainSave();
+  }, [drainSave]);
 
-  useEffect(() => {
-    if (!visible || !initialModel) return;
-    refreshModels(true)
-      .then(() => undefined)
-      .catch((error) => {
-        setModels([]);
-        setAsrResult({ ok: false, message: `无法读取本地模型：${(error as Error).message}` });
-      });
-  }, [initialModel, refreshModels, visible]);
+  const updateDraft = useCallback(<S extends keyof OnboardingDraft>(section: S, field: string, value: string | number) => {
+    const patch = { [section]: { [field]: value } } as OnboardingDraft;
+    const next = mergePatch(draftRef.current, patch); draftRef.current = next; setDraft(next); setValidation(null); setError("");
+    if (section === "asr") setAsrStatus("untested");
+    if (section === "ai") setAiStatus("untested");
+    queueSave(patch);
+  }, [queueSave]);
 
-  useEffect(() => {
-    if (activeJobId && !pollTimer.current && !polling.current) void pollJob(activeJobId);
-  }, [activeJobId, pollJob]);
+  const go = useCallback(async (next: OnboardingStep) => { try { await flush(next); setStep(next); setError(""); window.setTimeout(() => titleRef.current?.focus(), 0); } catch { /* the inline save error keeps the current step */ } }, [flush]);
+  const pause = useCallback(async () => {
+    if (busy) return; setBusy("pause"); setError("");
+    try { await flush(step); const result = await projectApi.onboardingPause(sessionRef.current.revision); adoptSession(result.session); onPaused(result.session); }
+    catch (caught) { handleFailure(caught, "暂时无法保存进度"); } finally { setBusy(""); }
+  }, [adoptSession, busy, flush, handleFailure, onPaused, step]);
 
+  useEffect(() => { titleRef.current?.focus(); }, []);
+  useEffect(() => () => { if (saveTimer.current) window.clearTimeout(saveTimer.current); }, []);
   useEffect(() => {
-    const preset = presets.find((item) => item.id === presetId);
-    if (!preset || presetId === "custom") return;
-    setLlmBase(String(preset.api_base || ""));
-    setLlmModel(String(preset.model || ""));
-    setLlmOk(false);
-    setLlmResult(null);
-  }, [presetId, presets]);
-
-  useEffect(() => {
-    if (!skipOpen) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !skipBusy) setSkipOpen(false);
+    const keydown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !trialOpen) { event.preventDefault(); void pause(); return; }
+      if (event.key !== "Tab" || !dialogRef.current) return;
+      const controls = [...dialogRef.current.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex="0"]')];
+      if (!controls.length) return; const first = controls[0]; const last = controls[controls.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
     };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [skipBusy, skipOpen]);
+    document.addEventListener("keydown", keydown); return () => document.removeEventListener("keydown", keydown);
+  }, [pause, trialOpen]);
 
-  function focusSourceInput() {
-    window.setTimeout(() => {
-      sourceInputRef.current?.focus();
-      sourceInputRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
-    });
-  }
+  const selectedModelId = draft.asr?.local_model_id || snapshot.initial_local_model;
+  const selectedModel = models.find((model) => model.id === selectedModelId) ?? models.find((model) => model.recommended) ?? models[0];
+  const asrMode = draft.asr?.mode === "cloud" ? "cloud" : "local";
+  const modelBusy = selectedModel?.state === "downloading" || ["queued", "running"].includes(downloadJob?.status ?? "");
 
-  async function validateSource(advance = false) {
-    setSourceBusy(true);
+  useEffect(() => {
+    if (step !== "welcome" || session.state !== "in_progress" || environmentProbed.current) return;
+    environmentProbed.current = true;
+    void recheckEnvironment();
+  }, [session.state, step]);
+
+  const refreshModels = useCallback(async () => { const payload = await projectApi.modelCatalog(); setModels(payload.models); return payload.models; }, []);
+  useEffect(() => {
+    if (step !== "asr" || !downloadJob?.id || !["queued", "running"].includes(downloadJob.status)) return;
+    let timer = 0; let stopped = false;
+    const poll = async () => {
+      if (document.hidden || stopped) return;
+      try { const result = await projectApi.job(downloadJob.id); if (stopped) return; setDownloadJob(result.job); if (["succeeded", "failed", "interrupted"].includes(result.job.status)) await refreshModels(); }
+      catch { if (!stopped) setError("暂时无法刷新下载进度，正在保留上次数据"); }
+    };
+    const schedule = () => { if (timer) window.clearInterval(timer); timer = window.setInterval(() => void poll(), 1000); };
+    const visible = () => { if (!document.hidden) { void poll(); schedule(); } else if (timer) window.clearInterval(timer); };
+    void poll(); schedule(); document.addEventListener("visibilitychange", visible);
+    return () => { stopped = true; if (timer) window.clearInterval(timer); document.removeEventListener("visibilitychange", visible); };
+  }, [downloadJob?.id, downloadJob?.status, refreshModels, step]);
+
+  useEffect(() => {
+    if (session.state !== "completed" || !session.first_project?.project_id) return;
+    const controller = new AbortController(); projectApi.sourceFiles(session.first_project.project_id, controller.signal).then((result) => setTrialFiles(result.files.filter((file) => file.selectable))).catch(() => setTrialFiles([])); return () => controller.abort();
+  }, [session.first_project?.project_id, session.state]);
+
+  async function recheckEnvironment() { setBusy("environment"); setError(""); try { const result = await projectApi.onboardingEnvironment(sessionRef.current.revision); setEnvironment(result.environment); } catch (caught) { handleFailure(caught); } finally { setBusy(""); } }
+  async function prepareLocalAsr() {
+    if (!selectedModel || busy) return; setBusy("asr"); setError("");
     try {
-      const result = await post<GenericRecord>("/api/onboarding/test-source", { source_dir: sourceDir });
-      const ok = result.ok === true;
-      setSourceOk(ok);
-      setSourceResult({ ok, message: String(result.message || `文件夹可用，发现 ${result.video_count} 个视频`) });
-      if (advance && ok) {
-        setStep(2);
-      } else if (advance) {
-        focusSourceInput();
-      }
-    } catch (error) {
-      setSourceOk(false);
-      setSourceResult({ ok: false, message: (error as Error).message });
-      if (advance) focusSourceInput();
-    } finally {
-      setSourceBusy(false);
-    }
-  }
-
-  async function selectRecordingFolder() {
-    try {
-      const selectFolder = window.liveClipperShell?.selectFolder;
-      if (!selectFolder) return;
-      const selectedPath = await selectFolder("选择录播文件夹");
-      if (!selectedPath) return;
-      setSourceDir(selectedPath);
-      setSourceOk(false);
-      setSourceResult(null);
-      const result = await post<GenericRecord>("/api/onboarding/test-source", { source_dir: selectedPath });
-      const ok = result.ok === true;
-      setSourceOk(ok);
-      setSourceResult({ ok, message: String(result.message || `文件夹可用，发现 ${result.video_count} 个视频`) });
-    } catch (error) {
-      setSourceResult({ ok: false, message: `无法选择文件夹：${(error as Error).message}` });
-    }
-  }
-
-  async function startModelDownload(modelId: string) {
-    if (downloadActive) {
-      setAsrResult({ ok: false, message: "已有模型正在下载，请等待完成" });
-      return;
-    }
-    setSelectedModelId(modelId);
-    try {
-      const currentPayload = await api<{ models?: Model[] }>("/api/asr/models");
-      const currentModels = currentPayload.models ?? [];
-      setModels(currentModels);
-      const model = currentModels.find((item) => item.id === modelId);
-      if (!model) throw new Error("所选模型不存在");
-      if (model.state === "installed") return;
-      const active = currentModels.find((item) => item.downloading || item.state === "downloading");
-      if (active?.job_id) {
-        setAsrResult({ ok: false, message: "已有模型正在下载，请等待完成" });
-        void pollJob(active.job_id);
-        return;
-      }
-      setDownloadActive(true);
-      setDownloadFailure("");
-      const payload = await post<GenericRecord>("/api/asr/models/download", { model: modelId, source: modelSource });
-      const jobId = String(payload.job?.id || payload.job_id || "");
-      if (!jobId) throw new Error("下载任务未返回 job id");
-      setActiveJobId(jobId);
-      setAsrResult({ ok: true, message: "已开始下载，离开本步骤不会取消任务" });
-      void pollJob(jobId);
-    } catch (error) {
-      setDownloadFailure((error as Error).message);
-      setDownloadActive(false);
-      setActiveJobId(null);
-      setAsrResult({ ok: false, message: (error as Error).message });
-    }
-  }
-
-  async function testLlm() {
-    setLlmBusy(true);
-    try {
-      const result = await post<GenericRecord>("/api/onboarding/test-llm", {
-        api_base: llmBase,
-        model: llmModel,
-        api_key: llmKeyRef.current,
-      });
-      const ok = result.ok === true;
-      setLlmOk(ok);
-      setLlmResult({ ok, message: String(result.message || "连接失败") });
-    } catch (error) {
-      setLlmOk(false);
-      setLlmResult({ ok: false, message: (error as Error).message });
-    } finally {
-      setLlmBusy(false);
-    }
-  }
-
-  async function pasteAsrKey() {
-    try {
-      applySecretValue(asrKeyInputRef.current, asrKeyRef, await readClipboardText());
-      setAsrResult(null);
-    } catch (error) {
-      setAsrResult({ ok: false, message: (error as Error).message });
-    }
-  }
-
-  async function pasteLlmKey() {
-    try {
-      applySecretValue(llmKeyInputRef.current, llmKeyRef, await readClipboardText());
-      setLlmOk(false);
-      setLlmResult(null);
-    } catch (error) {
-      setLlmResult({ ok: false, message: (error as Error).message });
-    }
-  }
-
-  async function goToSummary() {
-    if (asrMode === "local") {
-      try {
-        await refreshModels();
-      } catch (error) {
-        setAsrResult({ ok: false, message: (error as Error).message });
-        return;
-      }
-    }
-    setStep(4);
-    if (asrMode === "local" && selectedModel?.state !== "installed") {
-      setCompleteResult({
-        ok: false,
-        message: selectedModelHasActiveDownload
-          ? "模型仍在下载，安装完成后才能保存设置"
-          : downloadFailure || "所选模型尚未安装，返回语音识别步骤完成下载后再保存",
-      });
-    } else {
-      setCompleteResult(null);
-    }
-  }
-
-  async function complete() {
-    if (completed) return;
-    if (asrMode === "local") {
-      try {
-        const payload = await api<{ models?: Model[] }>("/api/asr/models");
-        const model = payload.models?.find((item) => item.id === selectedModelId);
-        if (model?.state !== "installed") {
-          setCompleteResult({ ok: false, message: "下载未完成，不能保存本机识别设置" });
-          return;
-        }
-      } catch (error) {
-        setCompleteResult({ ok: false, message: `无法确认模型状态：${(error as Error).message}` });
-        return;
-      }
-    }
-    setCompleteBusy(true);
-    setCompleteResult(null);
-    let settingsSaved = false;
-    try {
-      const result = await post<GenericRecord>("/api/onboarding/complete", {
-        source_dir: sourceDir,
-        llm_api_base: llmBase,
-        llm_model: llmModel,
-        llm_api_key: llmKeyRef.current,
-        asr_mode: asrMode,
-        asr_model: asrMode === "local" ? selectedModelId : asrModel,
-        asr_model_source: modelSource,
-        asr_api_base: asrBase,
-        asr_api_key: asrKeyRef.current,
-      });
-      if (!result.ok) throw new Error(String(result.message || "设置未保存，请检查后重试"));
-      settingsSaved = true;
-      setCompleted(true);
-      const serviceStart = await post<GenericRecord>("/api/service/start", {});
-      if (serviceStart.ok !== true) {
-        setCompleteResult({ ok: false, message: "设置已保存，但自动化服务未启动，可进入主界面后手动启动" });
-        setShowEnter(true);
-        return;
-      }
-      window.location.reload();
-    } catch (error) {
-      if (settingsSaved) {
-        setCompleteResult({ ok: false, message: "设置已保存，但自动化服务未启动，可进入主界面后手动启动" });
-        setShowEnter(true);
+      await flush("asr");
+      if (selectedModel.state !== "installed") {
+        const result = await projectApi.downloadModel(selectedModel.id, selectedModel.download_source || "modelscope");
+        if (!result.job?.id) throw new Error("missing job id"); setDownloadJob(result.job); await refreshModels();
       } else {
-        setCompleteResult({ ok: false, message: `设置未保存：${(error as Error).message}` });
+        const result = await projectApi.onboardingAsrLocal(sessionRef.current.revision, selectedModel.id, selectedModel.download_source || "modelscope"); adoptSession(result.session); setAsrStatus("ready");
       }
-    } finally {
-      setCompleteBusy(false);
-    }
+    } catch (caught) { handleFailure(caught); } finally { setBusy(""); }
   }
-
-  async function confirmSkip() {
-    if (skipBusy) return;
-    setSkipBusy(true);
-    setSkipResult({ ok: true, message: "正在保存…" });
+  async function submitCloudAsr() {
+    if (busy) return; const apiKey = asrKeyRef.current.trim(); if (!apiKey) { setError("请填写识别 API key"); asrKeyInput.current?.focus(); return; }
+    setBusy("asr"); setError(""); try { await flush("asr"); const result = await projectApi.onboardingAsrCloud(sessionRef.current.revision, draftRef.current.asr?.api_base || "", draftRef.current.asr?.model || "", apiKey); adoptSession(result.session); setAsrStatus("ready"); }
+    catch (caught) { setAsrStatus("error"); handleFailure(caught); } finally { if (asrKeyInput.current) asrKeyInput.current.value = ""; asrKeyRef.current = ""; setBusy(""); }
+  }
+  async function submitAi() {
+    if (busy) return; const apiKey = aiKeyRef.current.trim(); if (!apiKey) { setError("请填写 AI API key"); aiKeyInput.current?.focus(); return; }
+    const preset = snapshot.provider_presets.find((item) => item.id === (draftRef.current.ai?.provider_id || "custom")); setBusy("ai"); setError("");
+    try { await flush("ai"); const result = await projectApi.onboardingAi(sessionRef.current.revision, preset?.id || "custom", preset?.label || "其他兼容服务", draftRef.current.ai?.api_base || "", draftRef.current.ai?.model || "", apiKey); adoptSession(result.session); setAiStatus("ready"); }
+    catch (caught) { setAiStatus("error"); handleFailure(caught); } finally { if (aiKeyInput.current) aiKeyInput.current.value = ""; aiKeyRef.current = ""; setBusy(""); }
+  }
+  async function selectFolder(kind: "source" | "output") {
+    const select = window.liveClipperShell?.selectFolder; if (!select) return;
+    const value = await select(kind === "source" ? "选择录像目录" : "选择成片保存位置"); if (!value) return;
+    updateDraft("project", kind === "source" ? "source_directory" : "output_directory", value);
+    if (kind === "source" && !nameEdited.current) { const name = value.split(/[\\/]/).filter(Boolean).at(-1) || "直播录像精选"; updateDraft("project", "name", name); }
+  }
+  async function validateProject() { setBusy("validate"); setError(""); try { await flush("complete"); const result = await projectApi.onboardingValidate(sessionRef.current.revision); setValidation(result); setStep("complete"); } catch (caught) { handleFailure(caught); } finally { setBusy(""); } }
+  async function finish() {
+    if (busy) return; setBusy("finish"); setError("");
     try {
-      await post("/api/onboarding/skip", {});
-      setSkipOpen(false);
-      setVisible(false);
-    } catch (error) {
-      setSkipResult({ ok: false, message: `未能保存：${(error as Error).message}` });
-    } finally {
-      setSkipBusy(false);
-    }
+      await flush("complete"); if (!finishId.current) finishId.current = sessionRef.current.pending_finish_request_id || requestId("onboarding-finish");
+      const result = await projectApi.onboardingFinish(sessionRef.current.revision, finishId.current); adoptSession(result.session);
+    } catch (caught) {
+      if (caught instanceof ApiError && caught.code === "network_error") {
+        try { const recovered = await onRefresh(); if (recovered.session) { adoptSession(recovered.session); finishId.current = recovered.session.pending_finish_request_id || finishId.current; if (["completed", "activation_pending"].includes(recovered.session.state)) return; } } catch { /* retain original uncertainty message */ }
+        setError("创建结果暂时无法确认，请保持当前窗口后重试");
+      } else handleFailure(caught);
+    } finally { setBusy(""); }
+  }
+  async function retryService() {
+    if (busy || !session.pending_finish_request_id) return; setBusy("retry"); setError("");
+    try { const result = await projectApi.onboardingRetry(sessionRef.current.revision, session.pending_finish_request_id); adoptSession(result.session); }
+    catch (caught) { handleFailure(caught); } finally { setBusy(""); }
+  }
+  async function runTrial() {
+    const projectId = session.first_project?.project_id; if (!projectId || !trialFile || busy) return; setBusy("trial");
+    try { await projectApi.scan(projectId, requestId("onboarding-trial"), "selected", [trialFile]); setTrialOpen(false); onClose(); navigate(`/projects/${projectId}`); }
+    catch (caught) { handleFailure(caught); } finally { setBusy(""); }
   }
 
-  function advanceFromAsr() {
-    if (asrMode === "local" && !localCanAdvance) {
-      setAsrResult({ ok: false, message: "请先下载并安装所选本地模型" });
-      window.setTimeout(() => {
-        document.getElementById(`onboardingModelDownload-${selectedModelId}`)?.focus();
-      });
-      return;
-    }
-    if (asrMode === "cloud") {
-      const missing = [
-        [asrBase.trim(), "onboardingAsrBase", "请填写识别服务地址"],
-        [asrModel.trim(), "onboardingAsrModel", "请填写识别模型"],
-        [asrKeyRef.current.trim(), "onboardingAsrKey", "请填写识别 API key"],
-      ].find(([value]) => !value);
-      if (missing) {
-        setAsrResult({ ok: false, message: String(missing[2]) });
-        window.setTimeout(() => {
-          ({
-            onboardingAsrBase: asrBaseRef,
-            onboardingAsrModel: asrModelRef,
-            onboardingAsrKey: asrKeyInputRef,
-          } as Record<string, React.RefObject<HTMLInputElement | null>>)[String(missing[1])]?.current?.focus();
-        });
-        return;
-      }
-    }
-    setAsrResult(null);
-    setStep(3);
-  }
-
-  function advanceFromLlm() {
-    if (!llmOk) {
-      setLlmResult({ ok: false, message: "请先测试 AI 服务连接" });
-      window.setTimeout(() => document.getElementById("onboardingLlmTestBtn")?.focus());
-      return;
-    }
-    void goToSummary();
-  }
-
-  if (!visible) return null;
-  const skipButton = (
-    <Button
-      data-onboarding-skip
-      label="稍后设置"
-      onClick={() => { setSkipResult(null); setSkipOpen(true); }}
-      variant="secondary"
-    />
-  );
-  const sourceLabel = modelSource === "modelscope" ? "ModelScope（中国大陆）" : "Hugging Face（国际）";
-  const hasLlmKey = Boolean(llmKeyRef.current);
-  const hasAsrKey = Boolean(asrKeyRef.current);
-  const summary = asrMode === "local"
-    ? [
-        ["录播文件夹", sourceDir], ["语音识别", "本机识别"], ["识别模型", selectedModel?.display_name || selectedModelId],
-        ["模型档位", selectedModel?.tier_label || ""], ["下载源", sourceLabel],
-        ["模型状态", selectedModel?.state === "installed" ? "已安装" : selectedModelHasActiveDownload ? "下载中" : "未安装"],
-        ["AI 服务", llmBase], ["AI 模型", llmModel], ["AI key", hasLlmKey ? "已填写（只保存在本机 .env）" : "未填写"],
-      ]
-    : [
-        ["录播文件夹", sourceDir], ["语音识别", "云端识别"], ["识别服务", asrBase], ["识别模型", asrModel],
-        ["ASR key", hasAsrKey ? "已填写（只保存在本机 .env）" : "未填写"], ["AI 服务", llmBase],
-        ["AI 模型", llmModel], ["AI key", hasLlmKey ? "已填写（只保存在本机 .env）" : "未填写"],
-      ];
-
-  return (
-    <>
-      <div id="onboardingOverlay" className="onboarding-overlay">
-        <div className="onboarding-card">
-          <div className="onboarding-steps">
-            {["1 录播文件夹", "2 语音识别", "3 AI 服务", "4 完成"].map((label, index) => (
-              <span className={`onboarding-step-dot ${step === index + 1 ? "active" : ""}`} data-step-dot={index + 1} key={label}>{label}</span>
-            ))}
-          </div>
-          {step === 1 && (
-            <section className="onboarding-step" data-step="1">
-              <h2>欢迎使用 Venus</h2><p>先告诉我你的直播录像放在哪个文件夹，以后有新录像会自动切片。</p>
-              <TextInput
-                aria-errormessage={sourceError ? "onboardingSourceError" : undefined}
-                aria-invalid={Boolean(sourceError)}
-                label="录播文件夹路径"
-                onChange={(value) => { setSourceDir(value); setSourceOk(false); setSourceResult(null); }}
-                placeholder="例如 /Volumes/your-nas/recordings"
-                ref={sourceInputRef}
-                status={sourceError ? { type: "error" } : undefined}
-                value={sourceDir}
-                width="100%"
-              />
-              {window.liveClipperShell?.selectFolder && (
-                <div className="onboarding-browse">
-                  <Button id="onboardingBrowseBtn" isDisabled={sourceBusy} label="选择文件夹" onClick={() => void selectRecordingFolder()} />
-                </div>
-              )}
-              {sourceError && (
-                <Text
-                  as="div"
-                  className="onboarding-result"
-                  id="onboardingSourceError"
-                  role="alert"
-                  type="supporting"
-                  xstyle={semanticToneStyles.error}
-                >
-                  {sourceError}
-                </Text>
-              )}
-              <Result id="onboardingSourceResult" value={sourceResult?.ok ? sourceResult : null} />
-              <div className="onboarding-actions">
-                {skipButton}
-                <Button data-busy={sourceBusy ? "true" : undefined} icon={sourceBusy ? <Spinner aria-hidden="true" aria-label="检查中…" shade="inherit" size="sm" /> : undefined} id="onboardingSourceTestBtn" isDisabled={sourceBusy} label={sourceBusy ? "检查中…" : "检查文件夹"} onClick={() => void validateSource()} />
-                <Button data-busy={sourceBusy ? "true" : undefined} icon={sourceBusy ? <Spinner aria-hidden="true" aria-label="检查中…" shade="inherit" size="sm" /> : undefined} id="onboardingToStep2Btn" isDisabled={sourceBusy} label={sourceBusy ? "检查中…" : "下一步"} onClick={() => void validateSource(true)} variant="primary" />
-                <VisuallyHidden as="div" aria-atomic="true" aria-live="polite" role="status">
-                  {sourceBusy ? "正在检查录播文件夹" : ""}
-                </VisuallyHidden>
-              </div>
-            </section>
-          )}
-          {step === 2 && (
-            <section className="onboarding-step" data-step="2">
-              <h2>选择语音识别方式</h2><p>默认在本机完成识别。模型只会在你明确点击下载后安装。</p>
-              <RadioList
-                className="onboarding-asr-modes"
-                htmlName="onboardingAsrMode"
-                isDisabled={downloadActive}
-                isLabelHidden
-                label="语音识别方式"
-                onChange={(value) => {
-                  setAsrMode(value === "cloud" ? "cloud" : "local");
-                  setAsrResult(null);
-                }}
-                orientation="horizontal"
-                value={asrMode}
-              >
-                <RadioListItem label="本机识别（默认）" value="local" description="模型下载后可离线识别" />
-                <RadioListItem label="云端识别（需要 API Key）" value="cloud" description="使用 OpenAI-compatible 服务" />
-              </RadioList>
-              {asrMode === "local" ? (
-                <div id="onboardingAsrLocalPanel">
-                  <Selector
-                    className="onboarding-source-selector"
-                    htmlName="onboardingAsrSource"
-                    isDisabled={downloadActive}
-                    label="模型下载源"
-                    onChange={(value) => {
-                      setModelSource(value);
-                      const label = value === "modelscope" ? "ModelScope（中国大陆）" : "Hugging Face（国际）";
-                      setAsrResult({ ok: true, message: `下次下载将使用 ${label}` });
-                    }}
-                    options={[
-                      { value: "modelscope", label: "ModelScope（中国大陆）" },
-                      { value: "huggingface", label: "Hugging Face（国际）" },
-                    ]}
-                    value={modelSource}
-                    width="100%"
-                  />
-                  <div id="onboardingAsrModels" className="onboarding-models onboarding-model-grid">
-                    {models.map((model) => (
-                      <SelectableCard
-                        className={`onboarding-model-card ${model.state}`}
-                        data-onboarding-model-id={model.id}
-                        isDisabled={downloadActive}
-                        isSelected={model.id === selectedModelId}
-                        key={model.id}
-                        label={model.display_name}
-                        onChange={() => {
-                          setSelectedModelId(model.id);
-                          setAsrResult(null);
-                        }}
-                        padding={3}
-                      >
-                        <div className="onboarding-model-choice">
-                          <strong>{model.display_name}</strong>
-                          <span>{model.tier_label} · {String(model.size_note || "")}</span>
-                          <span>将使用 {sourceLabel}</span>
-                          <span className="onboarding-model-state">{modelStateLabel(model)}</span>
-                          {model.state !== "installed" && (
-                            <Button
-                              className="onboarding-model-download"
-                              id={`onboardingModelDownload-${model.id}`}
-                              isDisabled={downloadActive}
-                              label={model.state === "damaged" ? "修复并使用" : Number(model.partial_bytes || 0) > 0 ? "继续下载" : "下载并使用"}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                void startModelDownload(model.id);
-                              }}
-                              size="sm"
-                              variant="secondary"
-                              width="100%"
-                            />
-                          )}
-                        </div>
-                      </SelectableCard>
-                    ))}
-                  </div>
-                  {progress && (
-                    <div id="onboardingAsrProgress" className="onboarding-progress">
-                      <ProgressBar
-                        hasValueLabel
-                        label={progress}
-                        max={Number(selectedModel?.bytes_total || 1)}
-                        value={Number(selectedModel?.partial_bytes || 0)}
-                      />
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <FormLayout id="onboardingAsrCloudPanel">
-                  <p>使用 OpenAI-compatible 音频转写服务，和选片 AI 可以不是同一家。</p>
-                  <TextInput aria-errormessage={asrFieldError === "onboardingAsrBase" ? "onboardingAsrResult" : undefined} aria-invalid={asrFieldError === "onboardingAsrBase"} id="onboardingAsrBase" label="识别服务地址" onChange={(value) => { setAsrBase(value); setAsrResult(null); }} placeholder="https://api.openai.com/v1" ref={asrBaseRef} status={asrFieldError === "onboardingAsrBase" ? { type: "error" } : undefined} value={asrBase} width="100%" />
-                  <TextInput aria-errormessage={asrFieldError === "onboardingAsrModel" ? "onboardingAsrResult" : undefined} aria-invalid={asrFieldError === "onboardingAsrModel"} id="onboardingAsrModel" label="识别模型" onChange={(value) => { setAsrModel(value); setAsrResult(null); }} placeholder="whisper-1" ref={asrModelRef} status={asrFieldError === "onboardingAsrModel" ? { type: "error" } : undefined} value={asrModel} width="100%" />
-                  <Field inputID="onboardingAsrKey" label="识别 API key" width="100%">
-                    <div className="secret-input-row">
-                      <input
-                        aria-errormessage={asrFieldError === "onboardingAsrKey" ? "onboardingAsrResult" : undefined}
-                        aria-invalid={asrFieldError === "onboardingAsrKey"}
-                        autoComplete="off"
-                        className="onboarding-secret-input"
-                        id="onboardingAsrKey"
-                        onChange={(event) => { asrKeyRef.current = event.currentTarget.value; setAsrResult(null); }}
-                        placeholder="直接粘贴，安全保存在本机"
-                        ref={asrKeyInputRef}
-                        spellCheck={false}
-                        type="password"
-                      />
-                      <Button label="粘贴识别 API key" onClick={() => void pasteAsrKey()} />
-                    </div>
-                  </Field>
-                </FormLayout>
-              )}
-              <Result id="onboardingAsrResult" value={asrResult} />
-              <div className="onboarding-actions">
-                {skipButton}
-                <Button id="onboardingBackTo1Btn" label="上一步" onClick={() => setStep(1)} variant="secondary" />
-                <Button id="onboardingToStep3Btn" label="下一步" onClick={advanceFromAsr} variant="primary" />
-              </div>
-            </section>
-          )}
-          {step === 3 && (
-            <section className="onboarding-step" data-step="3">
-              <h2>选一个 AI 服务</h2><p>切片选题由 AI 完成，需要一个 API key（一场直播的费用通常只要几分钱）。</p>
-              <div id="onboardingPresets" className="onboarding-presets">
-                {presets.map((preset) => (
-                  <SelectableCard
-                    className="onboarding-preset"
-                    data-onboarding-preset={String(preset.id)}
-                    isSelected={presetId === preset.id}
-                    key={String(preset.id)}
-                    label={String(preset.label)}
-                    onChange={() => setPresetId(String(preset.id))}
-                    padding={3}
-                  >
-                    <strong>{String(preset.label)}</strong>
-                    {preset.signup_url && <a href={String(preset.signup_url)} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>获取 API key</a>}
-                  </SelectableCard>
-                ))}
-              </div>
-              <FormLayout>
-                <TextInput id="onboardingLlmBase" label="服务地址" onChange={(value) => { setLlmBase(value); setLlmOk(false); setLlmResult(null); }} value={llmBase} width="100%" />
-                <TextInput id="onboardingLlmModel" label="模型" onChange={(value) => { setLlmModel(value); setLlmOk(false); setLlmResult(null); }} value={llmModel} width="100%" />
-                <Field inputID="onboardingLlmKey" label="API key" width="100%">
-                  <div className="secret-input-row">
-                    <input
-                      autoComplete="off"
-                      className="onboarding-secret-input"
-                      id="onboardingLlmKey"
-                      onChange={(event) => { llmKeyRef.current = event.currentTarget.value; setLlmOk(false); setLlmResult(null); }}
-                      placeholder="直接粘贴，安全保存在本机"
-                      ref={llmKeyInputRef}
-                      spellCheck={false}
-                      type="password"
-                    />
-                    <Button label="粘贴 AI API key" onClick={() => void pasteLlmKey()} />
-                  </div>
-                </Field>
-              </FormLayout>
-              <Result id="onboardingLlmResult" value={llmResult} />
-              <div className="onboarding-actions">
-                {skipButton}
-                <Button id="onboardingBackTo2Btn" label="上一步" onClick={() => setStep(2)} />
-                <Button data-busy={llmBusy ? "true" : undefined} icon={llmBusy ? <Spinner aria-hidden="true" aria-label="测试中…" shade="inherit" size="sm" /> : undefined} id="onboardingLlmTestBtn" isDisabled={llmBusy} label={llmBusy ? "测试中…" : "测试连接"} onClick={() => void testLlm()} />
-                <VisuallyHidden as="div" aria-atomic="true" aria-live="polite" role="status">
-                  {llmBusy ? "正在测试 AI 服务连接" : ""}
-                </VisuallyHidden>
-                <Button id="onboardingToStep4Btn" label="下一步" onClick={advanceFromLlm} variant="primary" />
-              </div>
-            </section>
-          )}
-          {step === 4 && (
-            <section className="onboarding-step" data-step="4">
-              <h2>确认设置</h2>
-              <List className="onboarding-summary" density="compact" hasDividers id="onboardingSummary">
-                {summary.map(([label, value]) => <ListItem endContent={<strong className="technical-value" title={value}>{value}</strong>} key={label} label={label} />)}
-              </List>
-              {asrMode === "local" && selectedModel?.state !== "installed" && (
-                <div className="onboarding-result">
-                  <Text as="div" role="alert" type="supporting" xstyle={semanticToneStyles.warning}>模型下载尚未完成</Text>
-                  <Text as="div" type="supporting" xstyle={semanticToneStyles.warning}>{selectedModelHasActiveDownload ? "下载会继续进行；安装完成后才能保存设置。" : "请返回语音识别步骤完成下载。"}</Text>
-                </div>
-              )}
-              <Result id="onboardingCompleteResult" value={completeResult} />
-              <div className="onboarding-actions">
-                {skipButton}
-                <Button id="onboardingBackTo3Btn" isDisabled={completeBusy} label="上一步" onClick={() => setStep(3)} />
-                <Button data-busy={completeBusy ? "true" : undefined} icon={completeBusy ? <Spinner aria-hidden="true" aria-label="保存中…" shade="inherit" size="sm" /> : undefined} id="onboardingCompleteBtn" isDisabled={completeBusy} label={completeBusy ? "保存中…" : "完成设置"} onClick={() => void complete()} variant="primary" />
-                <VisuallyHidden as="div" aria-atomic="true" aria-live="polite" role="status">
-                  {completeBusy ? "正在保存设置" : ""}
-                </VisuallyHidden>
-                {showEnter && <Button id="onboardingEnterAppBtn" label="进入主界面" onClick={() => window.location.reload()} />}
-              </div>
-            </section>
-          )}
-        </div>
-      </div>
-      <Dialog
-        id="onboardingSkipDialog"
-        isOpen={skipOpen}
-        maxHeight="85vh"
-        onOpenChange={(open) => {
-          if (!skipBusy) setSkipOpen(open);
-        }}
-        purpose="info"
-        width={460}
-      >
-        <div className="onboarding-skip-dialog">
-          <DialogHeader hasDivider onOpenChange={setSkipOpen} title="确认稍后设置？" />
-          <div className="onboarding-skip-content">
-            <p>稍后设置会有以下影响：</p>
-            <ul><li>未配置录像目录时不会自动发现新录像</li><li>未配置语音识别时不能完成转写</li><li>未配置 AI 服务时不能自动选片</li><li>已经启动的模型下载不会因离开引导而取消</li></ul>
-            <p>你可以进入主界面，之后从以下位置继续设置：</p>
-            <ul><li>设置 → 基础设置 → 文件位置 → 录播文件夹</li><li>设置 → 基础设置 → 语音识别方式 / 本地语音模型</li><li>设置 → 基础设置 → AI 服务</li></ul>
-          </div>
-          <div className="onboarding-dialog-actions">
-            <Button id="onboardingSkipContinueBtn" isDisabled={skipBusy} label="继续设置" onClick={() => setSkipOpen(false)} variant="secondary" />
-            <Button id="onboardingSkipConfirmBtn" isDisabled={skipBusy} label="确认稍后设置" onClick={() => void confirmSkip()} variant="primary" />
-          </div>
-          <Result id="onboardingSkipResult" value={skipResult} />
-        </div>
-      </Dialog>
-    </>
-  );
+  const stepIndex = STEPS.findIndex((item) => item.id === step);
+  return <div className="onboarding-layer" aria-hidden="false"><section ref={dialogRef} className="onboarding-shell" role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
+    <header className="onboarding-header"><div className="onboarding-brand"><img src="/static/venus-mark.png" alt="" /><strong>Venus</strong></div><div><span>首次设置</span><small>完成后即可开始自动剪片</small></div><button onClick={() => void pause()} disabled={Boolean(busy)}>稍后继续</button></header>
+    {conflict && <div className="onboarding-conflict" role="alert"><span>设置已在另一个窗口更新</span><button onClick={() => void onRefresh().then((next) => { if (next.session) { adoptSession(next.session); draftRef.current = draftFrom(next); setDraft(draftRef.current); setStep(next.session.current_step); setConflict(false); setError(""); } })}>重新加载</button></div>}
+    <div className="onboarding-layout"><aside className="onboarding-steps" aria-label="首次设置步骤">{STEPS.map((item, index) => <button key={item.id} className={index === stepIndex ? "active" : index < stepIndex ? "done" : ""} disabled={index > stepIndex || session.state !== "in_progress"} onClick={() => index < stepIndex && void go(item.id)}><span>{index < stepIndex ? "✓" : index + 1}</span><div><strong>{item.label}</strong><small>{item.note}</small></div></button>)}<p><strong>设置自动保留</strong><span aria-live="polite">{saveState === "saving" ? "正在保存非密钥设置…" : saveState === "failed" ? "自动保存失败，请处理后重试。" : "非密钥设置已保存。"}</span><br />关闭窗口或稍后继续，不会删除已下载模型和已提交配置。</p></aside>
+      <main className="onboarding-content"><h1 ref={titleRef} tabIndex={-1} id="onboarding-title">{STEPS[stepIndex]?.label ?? "首次设置"}</h1>{error && <div className="onboarding-error" id="onboarding-action-error" role="alert"><span>{error}</span>{errorId && <small>问题编号：{errorId}</small>}</div>}
+        {session.state === "activation_pending" ? <ActivationPending session={session} busy={busy} diagnosticsOpen={diagnosticsOpen} setDiagnosticsOpen={setDiagnosticsOpen} retry={retryService} /> : session.state === "completed" ? <Completed snapshot={snapshot} session={session} files={trialFiles} enter={() => { onClose(); navigate(`/projects/${session.first_project?.project_id}`); }} openTrial={() => setTrialOpen(true)} /> : step === "welcome" ? <Welcome environment={environment} busy={busy} recheck={recheckEnvironment} next={() => void go("asr")} pause={pause} /> : step === "asr" ? <AsrStep draft={draft} models={models} selected={selectedModel} mode={asrMode} status={asrStatus} busy={busy} job={downloadJob} error={error} keyInput={asrKeyInput} keyRef={asrKeyRef} update={updateDraft} prepareLocal={prepareLocalAsr} submitCloud={submitCloudAsr} back={() => void go("welcome")} next={() => void go("ai")} pause={pause} /> : step === "ai" ? <AiStep snapshot={snapshot} draft={draft} status={aiStatus} busy={busy} error={error} keyInput={aiKeyInput} keyRef={aiKeyRef} update={updateDraft} submit={submitAi} back={() => void go("asr")} next={() => void go("project")} pause={pause} /> : step === "project" ? <ProjectStep draft={draft} snapshot={snapshot} busy={busy} update={updateDraft} markNameEdited={() => { nameEdited.current = true; }} selectFolder={selectFolder} back={() => void go("ai")} validate={validateProject} pause={pause} /> : <ReviewStep draft={draft} snapshot={snapshot} validation={validation} busy={busy} back={() => void go("project")} validate={validateProject} finish={finish} pause={pause} />}
+      </main></div>
+  </section>{trialOpen && trialFiles && <TrialDialog files={trialFiles} selected={trialFile} setSelected={setTrialFile} close={() => setTrialOpen(false)} confirm={runTrial} busy={busy === "trial"} />}</div>;
 }
+
+function StepFooter({ back, pause, action, label, disabled, note }: { back?: () => void; pause(): void | Promise<void>; action(): void; label: string; disabled?: boolean; note: string }) { return <footer className="onboarding-footer">{back ? <button className="button" onClick={back}>上一步</button> : <span />}<button className="onboarding-pause" onClick={() => void pause()}>稍后继续</button><small>{note}</small><button className="button primary" disabled={disabled} onClick={action}>{label}</button></footer>; }
+function Welcome({ environment, busy, recheck, next, pause }: { environment: OnboardingEnvironment; busy: string; recheck(): void; next(): void; pause(): void | Promise<void> }) {
+  const groups = [{ label: "保存设置", names: ["app_home", "service_dir", "workspace_root", "sqlite"] }, { label: "媒体处理", names: ["ffmpeg", "ffprobe", "asr_runtime"] }, { label: "本地服务", names: ["embedded_service"] }];
+  return <div className="onboarding-step"><div className="onboarding-scroll"><span className="onboarding-eyebrow">欢迎使用 Venus</span><h2>从一段录像，到可以发布的成片</h2><p>把录像放入项目目录，Venus 会自动转写、分析和选片，并生成成片、标题、描述和标签。</p><div className="onboarding-flow"><div><b>1</b><strong>放入录像</strong></div><i>→</i><div><b>2</b><strong>自动理解与剪片</strong></div><i>→</i><div><b>3</b><strong>获得发布物料</strong></div></div><section className="onboarding-checks"><header><div><strong>{environment.status === "ready" ? "运行环境已准备好" : "运行环境需要处理"}</strong><p>以下结果来自本机实时状态。</p></div><button className="button" data-busy={busy === "environment" ? "true" : undefined} disabled={busy === "environment"} onClick={recheck}>{busy === "environment" ? "检查中…" : "重新检查"}</button></header>{groups.map((group) => { const checks = environment.checks.filter((item) => group.names.includes(item.name)); const ready = checks.every((item) => item.status === "ready"); return <div key={group.label} className={ready ? "ready" : "blocked"}><span>{ready ? "✓" : "!"}</span><strong>{group.label}</strong><small>{ready ? "已就绪" : checks.find((item) => item.problem)?.problem || "需要检查"}</small></div>; })}</section></div><StepFooter pause={pause} action={next} label="开始设置" disabled={environment.status !== "ready"} note="预计需要 5–10 分钟，模型下载可以恢复" /></div>;
+}
+function AsrStep({ draft, models, selected, mode, status, busy, job, error, keyInput, keyRef, update, prepareLocal, submitCloud, back, next, pause }: { draft: OnboardingDraft; models: OnboardingModel[]; selected?: OnboardingModel; mode: "local" | "cloud"; status: string; busy: string; job: ModelJob | null; error: string; keyInput: React.RefObject<HTMLInputElement | null>; keyRef: React.MutableRefObject<string>; update: <S extends keyof OnboardingDraft>(section: S, field: string, value: string | number) => void; prepareLocal(): void; submitCloud(): void; back(): void; next(): void; pause(): void | Promise<void> }) {
+  const progress = job?.bytes_total ? Math.min(100, Math.round(((job.bytes_downloaded || 0) / job.bytes_total) * 100)) : selected?.bytes_total ? Math.min(100, Math.round((selected.bytes_downloaded / selected.bytes_total) * 100)) : 0;
+  const localReady = status === "ready" && mode === "local"; const cloudReady = status === "ready" && mode === "cloud";
+  return <div className="onboarding-step"><div className="onboarding-scroll"><span className="onboarding-eyebrow">语音识别</span><h2>让 Venus 听懂录像内容</h2><p>推荐在本机完成识别，录像无需上传。也可以使用已有云端服务。</p><div className="onboarding-modes"><button className={mode === "local" ? "selected" : ""} onClick={() => update("asr", "mode", "local")}><strong>本机识别</strong><small>隐私更好，无持续调用费用</small><em>推荐</em></button><button className={mode === "cloud" ? "selected" : ""} onClick={() => update("asr", "mode", "cloud")}><strong>云端识别</strong><small>使用已有服务，不占本机空间</small></button></div>{mode === "local" ? <><div className="onboarding-models">{models.map((model) => <button key={model.id} className={selected?.id === model.id ? "selected" : ""} disabled={Boolean(job && ["queued", "running"].includes(job.status))} onClick={() => update("asr", "local_model_id", model.id)}><span>{model.recommended ? "建议" : model.tier_label}</span><strong>{model.tier_label}</strong><p>{model.speed_note} · {model.accuracy_note}</p><small>{model.size_note} · {model.ram_note}</small></button>)}</div>{selected && <section className="onboarding-download"><header><div><strong>{selected.tier_label}识别模型</strong><p>{selected.size_note} · 下载一次，多项目共用</p></div><span>{selected.state === "installed" ? "已就绪" : selected.state === "damaged" ? "需要修复" : job?.status === "running" || selected.state === "downloading" ? "正在下载" : selected.partial_bytes > 0 ? "可继续下载" : "尚未下载"}</span></header>{(job || selected.state === "downloading") && <div><div className="onboarding-progress" role="progressbar" aria-label="模型下载进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}><i style={{ width: `${progress}%` }} /></div><small>{humanBytes(job?.bytes_downloaded ?? selected.bytes_downloaded)} / {humanBytes(job?.bytes_total ?? selected.bytes_total)} · 关闭窗口后可继续</small></div>}<button className="button primary" data-busy={busy === "asr" ? "true" : undefined} disabled={busy === "asr" || Boolean(job && ["queued", "running"].includes(job.status))} onClick={prepareLocal}>{selected.state === "installed" ? localReady ? "已保存" : "使用这个模型" : selected.partial_bytes ? "继续下载" : "下载模型"}</button></section>}</> : <section className="onboarding-connection"><label>服务地址<input value={draft.asr?.api_base || ""} aria-describedby={error ? "onboarding-action-error" : undefined} onChange={(event) => { update("asr", "api_base", event.target.value); }} /></label><label>识别模型<input value={draft.asr?.model || ""} onChange={(event) => update("asr", "model", event.target.value)} /></label><label>API key<input ref={keyInput} className="onboarding-secret-input" type="password" autoComplete="off" aria-invalid={error.includes("API key")} aria-errormessage={error ? "onboarding-action-error" : undefined} onInput={(event) => { keyRef.current = event.currentTarget.value; }} /></label><div className={`onboarding-test ${status}`}><div><strong>{cloudReady ? "云端识别可以使用" : status === "error" ? "连接需要修改" : "连接尚未验证"}</strong><p>{cloudReady ? "已保存凭据" : "通过真实请求确认服务和模型可以完成识别。"}</p></div><button className="button" data-busy={busy === "asr" ? "true" : undefined} disabled={busy === "asr"} onClick={submitCloud}>{busy === "asr" ? "测试中…" : "测试并保存"}</button></div></section>}</div><VisuallyHidden as="div" aria-atomic="true" aria-live="polite" role="status">{busy === "asr" ? "正在准备语音识别" : ""}</VisuallyHidden><StepFooter back={back} pause={pause} action={next} label="继续" disabled={mode === "local" ? !localReady : !cloudReady} note="只需完成一种识别方式" /></div>;
+}
+function AiStep({ snapshot, draft, status, busy, error, keyInput, keyRef, update, submit, back, next, pause }: { snapshot: OnboardingSnapshot; draft: OnboardingDraft; status: string; busy: string; error: string; keyInput: React.RefObject<HTMLInputElement | null>; keyRef: React.MutableRefObject<string>; update: <S extends keyof OnboardingDraft>(section: S, field: string, value: string | number) => void; submit(): void; back(): void; next(): void; pause(): void | Promise<void> }) {
+  const providerId = draft.ai?.provider_id || snapshot.provider_presets[0]?.id || "custom";
+  function choose(id: string) { const preset = snapshot.provider_presets.find((item) => item.id === id); update("ai", "provider_id", id); if (preset?.api_base) update("ai", "api_base", preset.api_base); if (preset?.model) update("ai", "model", preset.model); }
+  return <div className="onboarding-step"><div className="onboarding-scroll"><span className="onboarding-eyebrow">AI 服务</span><h2>连接内容分析与自动剪片能力</h2><p>首次设置只需验证一个服务，后续分析、审阅、选片和发布物料都会使用它。</p><section className="onboarding-connection"><div className="onboarding-providers">{snapshot.provider_presets.map((item) => <button key={item.id} className={providerId === item.id ? "selected" : ""} onClick={() => choose(item.id)}><strong>{item.label}</strong><small>{item.id === "custom" ? "兼容接口" : "填入建议配置"}</small></button>)}</div><label>服务地址<input value={draft.ai?.api_base || ""} aria-describedby={error ? "onboarding-action-error" : undefined} onChange={(event) => update("ai", "api_base", event.target.value)} /></label><label>模型<input value={draft.ai?.model || ""} onChange={(event) => update("ai", "model", event.target.value)} /></label><label>API key<input ref={keyInput} className="onboarding-secret-input" type="password" autoComplete="off" aria-invalid={error.includes("API key")} aria-errormessage={error ? "onboarding-action-error" : undefined} onInput={(event) => { keyRef.current = event.currentTarget.value; }} /></label><div className={`onboarding-test ${status}`}><div><strong>{status === "ready" ? "AI 服务连接成功" : status === "error" ? "连接需要修改" : "连接尚未验证"}</strong><p>{status === "ready" ? "已保存凭据" : "测试会发送最小请求，确认服务、凭据和模型可用。"}</p></div><button className="button" data-busy={busy === "ai" ? "true" : undefined} disabled={busy === "ai"} onClick={submit}>{busy === "ai" ? "测试中…" : "测试并保存"}</button></div></section><div className="onboarding-shared-service"><strong>内容分析 + AI 审阅与选片 + 标题、描述和标签</strong><span>使用同一个已验证服务</span></div></div><VisuallyHidden as="div" aria-atomic="true" aria-live="polite" role="status">{busy === "ai" ? "正在测试 AI 服务连接" : ""}</VisuallyHidden><StepFooter back={back} pause={pause} action={next} label="继续" disabled={status !== "ready"} note={status === "ready" ? "连接信息已安全保存" : "连接通过后才能继续"} /></div>;
+}
+function ProjectStep({ draft, snapshot, busy, update, markNameEdited, selectFolder, back, validate, pause }: { draft: OnboardingDraft; snapshot: OnboardingSnapshot; busy: string; update: <S extends keyof OnboardingDraft>(section: S, field: string, value: string | number) => void; markNameEdited(): void; selectFolder(kind: "source" | "output"): void; back(): void; validate(): void; pause(): void | Promise<void> }) {
+  const project = draft.project ?? {}; const scheduled = project.trigger_mode === "scheduled";
+  return <div className="onboarding-step"><div className="onboarding-scroll"><span className="onboarding-eyebrow">第一个项目</span><h2>告诉 Venus 从哪里开始工作</h2><p>项目是一条长期工作的内容生产线，其余选项使用安全默认值。</p><section className="onboarding-project-form"><label>项目名称<input value={project.name || ""} onChange={(event) => { markNameEdited(); update("project", "name", event.target.value); }} /></label><label>发现新录像<select value={project.trigger_mode || "manual"} onChange={(event) => update("project", "trigger_mode", event.target.value)}><option value="manual">仅手动扫描</option><option value="scheduled">定时扫描 + 手动扫描</option></select></label><label className="span-two">录像目录<div className="onboarding-folder"><input value={project.source_directory || ""} onChange={(event) => update("project", "source_directory", event.target.value)} /><button className="button" type="button" onClick={() => void selectFolder("source")}>选择…</button></div><small>{project.source_directory ? "目录将在最终检查中读取并统计已有录像" : "选择存放直播录像的文件夹"}</small></label>{scheduled && <><label>定时方式<select value={project.schedule_mode || "daily"} onChange={(event) => update("project", "schedule_mode", event.target.value)}><option value="daily">每天固定时间</option><option value="interval">固定间隔</option></select></label>{project.schedule_mode === "interval" ? <label>扫描间隔<select value={project.interval_minutes || 60} onChange={(event) => update("project", "interval_minutes", Number(event.target.value))}><option value={30}>每 30 分钟</option><option value={60}>每 1 小时</option><option value={180}>每 3 小时</option><option value={360}>每 6 小时</option><option value={720}>每 12 小时</option></select></label> : <label>扫描时间<input type="time" value={project.daily_time || "22:00"} onChange={(event) => update("project", "daily_time", event.target.value)} /></label>}</>}<label className="span-two">成片保存位置<div className="onboarding-folder"><input value={project.output_directory || ""} onChange={(event) => update("project", "output_directory", event.target.value)} /><button className="button" type="button" onClick={() => void selectFolder("output")}>选择…</button></div></label></section><div className="onboarding-defaults"><div><span>已准备</span><strong>{snapshot.resources.asr.model_label || "语音识别"}与 {snapshot.resources.ai.model || "AI 服务"}</strong></div><div><span>自动采用</span><strong>AI 自动审阅并生成成片，只处理创建后新增录像</strong></div><div><span>文件保护</span><strong>原始录像永不自动删除，成片与临时文件分开保存</strong></div></div></div><StepFooter back={back} pause={pause} action={validate} label={busy === "validate" ? "检查中…" : "检查配置"} disabled={busy === "validate" || !project.name || !project.source_directory || !project.output_directory} note="继续前会执行真实目录与资源检查" /></div>;
+}
+function ReviewStep({ draft, snapshot, validation, busy, back, validate, finish, pause }: { draft: OnboardingDraft; snapshot: OnboardingSnapshot; validation: OnboardingValidationPayload | null; busy: string; back(): void; validate(): void; finish(): void; pause(): void | Promise<void> }) {
+  const project = draft.project ?? {}; const canFinish = Boolean(validation && validation.fatal.length === 0 && validation.blockers.length === 0);
+  if (!validation) return <div className="onboarding-step"><div className="onboarding-scroll"><h2>正在等待最终检查</h2><p>请重新检查语音识别、AI 服务、录像目录和成片位置。</p></div><StepFooter back={back} pause={pause} action={validate} label="重新检查" disabled={busy === "validate"} note="结果只来自本机实时检查" /></div>;
+  const checks = [{ label: "语音识别", ready: validation.checks.asr.ready }, { label: "AI 服务", ready: validation.checks.ai.ready }, { label: "录像目录", ready: validation.checks.source_directory.status === "ready" }, { label: "成片位置", ready: ["ready", "creatable"].includes(validation.checks.output_directory.status) }];
+  return <div className="onboarding-step"><div className="onboarding-scroll"><span className="onboarding-eyebrow">完成</span><h2>检查配置并创建第一个项目</h2><p>{canFinish ? "所有必要配置均已就绪。" : "仍有配置需要处理。"}</p><section className="onboarding-final-checks">{checks.map((item) => <div key={item.label} className={item.ready ? "ready" : "blocked"}><span>{item.ready ? "✓" : "!"}</span><strong>{item.label}</strong><small>{item.ready ? "已就绪" : "需要处理"}</small></div>)}</section>{[...validation.fatal, ...validation.blockers, ...validation.warnings].length > 0 && <div className="onboarding-validation" role="alert">{validation.fatal.map((item) => <p key={`fatal-${item.field}`}>必须修正：{item.message}</p>)}{validation.blockers.map((item) => <p key={`block-${item.field}`}>启用前需处理：{item.message}</p>)}{validation.warnings.map((item) => <p key={`warn-${item.field}`}>提醒：{item.message}</p>)}</div>}<dl className="onboarding-review"><div><dt>录像来源</dt><dd>{validation.summary.recording_source}</dd><small>目录可读 · 发现 {validation.existing_video_count} 个已有录像，默认不会自动处理</small></div><div><dt>发现方式</dt><dd>{project.trigger_mode === "scheduled" ? project.schedule_mode === "interval" ? `每 ${project.interval_minutes} 分钟扫描` : `每天 ${project.daily_time} 扫描` : "仅手动扫描"}</dd></div><div><dt>处理能力</dt><dd>{snapshot.resources.asr.model_label || "语音识别"} · {snapshot.resources.ai.model || "AI 服务"}</dd></div><div><dt>成片位置</dt><dd>{validation.summary.output}</dd></div></dl></div><VisuallyHidden as="div" aria-atomic="true" aria-live="polite" role="status">{busy === "finish" ? "正在创建项目并准备本机服务" : ""}</VisuallyHidden><StepFooter back={back} pause={pause} action={finish} label={busy === "finish" ? "正在创建项目并准备本机服务…" : "完成设置并创建项目"} disabled={!canFinish || busy === "finish"} note="创建期间请不要重复提交" /></div>;
+}
+function ActivationPending({ session, busy, diagnosticsOpen, setDiagnosticsOpen, retry }: { session: OnboardingSession; busy: string; diagnosticsOpen: boolean; setDiagnosticsOpen(value: boolean): void; retry(): void }) { return <div className="onboarding-step"><div className="onboarding-scroll"><section className="onboarding-finish pending"><span>还差一步</span><h2>项目已保存，本机服务尚未启动</h2><p>项目和资源均已保留。当前不会扫描或处理录像。</p></section><div className="onboarding-service-issue"><strong>{session.failure?.summary || "本机处理服务尚未就绪"}</strong>{session.failure?.code && <small>问题编号：{session.failure.code}</small>}<div><button className="button" onClick={() => setDiagnosticsOpen(!diagnosticsOpen)}>{diagnosticsOpen ? "收起诊断" : "查看诊断"}</button><button className="button primary" disabled={busy === "retry"} onClick={retry}>{busy === "retry" ? "正在重新启动…" : "重新启动服务"}</button></div></div>{diagnosticsOpen && <div className="onboarding-diagnostic"><strong>诊断摘要</strong><p>{session.failure?.summary || "服务启动未完成。项目数据没有丢失。"}</p></div>}</div></div>; }
+function Completed({ snapshot, session, files, enter, openTrial }: { snapshot: OnboardingSnapshot; session: OnboardingSession; files: SourceFile[] | null; enter(): void; openTrial(): void }) { const project = session.first_project!; const draft = session.draft.project ?? {}; return <div className="onboarding-step"><div className="onboarding-scroll"><section className="onboarding-finish complete"><span>✓ 设置完成</span><h2>{project.name} 已经可以工作</h2><p>项目已启用，语音识别和 AI 服务均已就绪。</p></section><dl className="onboarding-review"><div><dt>录像目录</dt><dd>{draft.source_directory || "已保存"}</dd></div><div><dt>发现新录像</dt><dd>{draft.trigger_mode === "scheduled" ? "定时扫描 + 手动扫描" : "仅手动扫描"}</dd></div><div><dt>成片保存位置</dt><dd>{draft.output_directory || snapshot.suggestions.output_directory}</dd></div><div><dt>处理能力</dt><dd>{snapshot.resources.asr.model_label || "语音识别"} · {snapshot.resources.ai.model || "AI 服务"}</dd></div></dl>{files?.length === 0 && <p className="onboarding-quiet">后续把新录像放入目录后，可从项目中手动扫描。</p>}</div><footer className="onboarding-footer complete-actions"><span /><span />{files && files.length > 0 && <button className="button" onClick={openTrial}>选择一条录像试运行</button>}<button className="button primary" onClick={enter}>进入项目</button></footer></div>; }
+function TrialDialog({ files, selected, setSelected, close, confirm, busy }: { files: SourceFile[]; selected: string; setSelected(value: string): void; close(): void; confirm(): void; busy: boolean }) { return <div className="onboarding-trial-backdrop"><section className="onboarding-trial" role="dialog" aria-modal="true" aria-labelledby="onboarding-trial-title"><header><div><span>可选</span><h2 id="onboarding-trial-title">选择一条录像试运行</h2><p>会创建正式剪辑记录，处理可能需要一些时间。</p></div><button aria-label="关闭" onClick={close}>×</button></header><div>{files.map((file) => <label key={file.relative_path}><input type="radio" name="trial-file" checked={selected === file.relative_path} onChange={() => setSelected(file.relative_path)} /><span><strong>{file.relative_path}</strong><small>{humanBytes(file.bytes)}</small></span></label>)}</div><footer><button className="button" onClick={close}>暂不试运行</button><button className="button primary" disabled={!selected || busy} onClick={confirm}>{busy ? "正在受理…" : "用这条录像试运行"}</button></footer></section></div>; }

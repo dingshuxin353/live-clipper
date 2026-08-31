@@ -120,3 +120,44 @@ export interface ValidationPayload { ok: true; valid: boolean; fatal: Validation
 export interface ScanPreviewPayload { ok: true; estimated_files: number; supported_files: number; processable_files: number; warnings: string[] }
 export interface SourceFile { relative_path: string; bytes: number; modified_at: string; selectable: boolean; reason: string | null }
 export interface StageEvent { event_id: number; run_id: string; stage: RunStage; event_type: string; occurred_at: string; detail: Record<string, unknown> }
+export type OnboardingEntryMode = "onboarding" | "workbench" | "migration_required" | "diagnostic_required";
+export type OnboardingEntryState = "new" | "resume" | "paused" | "activation_pending" | null;
+export type OnboardingSessionState = "in_progress" | "paused" | "activation_pending" | "completed";
+export type OnboardingStep = "welcome" | "asr" | "ai" | "project" | "complete";
+export interface OnboardingDraft {
+  asr?: { mode?: "local" | "cloud"; local_model_id?: string; model_source?: string; api_base?: string; model?: string };
+  ai?: { provider_id?: string; api_base?: string; model?: string };
+  project?: { name?: string; source_directory?: string; trigger_mode?: "manual" | "scheduled"; schedule_mode?: "daily" | "interval"; daily_time?: string; interval_minutes?: number; output_directory?: string };
+}
+export interface OnboardingSession {
+  state: OnboardingSessionState; current_step: OnboardingStep; revision: number; draft: OnboardingDraft;
+  pending_finish_request_id: string | null; failure: { code: string; summary: string | null } | null;
+  first_project: { project_id: string; name: string; activation_state: ActivationState; readiness_state: string } | null;
+}
+export interface OnboardingEnvironmentCheck { name: string; status: "ready" | "blocked" | string; problem: string | null }
+export interface OnboardingEnvironment { status: "ready" | "blocked" | string; checks: OnboardingEnvironmentCheck[] }
+export interface OnboardingResourceSummary {
+  mode?: "local" | "cloud"; configured: boolean; ready: boolean; model_id?: string | null; model_label?: string | null;
+  provider_label?: string | null; api_base_display?: string | null; model?: string | null; credential_present: boolean; problem: string | null;
+}
+export interface OnboardingModel {
+  id: string; display_name: string; backend: string; tier: "light" | "balanced" | "high_accuracy" | string;
+  tier_label: string; size_note: string; ram_note: string; speed_note: string; accuracy_note: string; recommended: boolean;
+  state: "not_installed" | "downloading" | "installed" | "damaged" | string; state_reason: string | null;
+  installed: boolean; downloading: boolean; job_id: string | null; installed_bytes: number; partial_bytes: number;
+  bytes_downloaded: number; bytes_total: number; download_source: string; current: boolean;
+}
+export interface OnboardingProviderPreset { id: string; label: string; api_base: string; model: string; signup_url?: string | null }
+export interface OnboardingSnapshot {
+  ok: true; entry: { mode: OnboardingEntryMode; onboarding: OnboardingEntryState; reason_code: string | null; evidence_codes: string[] };
+  session: OnboardingSession | null; environment: OnboardingEnvironment; resources: { asr: OnboardingResourceSummary; ai: OnboardingResourceSummary };
+  model_catalog: OnboardingModel[]; initial_local_model: string; provider_presets: OnboardingProviderPreset[];
+  suggestions: { project_name: string; output_directory: string };
+}
+export interface OnboardingSessionPayload { ok: true; session: OnboardingSession; reused?: boolean }
+export interface OnboardingValidationPayload extends ValidationPayload {
+  checks: { asr: { ready: boolean }; ai: { ready: boolean }; source_directory: { status: string }; output_directory: { status: string } };
+  summary: { recording_source: string; discovery: string; processing: string; output: string }; existing_video_count: number;
+}
+export interface OnboardingFinishPayload { ok: true; project?: ProjectSummary; session: OnboardingSession; reused?: boolean }
+export interface ModelJob { id: string; status: string; bytes_downloaded?: number; bytes_total?: number; error?: string; message?: string }

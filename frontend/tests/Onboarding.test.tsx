@@ -1,497 +1,149 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 
 import { Onboarding } from "../src/Onboarding";
-import { installFetchMock, MODELS } from "./helpers";
+import type { OnboardingSession, OnboardingSnapshot } from "../src/project-dto";
+import { installFetchMock as installBaseFetchMock, jsonResponse } from "./helpers";
 
-function onboardingPayload() {
-  return {
-    needs_onboarding: true,
-    initial_local_model: MODELS[0].id,
-    initial_asr_mode: "local",
-    presets: [{ id: "deepseek", label: "DeepSeek", api_base: "https://example.test/v1", model: "chat" }],
-  };
+const SESSION: OnboardingSession = { state: "in_progress", current_step: "welcome", revision: 1, draft: {}, pending_finish_request_id: null, failure: null, first_project: null };
+const MODELS = [
+  { id: "light", display_name: "Light", backend: "mlx", tier: "light", tier_label: "轻量", size_note: "187 MiB", ram_note: "内存较低", speed_note: "速度较快", accuracy_note: "适合轻量处理", recommended: false, state: "not_installed", state_reason: null, installed: false, downloading: false, job_id: null, installed_bytes: 0, partial_bytes: 0, bytes_downloaded: 0, bytes_total: 1000, download_source: "modelscope", current: false },
+  { id: "balanced", display_name: "Balanced", backend: "mlx", tier: "balanced", tier_label: "平衡", size_note: "489 MiB", ram_note: "内存适中", speed_note: "速度均衡", accuracy_note: "兼顾精度", recommended: true, state: "installed", state_reason: null, installed: true, downloading: false, job_id: null, installed_bytes: 1000, partial_bytes: 0, bytes_downloaded: 1000, bytes_total: 1000, download_source: "modelscope", current: false },
+  { id: "accurate", display_name: "Accurate", backend: "mlx", tier: "high_accuracy", tier_label: "高精度", size_note: "1.6 GiB", ram_note: "内存较高", speed_note: "处理较慢", accuracy_note: "精度优先", recommended: false, state: "damaged", state_reason: "hash", installed: false, downloading: false, job_id: null, installed_bytes: 0, partial_bytes: 300, bytes_downloaded: 300, bytes_total: 1000, download_source: "modelscope", current: false },
+] as OnboardingSnapshot["model_catalog"];
+
+function installFetchMock(overrides: Record<string, unknown> = {}) {
+  return installBaseFetchMock({
+    "/api/onboarding/environment-check": { ok: true, environment: onboardingSnapshot().environment },
+    "/api/onboarding/session": (options?: RequestInit) => {
+      const body = JSON.parse(String(options?.body || "{}"));
+      return jsonResponse({ ok: true, session: { ...SESSION, revision: Number(body.expected_revision || 1) + 1, current_step: body.current_step || "welcome", draft: body.patch || {} } });
+    },
+    ...overrides,
+  });
 }
 
-describe("four-step onboarding", () => {
-  it("validates source before advancing, supports back, cloud/local switching, and LLM test", async () => {
-    installFetchMock({
-      "/api/onboarding": onboardingPayload(),
-      "/api/onboarding/test-source": { ok: true, video_count: 2 },
-      "/api/onboarding/test-llm": { ok: true, message: "连接成功" },
-    });
-    render(<Onboarding notify={vi.fn()} />);
-    expect(await screen.findByText("1 录播文件夹")).toBeVisible();
-    fireEvent.change(screen.getByLabelText("录播文件夹路径"), { target: { value: "/recordings" } });
-    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
-    expect(await screen.findByText("选择语音识别方式")).toBeVisible();
-    expect(document.querySelector(".astryx-radio-list")).toBeInTheDocument();
-    expect(document.querySelectorAll(".astryx-selectable-card")).toHaveLength(3);
-    expect(screen.getByRole("combobox", { name: "模型下载源" }).closest(".astryx-selector")).toBeInTheDocument();
-    fireEvent.click(screen.getByLabelText(/云端识别/));
-    expect(screen.getByLabelText("识别服务地址")).toBeVisible();
-    fireEvent.click(screen.getByLabelText(/本机识别/));
-    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
-    expect(await screen.findByText("选一个 AI 服务")).toBeVisible();
-    fireEvent.change(screen.getByLabelText("API key"), { target: { value: "do-not-log" } });
-    fireEvent.click(screen.getByRole("button", { name: "测试连接" }));
-    expect(await screen.findByText("连接成功")).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "上一步" }));
-    expect(screen.getByText("选择语音识别方式")).toBeVisible();
+export function onboardingSnapshot(session: OnboardingSession = SESSION): OnboardingSnapshot {
+  return { ok: true, entry: { mode: "onboarding", onboarding: session.state === "paused" ? "paused" : session.state === "activation_pending" ? "activation_pending" : "resume", reason_code: null, evidence_codes: [] }, session, environment: { status: "ready", checks: [{ name: "app_home", status: "ready", problem: null }, { name: "service_dir", status: "ready", problem: null }, { name: "workspace_root", status: "ready", problem: null }, { name: "sqlite", status: "ready", problem: null }, { name: "ffmpeg", status: "ready", problem: null }, { name: "ffprobe", status: "ready", problem: null }, { name: "asr_runtime", status: "ready", problem: null }, { name: "embedded_service", status: "ready", problem: null }] }, resources: { asr: { mode: "local", configured: false, ready: false, model_id: null, model_label: null, credential_present: false, problem: "尚未就绪" }, ai: { configured: false, ready: false, provider_label: null, model: null, credential_present: false, problem: "尚未就绪" } }, model_catalog: MODELS, initial_local_model: "balanced", provider_presets: [{ id: "deepseek", label: "DeepSeek", api_base: "https://api.example/v1", model: "chat" }, { id: "custom", label: "其他兼容服务", api_base: "", model: "" }], suggestions: { project_name: "直播录像精选", output_directory: "/output" } };
+}
+
+function renderOnboarding(snapshot = onboardingSnapshot(), handlers: Partial<React.ComponentProps<typeof Onboarding>> = {}) {
+  const props = { snapshot, onSession: vi.fn(), onRefresh: vi.fn(async () => snapshot), onPaused: vi.fn(), onClose: vi.fn(), ...handlers };
+  return { ...render(<MemoryRouter><Onboarding {...props} /></MemoryRouter>), props };
+}
+
+describe("five-step first-run setup", () => {
+  it("renders the confirmed five-step structure and never exposes the workbench", () => {
+    installFetchMock(); renderOnboarding();
+    expect(screen.getByLabelText("首次设置步骤")).toBeVisible();
+    for (const label of ["开始", "语音识别", "AI 服务", "第一个项目", "完成"]) expect(screen.getAllByText(label).length).toBeGreaterThan(0);
+    expect(screen.getByRole("dialog", { name: "开始" })).toHaveAttribute("aria-modal", "true");
+    expect(screen.queryByText("新建项目")).not.toBeInTheDocument();
   });
 
-  it("pastes a trimmed LLM key through the narrow desktop bridge without serializing it", async () => {
-    const marker = "desktop-clipboard-secret";
-    const readClipboardText = vi.fn(() => Promise.resolve(`  ${marker}\n`));
-    window.liveClipperShell = { readClipboardText };
+  it("blocks the first action on a real environment blocker and can recheck", async () => {
+    const snapshot = onboardingSnapshot(); snapshot.environment = { status: "blocked", checks: [{ name: "app_home", status: "blocked", problem: "应用目录不可写" }] };
+    let checks = 0;
+    installFetchMock({ "/api/onboarding/environment-check": () => { checks += 1; return jsonResponse({ ok: true, environment: checks === 1 ? snapshot.environment : onboardingSnapshot().environment }); } }); renderOnboarding(snapshot);
+    await waitFor(() => expect(checks).toBe(1)); expect(screen.getByRole("button", { name: "开始设置" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "重新检查" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "开始设置" })).toBeEnabled());
+  });
+
+  it("debounces one latest draft save and persists cleared non-secret fields", async () => {
+    const session = { ...SESSION, current_step: "project" as const, draft: { project: { name: "项目", source_directory: "/source", output_directory: "/output", trigger_mode: "manual" as const } } };
+    const calls = installFetchMock(); renderOnboarding(onboardingSnapshot(session));
+    const source = screen.getByLabelText(/录像目录/);
+    fireEvent.change(source, { target: { value: "/source/next" } }); fireEvent.change(source, { target: { value: "" } });
+    await waitFor(() => expect(calls.filter(([path]) => path === "/api/onboarding/session")).toHaveLength(1), { timeout: 1500 });
+    const body = JSON.parse(String(calls.find(([path]) => path === "/api/onboarding/session")?.[1]?.body));
+    expect(body.patch.project.source_directory).toBe(""); expect(await screen.findByText("非密钥设置已保存。")).toBeVisible();
+  });
+
+  it("flushes the current step before pausing and keeps the overlay open on failure", async () => {
     const calls = installFetchMock({
-      "/api/onboarding": onboardingPayload(),
-      "/api/onboarding/test-source": { ok: true },
-      "/api/onboarding/test-llm": { ok: true, message: "连接成功" },
+      "/api/onboarding/session": { ok: true, session: { ...SESSION, revision: 2 } },
+      "/api/onboarding/pause": new Error("offline"),
     });
-    render(<Onboarding notify={vi.fn()} />);
-
-    fireEvent.click(await screen.findByRole("button", { name: "下一步" }));
-    await screen.findByText("选择语音识别方式");
-    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
-    await screen.findByText("选一个 AI 服务");
-    fireEvent.click(screen.getByRole("button", { name: "粘贴 AI API key" }));
-
-    await waitFor(() => expect(readClipboardText).toHaveBeenCalledTimes(1));
-    const input = screen.getByLabelText("API key") as HTMLInputElement;
-    expect(input.value).toBe(marker);
-    expect(input.getAttribute("value")).toBeNull();
-    expect(document.body.innerHTML).not.toContain(marker);
-    fireEvent.click(screen.getByRole("button", { name: "测试连接" }));
-    await screen.findByText("连接成功");
-    const request = calls.find(([path]) => path === "/api/onboarding/test-llm");
-    expect(JSON.parse(String(request?.[1]?.body)).api_key).toBe(marker);
-  });
-
-  it("uses the onboarding Small default even when the saved model API marks Large current", async () => {
-    const models = MODELS.map((model, index) => ({
-      ...model,
-      current: index === 2,
-    }));
-    installFetchMock({
-      "/api/onboarding": onboardingPayload(),
-      "/api/onboarding/test-source": { ok: true },
-      "/api/asr/models": { ok: true, models, download_source: "modelscope" },
-    });
-    render(<Onboarding notify={vi.fn()} />);
-    fireEvent.click(await screen.findByRole("button", { name: "下一步" }));
-    await screen.findByText("选择语音识别方式");
-    expect(screen.getByText("Small").closest(".onboarding-model-card")).toHaveAttribute("data-selected", "true");
-    expect(screen.getByText("Large").closest(".onboarding-model-card")).toHaveAttribute("data-selected", "false");
-  });
-
-  it("shows the native folder picker only with the Electron bridge and preserves cancellation", async () => {
-    const selectFolder = vi.fn(() => Promise.resolve<string | null>(null));
-    window.liveClipperShell = { selectFolder };
-    installFetchMock({ "/api/onboarding": onboardingPayload() });
-    render(<Onboarding notify={vi.fn()} />);
-    const picker = await screen.findByRole("button", { name: "选择文件夹" });
-    const browse = picker.closest(".onboarding-browse") as HTMLElement;
-    expect(browse).toBeInTheDocument();
-    fireEvent.click(picker);
-    await waitFor(() => expect(selectFolder).toHaveBeenCalledWith("选择录播文件夹"));
-    expect(screen.getByLabelText("录播文件夹路径")).toHaveValue("");
-  });
-
-  it.each([
-    ["a rejected directory", { ok: false, message: "请填写录播文件夹路径" }, "请填写录播文件夹路径"],
-    ["a directory check request failure", new Error("目录校验失败"), "网络连接失败"],
-  ])("focuses and reveals the source field after %s", async (_case, failure, message) => {
-    installFetchMock({
-      "/api/onboarding": onboardingPayload(),
-      "/api/onboarding/test-source": failure,
-    });
-    render(<Onboarding notify={vi.fn()} />);
-    const source = await screen.findByLabelText("录播文件夹路径");
-    const scrollIntoView = vi.fn();
-    source.scrollIntoView = scrollIntoView;
-    const next = screen.getByRole("button", { name: "下一步" });
-    expect(next).toBeEnabled();
-
-    fireEvent.click(next);
-
-    expect((await screen.findAllByText(message)).length).toBeGreaterThan(0);
-    await waitFor(() => expect(source).toHaveFocus());
-    expect(scrollIntoView).toHaveBeenCalledWith({ block: "center", behavior: "smooth" });
-  });
-
-  it("renders one source error with a direct accessible association and no status surface", async () => {
-    installFetchMock({
-      "/api/onboarding": onboardingPayload(),
-      "/api/onboarding/test-source": { ok: false, message: "请填写录播文件夹路径" },
-    });
-    render(<Onboarding notify={vi.fn()} />);
-    const source = await screen.findByLabelText("录播文件夹路径");
-    source.scrollIntoView = vi.fn();
-
-    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
-
-    const messages = await screen.findAllByText("请填写录播文件夹路径");
-    expect(messages).toHaveLength(1);
-    expect(messages[0]).toHaveAttribute("role", "alert");
-    expect(source).toHaveAttribute("aria-invalid", "true");
-    expect(source).toHaveAttribute("aria-errormessage", messages[0].id);
-    expect(document.querySelector(".astryx-banner")).not.toBeInTheDocument();
-    expect(document.querySelector(".astryx-field-status")).not.toBeInTheDocument();
-  });
-
-  it("does not steal focus when the user only checks the source folder", async () => {
-    installFetchMock({
-      "/api/onboarding": onboardingPayload(),
-      "/api/onboarding/test-source": { ok: false, message: "目录不可用" },
-    });
-    render(<Onboarding notify={vi.fn()} />);
-    const source = await screen.findByLabelText("录播文件夹路径");
-    const check = screen.getByRole("button", { name: "检查文件夹" });
-    check.focus();
-
-    fireEvent.click(check);
-
-    expect(await screen.findByRole("alert")).toHaveTextContent("目录不可用");
-    expect(source).not.toHaveFocus();
-  });
-
-  it("shares one Chinese live status across both source busy buttons", async () => {
-    installFetchMock({
-      "/api/onboarding": onboardingPayload(),
-      "/api/onboarding/test-source": () => new Promise<Response>(() => undefined),
-    });
-    render(<Onboarding notify={vi.fn()} />);
-
-    fireEvent.click(await screen.findByRole("button", { name: "检查文件夹" }));
-
-    const buttons = await screen.findAllByRole("button", { name: "检查中…" });
-    expect(buttons).toHaveLength(2);
-    for (const button of buttons) {
-      expect(button).toBeDisabled();
-      expect(button).toHaveAttribute("data-busy", "true");
-      expect(button).not.toHaveAttribute("aria-busy");
-    }
-    expect(screen.getAllByRole("status").filter(
-      (status) => status.textContent === "正在检查录播文件夹",
-    )).toHaveLength(1);
-    expect(document.body).not.toHaveTextContent(/\bLoading\b/);
-  });
-
-  it("hides the native picker in browser mode", async () => {
-    installFetchMock({ "/api/onboarding": onboardingPayload() });
-    render(<Onboarding notify={vi.fn()} />);
-    await screen.findByText("欢迎使用 Venus");
-    expect(screen.queryByRole("button", { name: "选择文件夹" })).not.toBeInTheDocument();
-  });
-
-  it("opens one shared skip dialog and only posts skip after confirmation", async () => {
-    const calls = installFetchMock({ "/api/onboarding": onboardingPayload() });
-    render(<Onboarding notify={vi.fn()} />);
-    fireEvent.click(await screen.findByRole("button", { name: "稍后设置" }));
-    expect(screen.getByRole("dialog")).toHaveClass("astryx-dialog");
-    expect(screen.getByRole("dialog")).toHaveTextContent("未配置录像目录时不会自动发现新录像");
-    expect(calls.some(([path, options]) => path === "/api/onboarding/skip" && options?.method === "POST")).toBe(false);
-    fireEvent.click(screen.getByRole("button", { name: "确认稍后设置" }));
-    await waitFor(() => expect(calls.some(([path, options]) => path === "/api/onboarding/skip" && options?.method === "POST")).toBe(true));
-  });
-
-  it("keeps blocked ASR advance actionable and explains the missing download", async () => {
-    const models = MODELS.map((model) => ({ ...model, state: "missing", current: false }));
-    installFetchMock({
-      "/api/onboarding": onboardingPayload(),
-      "/api/onboarding/test-source": { ok: true },
-      "/api/asr/models": { ok: true, models, download_source: "modelscope" },
-    });
-    render(<Onboarding notify={vi.fn()} />);
-    fireEvent.click(await screen.findByRole("button", { name: "下一步" }));
-    await screen.findByText("选择语音识别方式");
-    const next = screen.getByRole("button", { name: "下一步" });
-    expect(next).toBeEnabled();
-    fireEvent.click(next);
-    expect(await screen.findByText("请先下载并安装所选本地模型")).toBeVisible();
-    expect(document.getElementById(`onboardingModelDownload-${MODELS[0].id}`)).toHaveFocus();
-  });
-
-  it("allows an active download to continue into the AI step", async () => {
-    const models = MODELS.map((model, index) => index === 0
-      ? { ...model, state: "downloading", downloading: true, job_id: "job-active" }
-      : model);
-    installFetchMock({
-      "/api/onboarding": onboardingPayload(),
-      "/api/onboarding/test-source": { ok: true },
-      "/api/asr/models": { ok: true, models, download_source: "modelscope" },
-      "/api/jobs/job-active": { ok: true, job: { status: "running", bytes_downloaded: 1024, bytes_total: 4096 } },
-    });
-    render(<Onboarding notify={vi.fn()} />);
-    fireEvent.click(await screen.findByRole("button", { name: "下一步" }));
-    await screen.findByText("选择语音识别方式");
-    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
-    expect(await screen.findByText("选一个 AI 服务")).toBeVisible();
-  });
-
-  it("explains and focuses the first missing cloud field", async () => {
-    installFetchMock({
-      "/api/onboarding": onboardingPayload(),
-      "/api/onboarding/test-source": { ok: true },
-    });
-    render(<Onboarding notify={vi.fn()} />);
-    fireEvent.click(await screen.findByRole("button", { name: "下一步" }));
-    await screen.findByText("选择语音识别方式");
-    fireEvent.click(screen.getByLabelText(/云端识别/));
-    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
-    const error = await screen.findByText("请填写识别 API key");
-    const key = screen.getByLabelText("识别 API key");
-    expect(error).toHaveAttribute("role", "alert");
-    expect(key).toHaveFocus();
-    expect(key).toHaveAttribute("aria-invalid", "true");
-    expect(key).toHaveAttribute("aria-errormessage", error.id);
-    expect(document.querySelector(".astryx-field-status")).not.toBeInTheDocument();
-  });
-
-  it("closes the skip dialog with Escape and returns focus", async () => {
-    installFetchMock({ "/api/onboarding": onboardingPayload() });
-    render(<Onboarding notify={vi.fn()} />);
-    const trigger = await screen.findByRole("button", { name: "稍后设置" });
-    trigger.focus();
-    fireEvent.click(trigger);
+    renderOnboarding(); const pauseButton = screen.getAllByRole("button", { name: "稍后继续" })[0]; await waitFor(() => expect(pauseButton).toBeEnabled()); fireEvent.click(pauseButton);
+    expect(await screen.findByText("暂时无法保存进度")).toBeVisible();
     expect(screen.getByRole("dialog")).toBeVisible();
-    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
-    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
-    expect(trigger).toHaveFocus();
+    expect(calls.map(([path]) => path).filter((path) => ["/api/onboarding/session", "/api/onboarding/pause"].includes(path))).toEqual(["/api/onboarding/session", "/api/onboarding/pause"]);
   });
 
-  it("recovers an active model job and reports success without exposing secrets to console", async () => {
-    const downloading = MODELS.map((model, index) => index === 0
-      ? { ...model, state: "downloading", downloading: true, job_id: "job-1", partial_bytes: 1024 }
-      : model);
-    let modelReads = 0;
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    installFetchMock({
-      "/api/onboarding": onboardingPayload(),
-      "/api/asr/models": () => {
-        modelReads += 1;
-        return Promise.resolve(new Response(JSON.stringify({
-          ok: true,
-          models: modelReads < 3 ? downloading : MODELS,
-          download_source: "modelscope",
-        })));
-      },
-      "/api/jobs/job-1": { ok: true, job: { status: "succeeded", bytes_downloaded: 1024, bytes_total: 1024 } },
-    });
-    render(<Onboarding notify={vi.fn()} />);
-    fireEvent.click(await screen.findByRole("button", { name: "下一步" }));
-    await screen.findByText("选择语音识别方式");
-    expect(await screen.findByText("模型已安装，可以继续")).toBeVisible();
-    expect(consoleSpy).not.toHaveBeenCalled();
-    consoleSpy.mockRestore();
+  it("selects the backend-recommended balanced model and commits an installed model", async () => {
+    const asrSession = { ...SESSION, current_step: "asr" as const, draft: { asr: { mode: "local" as const, local_model_id: "balanced", model_source: "modelscope" } } };
+    const committed = { ...asrSession, revision: 2, draft: asrSession.draft };
+    const calls = installFetchMock({ "/api/onboarding/resources/asr/local": { ok: true, session: committed } }); renderOnboarding(onboardingSnapshot(asrSession));
+    expect(screen.getByText("平衡").closest("button")).toHaveClass("selected");
+    fireEvent.click(screen.getByRole("button", { name: "使用这个模型" }));
+    await waitFor(() => expect(calls.some(([path]) => path === "/api/onboarding/resources/asr/local")).toBe(true));
+    expect(await screen.findByRole("button", { name: "已保存" })).toBeVisible();
   });
 
-  it("preserves a failed download for retry", async () => {
-    const downloading = MODELS.map((model, index) => index === 0
-      ? { ...model, state: "downloading", downloading: true, job_id: "job-fail" }
-      : model);
-    installFetchMock({
-      "/api/onboarding": onboardingPayload(),
-      "/api/asr/models": { ok: true, models: downloading, download_source: "modelscope" },
-      "/api/jobs/job-fail": { ok: true, job: { status: "failed", error: "下载失败，可稍后继续" } },
-    });
-    render(<Onboarding notify={vi.fn()} />);
-    fireEvent.click(await screen.findByRole("button", { name: "下一步" }));
-    await screen.findByText("选择语音识别方式");
-    expect(await screen.findByText("下载失败，可稍后继续")).toBeVisible();
+  it("renders only real byte progress with progressbar semantics", () => {
+    const session = { ...SESSION, current_step: "asr" as const, draft: { asr: { mode: "local" as const, local_model_id: "light", model_source: "modelscope" } } };
+    const snapshot = onboardingSnapshot(session); snapshot.model_catalog[0] = { ...snapshot.model_catalog[0], state: "downloading", downloading: true, job_id: "job-1", bytes_downloaded: 250 };
+    installFetchMock({ "/api/jobs/job-1": () => new Promise<Response>(() => undefined) }); renderOnboarding(snapshot);
+    const progress = screen.getByRole("progressbar", { name: "模型下载进度" });
+    expect(progress).toHaveAttribute("aria-valuenow", "25"); expect(screen.getByText(/250 B \/ 1000 B/)).toBeVisible();
   });
 
-  it("completes all four steps and never echoes entered keys in the summary", async () => {
-    const calls = installFetchMock({
-      "/api/onboarding": onboardingPayload(),
-      "/api/onboarding/test-source": { ok: true, video_count: 1 },
-      "/api/onboarding/test-llm": { ok: true, message: "连接成功" },
-      "/api/onboarding/complete": { ok: true },
-      "/api/service/start": { ok: false },
-    });
-    render(<Onboarding notify={vi.fn()} />);
-    fireEvent.change(await screen.findByLabelText("录播文件夹路径"), { target: { value: "/recordings" } });
-    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
-    await screen.findByText("选择语音识别方式");
-    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
-    await screen.findByText("选一个 AI 服务");
-    fireEvent.change(screen.getByLabelText("API key"), { target: { value: "super-secret-key" } });
-    fireEvent.click(screen.getByRole("button", { name: "测试连接" }));
-    await screen.findByText("连接成功");
-    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
-    await screen.findByText("确认设置");
-    expect(screen.queryByText("super-secret-key")).not.toBeInTheDocument();
-    expect(screen.getByText("已填写（只保存在本机 .env）")).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "完成设置" }));
-    expect(await screen.findByText("设置已保存，但自动化服务未启动，可进入主界面后手动启动")).toBeVisible();
-    const completeCall = calls.find(([path, options]) => path === "/api/onboarding/complete" && options?.method === "POST");
-    expect(JSON.parse(String(completeCall?.[1]?.body)).llm_api_key).toBe("super-secret-key");
+  it("keeps cloud ASR key outside React state and clears it immediately after submission", async () => {
+    const marker = "asr-secret-marker"; const session = { ...SESSION, current_step: "asr" as const, draft: { asr: { mode: "cloud" as const, api_base: "https://asr.example/v1", model: "speech" } } };
+    const calls = installFetchMock({ "/api/onboarding/resources/asr/cloud": { ok: true, session: { ...session, revision: 2 } } }); renderOnboarding(onboardingSnapshot(session));
+    const key = screen.getByLabelText("API key") as HTMLInputElement; fireEvent.input(key, { target: { value: marker } });
+    expect(document.body.innerHTML).not.toContain(marker); fireEvent.click(screen.getByRole("button", { name: "测试并保存" }));
+    await waitFor(() => expect(calls.some(([path]) => path === "/api/onboarding/resources/asr/cloud")).toBe(true));
+    const body = JSON.parse(String(calls.find(([path]) => path === "/api/onboarding/resources/asr/cloud")?.[1]?.body));
+    expect(body.api_key).toBe(marker); expect(key).toHaveValue(""); expect(document.body.innerHTML).not.toContain(marker);
+    expect(localStorage.length).toBe(0); expect(sessionStorage.length).toBe(0); expect(window.location.href).not.toContain(marker);
   });
 
-  it("uses Astryx fields, buttons, and banners on onboarding steps 1, 3, and 4", async () => {
-    installFetchMock({
-      "/api/onboarding": onboardingPayload(),
-      "/api/onboarding/test-source": { ok: true },
-      "/api/onboarding/test-llm": { ok: true, message: "连接成功" },
-    });
-    render(<Onboarding notify={vi.fn()} />);
-
-    const source = await screen.findByLabelText("录播文件夹路径");
-    expect(source.closest(".astryx-text-input")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "检查文件夹" })).toHaveClass("astryx-button");
-    fireEvent.change(source, { target: { value: "/recordings" } });
-    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
-    await screen.findByText("选择语音识别方式");
-    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
-
-    expect(await screen.findByText("选一个 AI 服务")).toBeVisible();
-    expect(screen.getByLabelText("服务地址").closest(".astryx-text-input")).toBeInTheDocument();
-    expect(document.querySelector(".onboarding-preset.astryx-selectable-card")).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("API key"), { target: { value: "phase-b-secret" } });
-    expect(document.body.innerHTML).not.toContain("phase-b-secret");
-    fireEvent.click(screen.getByRole("button", { name: "测试连接" }));
-    await screen.findByText("连接成功");
-    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
-
-    expect(await screen.findByText("确认设置")).toBeVisible();
-    expect(document.querySelector(".astryx-list")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "完成设置" })).toHaveClass("astryx-button");
+  it("uses AI presets as prefill and invalidates success when a field changes", async () => {
+    const session = { ...SESSION, current_step: "ai" as const, draft: { ai: { provider_id: "deepseek", api_base: "https://api.example/v1", model: "chat" } } };
+    const snapshot = onboardingSnapshot(session); snapshot.resources.ai = { configured: true, ready: true, credential_present: true, provider_label: "DeepSeek", model: "chat", problem: null };
+    installFetchMock(); renderOnboarding(snapshot); expect(screen.getByText("AI 服务连接成功")).toBeVisible();
+    fireEvent.change(screen.getByLabelText("模型"), { target: { value: "new-model" } });
+    await waitFor(() => expect(screen.getByText("连接尚未验证")).toBeVisible());
   });
 
-  it("keeps both password values live but never serializes them across rerenders", async () => {
-    const notify = vi.fn();
-    const calls = installFetchMock({
-      "/api/onboarding": onboardingPayload(),
-      "/api/onboarding/test-source": { ok: true },
-      "/api/onboarding/test-llm": { ok: true, message: "连接成功" },
-      "/api/onboarding/complete": { ok: true },
-      "/api/service/start": { ok: false },
-    });
-    const { rerender } = render(<Onboarding notify={notify} />);
-
-    fireEvent.click(await screen.findByRole("button", { name: "下一步" }));
-    await screen.findByText("选择语音识别方式");
-    fireEvent.click(screen.getByLabelText(/云端识别/));
-    const asrKey = screen.getByLabelText("识别 API key") as HTMLInputElement;
-    const asrMarker = "dummy-asr-marker-v112";
-    fireEvent.change(asrKey, { target: { value: asrMarker } });
-    rerender(<Onboarding notify={notify} />);
-
-    expect(asrKey.value === asrMarker).toBe(true);
-    expect(asrKey.getAttribute("value") === null).toBe(true);
-    expect(asrKey.defaultValue === "").toBe(true);
-    expect(asrKey.outerHTML.includes(asrMarker)).toBe(false);
-    expect(document.body.innerHTML.includes(asrMarker)).toBe(false);
-    expect((document.body.textContent ?? "").includes(asrMarker)).toBe(false);
-    expect(Object.values(asrKey.dataset).includes(asrMarker)).toBe(false);
-    expect(asrKey.type).toBe("password");
-    expect(screen.getByText("识别 API key").closest("label")?.control).toBe(asrKey);
-
-    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
-    expect(await screen.findByText("选一个 AI 服务")).toBeVisible();
-    const llmKey = screen.getByLabelText("API key") as HTMLInputElement;
-    const llmMarker = "dummy-llm-marker-v112";
-    fireEvent.change(llmKey, { target: { value: llmMarker } });
-    rerender(<Onboarding notify={notify} />);
-
-    expect(llmKey.value === llmMarker).toBe(true);
-    expect(llmKey.getAttribute("value") === null).toBe(true);
-    expect(llmKey.defaultValue === "").toBe(true);
-    expect(llmKey.outerHTML.includes(llmMarker)).toBe(false);
-    expect(document.body.innerHTML.includes(llmMarker)).toBe(false);
-    expect((document.body.textContent ?? "").includes(llmMarker)).toBe(false);
-    expect(Object.values(llmKey.dataset).includes(llmMarker)).toBe(false);
-    expect(llmKey.type).toBe("password");
-    expect(screen.getByText("API key").closest("label")?.control).toBe(llmKey);
-
-    fireEvent.click(screen.getByRole("button", { name: "测试连接" }));
-    await screen.findByText("连接成功");
-    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
-    await screen.findByText("确认设置");
-    fireEvent.click(screen.getByRole("button", { name: "完成设置" }));
-    await screen.findByText("设置已保存，但自动化服务未启动，可进入主界面后手动启动");
-
-    const llmTestCall = calls.find(([path]) => path === "/api/onboarding/test-llm");
-    const completeCall = calls.find(([path]) => path === "/api/onboarding/complete");
-    const llmTestBody = JSON.parse(String(llmTestCall?.[1]?.body));
-    const completeBody = JSON.parse(String(completeCall?.[1]?.body));
-    expect(llmTestBody.api_key === llmMarker).toBe(true);
-    expect(completeBody.llm_api_key === llmMarker).toBe(true);
-    expect(completeBody.asr_api_key === asrMarker).toBe(true);
-    expect(calls.filter(([path, options]) => {
-      if (!options?.body || ["/api/onboarding/test-llm", "/api/onboarding/complete"].includes(path)) return false;
-      const body = String(options.body);
-      return body.includes(asrMarker) || body.includes(llmMarker);
-    })).toHaveLength(0);
+  it("derives the untouched project name from the selected source and performs final validation", async () => {
+    const selectFolder = vi.fn(async () => "/recordings/interviews"); window.liveClipperShell = { selectFolder };
+    const session = { ...SESSION, current_step: "project" as const, draft: { project: { trigger_mode: "manual" as const, schedule_mode: "daily" as const, daily_time: "22:00", interval_minutes: 60, output_directory: "/output" } } };
+    installFetchMock({ "/api/onboarding/project/validate": { ok: true, valid: true, fatal: [], blockers: [], warnings: [], checks: { asr: { ready: true }, ai: { ready: true }, source_directory: { status: "ready" }, output_directory: { status: "creatable" } }, summary: { recording_source: "/recordings/interviews", discovery: "new_only", processing: "ai_auto", output: "/output" }, existing_video_count: 2, normalized_config: {} } }); renderOnboarding(onboardingSnapshot(session));
+    fireEvent.click(screen.getAllByRole("button", { name: "选择…" })[0]);
+    expect(await screen.findByDisplayValue("interviews")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "检查配置" }));
+    expect(await screen.findByText("所有必要配置均已就绪。")).toBeVisible();
+    expect(screen.getByText("目录可读 · 发现 2 个已有录像，默认不会自动处理")).toBeVisible();
   });
 
-  it("keeps step 3 advance actionable and focuses the untested connection action", async () => {
-    installFetchMock({
-      "/api/onboarding": onboardingPayload(),
-      "/api/onboarding/test-source": { ok: true },
+  it("reuses one finish request identity across a failed retry", async () => {
+    const session = { ...SESSION, current_step: "complete" as const, revision: 3, draft: { project: { name: "项目", source_directory: "/source", trigger_mode: "manual" as const, schedule_mode: "daily" as const, daily_time: "22:00", interval_minutes: 60, output_directory: "/output" } } };
+    let attempts = 0; const calls = installFetchMock({
+      "/api/onboarding/project/validate": { ok: true, valid: true, fatal: [], blockers: [], warnings: [], checks: { asr: { ready: true }, ai: { ready: true }, source_directory: { status: "ready" }, output_directory: { status: "ready" } }, summary: { recording_source: "/source", discovery: "new_only", processing: "ai_auto", output: "/output" }, existing_video_count: 0, normalized_config: {} },
+      "/api/onboarding/finish": () => { attempts += 1; return attempts === 1 ? jsonResponse({ ok: false, error: { code: "project_creation_uncertain", message: "稍后重试" } }, 500) : jsonResponse({ ok: true, session: { ...session, state: "completed", first_project: { project_id: "p1", name: "项目", activation_state: "active", readiness_state: "ready" } } }, 201); },
     });
-    render(<Onboarding notify={vi.fn()} />);
-    fireEvent.click(await screen.findByRole("button", { name: "下一步" }));
-    await screen.findByText("选择语音识别方式");
-    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
-    await screen.findByText("选一个 AI 服务");
-    const next = screen.getByRole("button", { name: "下一步" });
-    expect(next).toBeEnabled();
-    fireEvent.click(next);
-    expect(await screen.findByText("请先测试 AI 服务连接")).toBeVisible();
-    expect(screen.getByRole("button", { name: "测试连接" })).toHaveFocus();
+    renderOnboarding(onboardingSnapshot(session)); fireEvent.click(screen.getByRole("button", { name: "重新检查" })); await screen.findByText("所有必要配置均已就绪。");
+    fireEvent.click(screen.getByRole("button", { name: "完成设置并创建项目" })); expect(await screen.findByText("稍后重试")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "完成设置并创建项目" })); await screen.findByText("项目 已经可以工作");
+    const ids = calls.filter(([path]) => path === "/api/onboarding/finish").map(([, options]) => JSON.parse(String(options?.body)).request_id); expect(new Set(ids).size).toBe(1);
   });
 
-  it("announces LLM testing in Chinese without exposing Astryx loading text", async () => {
-    installFetchMock({
-      "/api/onboarding": onboardingPayload(),
-      "/api/onboarding/test-source": { ok: true },
-      "/api/onboarding/test-llm": () => new Promise<Response>(() => undefined),
-    });
-    render(<Onboarding notify={vi.fn()} />);
-    fireEvent.click(await screen.findByRole("button", { name: "下一步" }));
-    await screen.findByText("选择语音识别方式");
-    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
-    await screen.findByText("选一个 AI 服务");
-
-    fireEvent.click(screen.getByRole("button", { name: "测试连接" }));
-
-    const button = await screen.findByRole("button", { name: "测试中…" });
-    expect(button).toBeDisabled();
-    expect(button).toHaveAttribute("data-busy", "true");
-    expect(button).not.toHaveAttribute("aria-busy");
-    expect(screen.getAllByRole("status").filter(
-      (status) => status.textContent === "正在测试 AI 服务连接",
-    )).toHaveLength(1);
-    expect(document.body).not.toHaveTextContent(/\bLoading\b/);
+  it("activation pending exposes retry only and never sends finish", async () => {
+    const session = { ...SESSION, state: "activation_pending" as const, current_step: "complete" as const, pending_finish_request_id: "finish-1", failure: { code: "service_not_ready", summary: "服务未启动" }, first_project: { project_id: "p1", name: "项目", activation_state: "active" as const, readiness_state: "blocked" } };
+    const calls = installFetchMock({ "/api/onboarding/service/retry": { ok: true, session: { ...session, state: "completed", failure: null } } }); renderOnboarding(onboardingSnapshot(session));
+    expect(screen.queryByRole("button", { name: /创建项目/ })).not.toBeInTheDocument(); fireEvent.click(screen.getByRole("button", { name: "重新启动服务" }));
+    await waitFor(() => expect(calls.some(([path]) => path === "/api/onboarding/service/retry")).toBe(true)); expect(calls.some(([path]) => path === "/api/onboarding/finish")).toBe(false);
   });
 
-  it("announces completion saving in Chinese without duplicate live regions", async () => {
-    installFetchMock({
-      "/api/onboarding": onboardingPayload(),
-      "/api/onboarding/test-source": { ok: true },
-      "/api/onboarding/test-llm": { ok: true, message: "连接成功" },
-      "/api/onboarding/complete": () => new Promise<Response>(() => undefined),
-    });
-    render(<Onboarding notify={vi.fn()} />);
-    fireEvent.click(await screen.findByRole("button", { name: "下一步" }));
-    await screen.findByText("选择语音识别方式");
-    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
-    await screen.findByText("选一个 AI 服务");
-    fireEvent.click(screen.getByRole("button", { name: "测试连接" }));
-    await screen.findByText("连接成功");
-    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
-    await screen.findByText("确认设置");
-
-    fireEvent.click(screen.getByRole("button", { name: "完成设置" }));
-
-    const button = await screen.findByRole("button", { name: "保存中…" });
-    expect(button).toBeDisabled();
-    expect(button).toHaveAttribute("data-busy", "true");
-    expect(button).not.toHaveAttribute("aria-busy");
-    expect(screen.getAllByRole("status").filter(
-      (status) => status.textContent === "正在保存设置",
-    )).toHaveLength(1);
-    expect(document.body).not.toHaveTextContent(/\bLoading\b/);
+  it("completed offers one selectable relative source file and submits selected scan", async () => {
+    const session = { ...SESSION, state: "completed" as const, current_step: "complete" as const, first_project: { project_id: "p1", name: "项目", activation_state: "active" as const, readiness_state: "ready" }, draft: { project: { source_directory: "/secret/source", output_directory: "/output", trigger_mode: "manual" as const } } };
+    const calls = installFetchMock({ "/api/projects/p1/source-files": { ok: true, files: [{ relative_path: "ready.mp4", bytes: 10, modified_at: "now", selectable: true, reason: null }, { relative_path: "writing.mp4", bytes: 10, modified_at: "now", selectable: false, reason: "writing" }] }, "/api/projects/p1/scans": { ok: true, scan: { scan_id: "s1", project_id: "p1", status: "success" } } }); renderOnboarding(onboardingSnapshot(session));
+    fireEvent.click(await screen.findByRole("button", { name: "选择一条录像试运行" })); const dialog = screen.getByRole("dialog", { name: "选择一条录像试运行" });
+    expect(within(dialog).getByText("ready.mp4")).toBeVisible(); expect(within(dialog).queryByText("writing.mp4")).not.toBeInTheDocument(); expect(dialog).not.toHaveTextContent("/secret/source");
+    fireEvent.click(within(dialog).getByRole("radio")); fireEvent.click(within(dialog).getByRole("button", { name: "用这条录像试运行" }));
+    await waitFor(() => expect(calls.some(([path]) => path === "/api/projects/p1/scans")).toBe(true)); const body = JSON.parse(String(calls.find(([path]) => path === "/api/projects/p1/scans")?.[1]?.body)); expect(body.selected_relative_paths).toEqual(["ready.mp4"]);
   });
 });

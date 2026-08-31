@@ -118,6 +118,12 @@ def test_production_build_is_flat_nonempty_and_secret_free():
         b"lc_token",
         b"Authorization",
         b"transcript_raw",
+        b"/api/onboarding/test-source",
+        b"/api/onboarding/test-llm",
+        b"/api/onboarding/complete",
+        b"/api/onboarding/skip",
+        b"onboardingSkipDialog",
+        b"showEnter",
     ]:
         assert forbidden not in combined
 
