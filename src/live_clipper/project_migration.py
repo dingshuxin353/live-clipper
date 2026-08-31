@@ -354,11 +354,22 @@ def _inside(path: str, root: str, *, extensions: frozenset[str] | tuple[str, ...
         return False
     candidate = _absolute(path)
     base = _absolute(root)
+    if candidate.suffix.lower() not in extensions or base.is_symlink():
+        return False
     try:
-        candidate.relative_to(base)
+        relative = candidate.relative_to(base)
     except ValueError:
         return False
-    return candidate.suffix.lower() in extensions
+    current = base
+    for component in relative.parts:
+        current /= component
+        if current.is_symlink():
+            return False
+    try:
+        candidate.resolve(strict=False).relative_to(base.resolve(strict=False))
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return True
 
 
 def _history_summary(inspection: LegacyInspection) -> Mapping[str, Any]:

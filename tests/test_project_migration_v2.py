@@ -131,3 +131,48 @@ def test_result_is_not_inferred_from_unknown_or_same_named_output(tmp_path):
     )
     assert "safe_result" not in plan.history_summary["entries"][0]
     assert (output / "same-name.mp4").stat().st_atime_ns == before
+
+
+def test_safe_result_rejects_symlink_escape_without_reading_target(tmp_path):
+    service = tmp_path / "service"
+    source = tmp_path / "source"
+    output = tmp_path / "output"
+    service.mkdir()
+    source.mkdir()
+    output.mkdir()
+    outside = tmp_path / "outside-result.mp4"
+    outside.write_bytes(b"outside-result-must-not-be-read")
+    linked = output / "linked-result.mp4"
+    linked.symlink_to(outside)
+    (service / "runs.json").write_text(
+        json.dumps(
+            {
+                "runs": [
+                    {
+                        "run_id": "escaped-result",
+                        "content_id": "content-escaped-result",
+                        "source_path": str(source / "recording.mp4"),
+                        "phase": "rendered",
+                        "created_at": "2026-08-01T00:00:00Z",
+                        "result_path": str(linked),
+                        "result_sha256": "a" * 64,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    inspected = inspect_legacy_state(service)
+    inspected = inspected.__class__(
+        **{**inspected.__dict__, "source_directory": str(source), "output_directory": str(output)}
+    )
+    before_atime = outside.stat().st_atime_ns
+
+    plan = build_migration_plan(
+        inspected,
+        choices={"source_directory": str(source), "output_directory": str(output)},
+        available_bytes=10**9,
+    )
+
+    assert "safe_result" not in plan.history_summary["entries"][0]
+    assert outside.stat().st_atime_ns == before_atime
