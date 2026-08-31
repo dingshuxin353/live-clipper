@@ -21,6 +21,23 @@ function redactText(value, secrets = []) {
   return secrets.reduce((text, secret) => secret ? text.split(String(secret)).join("[REDACTED]") : text, String(value));
 }
 
+const STARTUP_MODES = new Set(["onboarding", "workbench", "migration_required", "diagnostic_required"]);
+const ONBOARDING_MODES = new Set(["new", "resume", "paused", "activation_pending"]);
+
+function requireOnboardingSnapshot(payload) {
+  const entry = payload?.entry;
+  const mode = entry?.mode;
+  const onboarding = entry?.onboarding;
+  const validMode = payload?.ok === true && STARTUP_MODES.has(mode);
+  const validOnboarding = mode === "onboarding"
+    ? ONBOARDING_MODES.has(onboarding)
+    : onboarding === null;
+  if (!validMode || !validOnboarding) {
+    throw new Error("后台启动状态无效");
+  }
+  return payload;
+}
+
 class BackendClient {
   constructor({ port, token, host = "127.0.0.1", transport = nodeTransport }) {
     this.host = host;
@@ -72,8 +89,11 @@ class BackendClient {
   }
 
   async checkReady() {
-    await this.request("/api/onboarding", { timeoutMs: 1000 });
-    await this.getStudio();
+    const snapshot = requireOnboardingSnapshot(await this.request("/api/onboarding", { timeoutMs: 1000 }));
+    if (snapshot.entry.mode === "workbench") {
+      await this.getStudio();
+    }
+    return snapshot;
   }
 
   async waitUntilReady({ timeoutMs = 30000, pollMs = 250, isAlive = () => true, sleep = (delay) => new Promise((resolve) => setTimeout(resolve, delay)), now = () => Date.now() } = {}) {
@@ -82,8 +102,7 @@ class BackendClient {
     while (now() - started <= timeoutMs) {
       if (!isAlive()) throw new Error("后台服务在启动期间退出");
       try {
-        await this.checkReady();
-        return;
+        return await this.checkReady();
       } catch (error) {
         lastError = error;
       }
@@ -93,4 +112,4 @@ class BackendClient {
   }
 }
 
-module.exports = { BackendClient, nodeTransport, redactText };
+module.exports = { BackendClient, nodeTransport, redactText, requireOnboardingSnapshot };

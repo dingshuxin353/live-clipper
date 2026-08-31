@@ -3,9 +3,68 @@ const test = require("node:test");
 
 const {
   createFileSelections,
+  createFolderSelection,
   createRuntimeState,
   writeClipboardText,
 } = require("../runtime-state");
+
+test("onboarding folder selection is owned, single-flight, cancel-safe, and blocked while quitting", async () => {
+  let finishDialog;
+  let dialogs = 0;
+  const owner = { id: "main-window" };
+  const runtime = createRuntimeState();
+  const folders = createFolderSelection({
+    dialog: {
+      showOpenDialog: (...args) => {
+        dialogs += 1;
+        assert.equal(args[0], owner);
+        assert.deepEqual(args[1].properties, ["openDirectory", "createDirectory"]);
+        assert.equal(args[1].title, dialogs === 1 ? "选择录像目录" : "选择成片目录");
+        return new Promise((resolve) => { finishDialog = resolve; });
+      },
+    },
+    runtime,
+    getWindow: () => owner,
+  });
+
+  const first = folders.select("选择录像目录");
+  const second = folders.select("选择成片目录");
+  await Promise.resolve();
+  assert.equal(dialogs, 1);
+  finishDialog({ canceled: false, filePaths: ["/private/recordings"] });
+  assert.equal(await first, "/private/recordings");
+  assert.equal(await second, "/private/recordings");
+
+  const canceled = folders.select("选择成片目录");
+  await Promise.resolve();
+  finishDialog({ canceled: true, filePaths: [] });
+  assert.equal(await canceled, null);
+
+  runtime.beginQuit();
+  assert.throws(() => folders.select("选择目录"), /正在退出/);
+});
+
+test("onboarding folder selection rejects invalid dialog paths and ignores a result after quit begins", async () => {
+  const runtime = createRuntimeState();
+  const folders = createFolderSelection({
+    dialog: { showOpenDialog: async () => ({ canceled: false, filePaths: ["relative/path"] }) },
+    runtime,
+  });
+  await assert.rejects(folders.select("x"), /文件夹路径无效/);
+
+  let finishDialog;
+  // A dialog resolving after the quit boundary must not deliver a path.
+  const runtime2 = createRuntimeState();
+  const delayed = createFolderSelection({
+    dialog: { showOpenDialog: () => new Promise((resolve) => { finishDialog = resolve; }) },
+    runtime: runtime2,
+  });
+  const selection = delayed.select("x");
+  await Promise.resolve();
+  runtime2.beginQuit();
+  finishDialog({ canceled: false, filePaths: ["/private/late"] });
+  assert.equal(await selection, null);
+});
 
 test("source selection uses a single-video dialog and returns only a short-lived token", async () => {
   const dialogCalls = [];

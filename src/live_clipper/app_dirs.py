@@ -50,8 +50,13 @@ def default_workspace_root(home: Path) -> Path:
     return home / "workspace"
 
 
+def resolve_app_home(home: Path | None = None) -> Path:
+    """Resolve the desktop App home without creating or changing anything."""
+    return (home or default_app_home()).expanduser().resolve()
+
+
 def prepare_app_home(home: Path | None = None) -> Path:
-    home = home or default_app_home()
+    home = resolve_app_home(home)
     for subdir in WORK_SUBDIRS:
         (home / subdir).mkdir(parents=True, exist_ok=True)
     (default_workspace_root(home) / "runs").mkdir(parents=True, exist_ok=True)

@@ -120,6 +120,44 @@ function createOutputActions({ client, shell, runtime }) {
 
 const SOURCE_FILTERS = [{ name: "视频文件", extensions: ["m4v", "mkv", "mov", "mp4", "webm"] }];
 
+function createFolderSelection({ dialog, runtime, getWindow = () => null }) {
+  let inFlight = null;
+
+  const select = (title) => {
+    if (!runtime.canStart()) throw new Error("应用正在退出，暂时无法选择文件夹");
+    if (inFlight) return inFlight;
+    const normalizedTitle = typeof title === "string" && title.trim()
+      ? title.trim().slice(0, 80)
+      : "选择文件夹";
+    inFlight = Promise.resolve()
+      .then(async () => {
+        const options = {
+          title: normalizedTitle,
+          properties: ["openDirectory", "createDirectory"],
+        };
+        const owner = getWindow();
+        let result;
+        try {
+          result = owner ? await dialog.showOpenDialog(owner, options) : await dialog.showOpenDialog(options);
+        } catch (_error) {
+          throw new Error("无法打开文件夹选择器，请稍后重试");
+        }
+        if (!runtime.canStart() || result?.canceled || !result?.filePaths?.[0]) return null;
+        const selectedPath = result.filePaths[0];
+        if (typeof selectedPath !== "string" || !path.isAbsolute(selectedPath)) {
+          throw new Error("文件夹路径无效");
+        }
+        return selectedPath;
+      })
+      .finally(() => {
+        inFlight = null;
+      });
+    return inFlight;
+  };
+
+  return { select };
+}
+
 function createFileSelections({ client, dialog, runtime, getWindow = () => null, now = () => Date.now() }) {
   const inFlight = new Map();
 
@@ -204,6 +242,7 @@ module.exports = {
   appUrl,
   createBadgePoller,
   createFileSelections,
+  createFolderSelection,
   createOutputActions,
   createRuntimeState,
   formatBadgeCount,

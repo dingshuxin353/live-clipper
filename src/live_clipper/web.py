@@ -174,6 +174,63 @@ def _structured_error(error_code: str, message: str) -> dict[str, Any]:
     return {"ok": False, "error_code": error_code, "message": message, "error": message}
 
 
+def _restricted_onboarding_snapshot(paths: WebPaths, expected_mode: str) -> dict[str, Any]:
+    coordinator = onboarding_coordinator.OnboardingCoordinator(
+        service_dir=paths.service_dir,
+        config_path=paths.config_path,
+        env_path=paths.config_path.parent / ".env",
+        input_dir=paths.input_dir,
+        output_root=paths.output_root,
+    )
+    decision, detection = coordinator.decision()
+    mode = decision.entry if decision.entry in {"migration_required", "diagnostic_required"} else expected_mode
+    recommended = asr_models.recommended_model()["id"]
+    return {
+        "ok": True,
+        "entry": {
+            "mode": mode,
+            "onboarding": None,
+            "reason_code": decision.reason_code,
+            "evidence_codes": list(detection.evidence_codes),
+        },
+        "session": None,
+        "environment": {
+            "status": "blocked",
+            "checks": [
+                {
+                    "name": "startup_safety",
+                    "status": "blocked",
+                    "problem": "当前数据需要先完成迁移或诊断",
+                }
+            ],
+        },
+        "resources": {
+            "asr": {
+                "mode": "local",
+                "configured": False,
+                "ready": False,
+                "model_id": None,
+                "model_label": None,
+                "credential_present": False,
+                "problem": "安全模式下未读取处理资源",
+            },
+            "ai": {
+                "configured": False,
+                "ready": False,
+                "provider_label": None,
+                "api_base_display": None,
+                "model": None,
+                "credential_present": False,
+                "problem": "安全模式下未读取处理资源",
+            },
+        },
+        "model_catalog": [],
+        "initial_local_model": recommended,
+        "provider_presets": [dict(item) for item in onboarding.PROVIDER_PRESETS],
+        "suggestions": {"project_name": "我的第一个项目", "output_directory": str(paths.output_root)},
+    }
+
+
 def _action_status(payload: dict[str, Any]) -> int:
     if payload.get("ok", True):
         return 200
@@ -1246,6 +1303,7 @@ def _delete_local_source(run_dir: Path, paths: WebPaths) -> dict[str, Any]:
 class LiveClipperRequestHandler(BaseHTTPRequestHandler):
     paths = WebPaths()
     access_token: str | None = None
+    restricted_startup: str | None = None
 
     def _auth_context(self) -> str:
         token = self.access_token
@@ -1309,8 +1367,28 @@ class LiveClipperRequestHandler(BaseHTTPRequestHandler):
         if not self._authorized():
             self._reject_unauthorized()
             return
+        parsed_path = urlparse(self.path).path
+        if self.restricted_startup:
+            if method == "GET" and parsed_path == "/api/onboarding":
+                status, headers, payload = _json_response(
+                    _restricted_onboarding_snapshot(self.paths, self.restricted_startup)
+                )
+            else:
+                status, headers, payload = _json_response(
+                    _structured_error(self.restricted_startup, "当前数据需要先完成诊断或迁移"),
+                    status=409,
+                )
+            body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+            self.send_response(status)
+            for key, value in headers.items():
+                self.send_header(key, value)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if not head_only:
+                self.wfile.write(body)
+            return
         body_payload: dict[str, Any] | None = None
-        retired_onboarding_route = method == "POST" and urlparse(self.path).path in {
+        retired_onboarding_route = method == "POST" and parsed_path in {
             "/api/onboarding/test-source",
             "/api/onboarding/test-llm",
             "/api/onboarding/complete",
@@ -1441,13 +1519,19 @@ def run_web_server(
     port: int = 8765,
     paths: WebPaths | None = None,
     access_token: str | None = None,
+    restricted_startup: str | None = None,
 ) -> None:
     paths = paths or WebPaths()
-    jobs.sweep_interrupted(paths.service_dir)
+    if restricted_startup is None:
+        jobs.sweep_interrupted(paths.service_dir)
     handler = type(
         "ConfiguredLiveClipperRequestHandler",
         (LiveClipperRequestHandler,),
-        {"paths": paths, "access_token": access_token or None},
+        {
+            "paths": paths,
+            "access_token": access_token or None,
+            "restricted_startup": restricted_startup,
+        },
     )
     server = ThreadingHTTPServer((host, port), handler)
     print(f"[Web] Venus 控制台已启动: http://{host}:{port}", flush=True)

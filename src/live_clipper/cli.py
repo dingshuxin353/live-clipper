@@ -7,9 +7,8 @@ import shutil
 import time
 from pathlib import Path
 
-from . import config_editor
 from .ai_guide import AI_ASSISTANT_GUIDE
-from .app_dirs import default_workspace_root, prepare_app_home
+from .app_dirs import default_workspace_root, prepare_app_home, resolve_app_home
 from .automation import DEFAULT_NAS_DIR, check_automation_runs, start_latest_recording_job
 from .build_codex_brief import (
     build_codex_brief_file,
@@ -20,9 +19,11 @@ from .cheap_model_client import CheapModelClient, CheapModelServiceError
 from .codex_selection import validate_selected_clips_file
 from .config import load_settings, render_app_config_template, write_default_config
 from .correct_transcript import correct_transcript_file
+from .first_run_detection import inspect_startup
 from .merge_candidates import merge_candidates_file
 from .models import CorrectedTranscript
 from .pipeline import cleanup_local_artifacts, record_pipeline_metadata, stage_source_file
+from .project_service import open_project_repository
 from .prompt_loader import export_prompts
 from .refine_candidates import refine_candidates_file
 from .render_clips import render_selected_clips
@@ -154,40 +155,61 @@ def run_app(*, host: str = "127.0.0.1", port: int = 8765) -> None:
     Everything in this codebase resolves relative paths against cwd, so app
     mode chdirs into the app home once and reuses all existing logic.
     """
-    home = prepare_app_home()
-    os.chdir(home)
+    home = resolve_app_home()
     config_path = home / "live-clipper.toml"
+    env_path = home / ".env"
+    service_dir = home / "work" / "service"
+    decision = inspect_startup(config_path=config_path, env_path=env_path, service_dir=service_dir)
+
+    def app_paths(*, output_root: Path | None = None, input_dir: Path | None = None) -> WebPaths:
+        def absolute(value: Path, fallback: Path) -> Path:
+            target = value if value.is_absolute() else home / value
+            return target.expanduser().resolve() if value else fallback
+
+        return WebPaths(
+            output_root=absolute(output_root or Path("output"), home / "output"),
+            state_dir=home / "work" / "automation_state",
+            log_dir=home / "work" / "automation_logs",
+            input_dir=absolute(input_dir or Path("input"), home / "input"),
+            service_dir=service_dir,
+            config_path=config_path,
+        )
+
+    if decision.entry in {"migration_required", "diagnostic_required"}:
+        emit_progress(f"[App] 数据目录以只读安全模式启动: {home}")
+        run_web_server(
+            host=host,
+            port=port,
+            paths=app_paths(),
+            access_token=os.environ.get("LIVE_CLIPPER_WEB_TOKEN") or None,
+            restricted_startup=decision.entry,
+        )
+        return
+
+    home = prepare_app_home(home)
+    os.chdir(home)
     workspace_root = default_workspace_root(home)
     if not config_path.exists():
         config_path.write_text(render_app_config_template(workspace_root), encoding="utf-8")
         emit_progress(f"[App] 已写入初始配置: {config_path}")
-    else:
-        migrated = config_editor.ensure_workspace_root(
-            config_path=config_path,
-            workspace_root=workspace_root,
-            backup_root=home / "work" / "config_backups",
-        )
-        if not migrated["ok"]:
-            raise RuntimeError(migrated["message"])
-        if migrated["migrated"]:
-            emit_progress(f"[App] 已升级任务工作区配置: {migrated['workspace_root']}")
-    env_path = home / ".env"
     if not env_path.exists():
         env_path.write_text(ENV_TEMPLATE, encoding="utf-8")
         emit_progress(f"[App] 已写入 .env 模板: {env_path}")
-    settings = load_settings()
+    settings = load_settings(config_path)
+    with open_project_repository(service_dir, config_path=config_path, env_path=env_path) as repository:
+        if repository.get_data_mode() != "projects":
+            raise RuntimeError("App 项目数据模式未就绪")
     emit_progress(f"[App] 数据目录: {home}")
-    start_embedded_service(load_settings, service_dir=home / "work" / "service")
+
+    def settings_loader():
+        return load_settings(config_path)
+
+    start_embedded_service(settings_loader, service_dir=service_dir)
     emit_progress("[App] 嵌入式服务已启动（扫描与调度随 App 运行）")
     run_web_server(
         host=host,
         port=port,
-        paths=WebPaths(
-            output_root=settings.paths.output_root,
-            state_dir=settings.paths.state_dir,
-            log_dir=Path("work") / "automation_logs",
-            input_dir=settings.paths.input_dir,
-        ),
+        paths=app_paths(output_root=settings.paths.output_root, input_dir=settings.paths.input_dir),
         access_token=os.environ.get("LIVE_CLIPPER_WEB_TOKEN") or None,
     )
 
