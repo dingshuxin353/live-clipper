@@ -67,6 +67,21 @@ describe("Venus 1.0 core workbench", () => {
     expect(screen.queryByRole("button", { name: /新建项目/ })).not.toBeInTheDocument(); expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
+  it("returns focus to the Studio resume entry after Escape pauses onboarding", async () => {
+    const session = { state: "in_progress" as const, current_step: "welcome" as const, revision: 1, draft: {}, pending_finish_request_id: null, failure: null, first_project: null };
+    const saved = { ...session, revision: 2 }; const paused = { ...saved, state: "paused" as const, revision: 3 };
+    installFetchMock({
+      "/api/onboarding": { ...WORKBENCH_ONBOARDING, entry: { mode: "onboarding", onboarding: "resume", reason_code: null, evidence_codes: [] }, session },
+      "/api/onboarding/environment-check": { ok: true, environment: WORKBENCH_ONBOARDING.environment },
+      "/api/onboarding/session": { ok: true, session: saved },
+      "/api/onboarding/pause": { ok: true, session: paused },
+    });
+    render(<App />); const dialog = await screen.findByRole("dialog", { name: "开始" });
+    const pauseButton = within(dialog).getAllByRole("button", { name: "稍后继续" })[0]; await waitFor(() => expect(pauseButton).toBeEnabled()); fireEvent.keyDown(document, { key: "Escape" });
+    const pausedCard = (await screen.findByText("首次设置尚未完成")).closest("article"); expect(pausedCard).not.toBeNull();
+    const resume = within(pausedCard!).getByRole("button", { name: "继续首次设置" }); await waitFor(() => expect(resume).toHaveFocus());
+  });
+
   it("uses frozen navigation order and routes deep links with browser history", async () => {
     installFetchMock(); render(<App />);
     const navigation = await screen.findByRole("navigation", { name: "主导航" });
