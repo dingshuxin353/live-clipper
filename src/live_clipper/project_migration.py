@@ -523,9 +523,9 @@ def build_migration_plan(
         raise ValueError("available_bytes must not be negative")
     required_choices: list[str] = []
     raw_choices = choices or {}
-    if source_status != "ready" and "source_directory" not in raw_choices:
+    if source_status != "ready":
         required_choices.append("source_directory")
-    if output_status != "ready" and "output_directory" not in raw_choices:
+    if output_status != "ready":
         required_choices.append("output_directory")
     if inspection.weekly_scan and "trigger_mode" not in raw_choices:
         required_choices.append("trigger_mode")
@@ -569,7 +569,7 @@ def build_migration_plan(
             "source_status": source_status,
             "output_status": output_status,
             "resource_problems": sorted(problems),
-            "can_start": not required_choices and free >= required_bytes,
+            "can_start": not required_choices and not problems,
         },
         "requires_user_choices": sorted(required_choices),
         "choices": _thaw(normalized_choices),

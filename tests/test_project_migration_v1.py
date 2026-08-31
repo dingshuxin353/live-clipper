@@ -201,5 +201,37 @@ def test_backup_space_and_resource_readiness_are_facts_not_side_effects(tmp_path
     assert set(enough.resource_summary) == {"asr", "ai"}
     assert enough.resource_summary["ai"]["credential_present"] is True
     assert enough.resource_summary["asr"]["status"] == "problem"
+    assert enough.readiness_summary["resource_problems"] == ("asr",)
+    assert not enough.readiness_summary["can_start"]
     assert enough.plan_hash != insufficient.plan_hash
     assert hashlib.sha256(enough.stable_json().encode()).hexdigest()
+
+
+def test_ready_resources_allow_start_but_explicit_bad_directories_remain_blockers(tmp_path):
+    config, service, _source, _output = _tree(tmp_path, weekly=False)
+    with config.open("a", encoding="utf-8") as handle:
+        handle.write('\n[asr]\nmodel = "safe-asr"\napi_key = "asr-sentinel-secret"\n')
+    inspected = inspect_legacy_state(service, config_path=config)
+
+    ready = build_migration_plan(inspected, choices={"trigger_mode": "manual"}, available_bytes=10**9)
+    assert ready.readiness_summary["resource_problems"] == ()
+    assert ready.readiness_summary["can_start"]
+
+    missing_output = tmp_path / "missing-output"
+    outside = tmp_path / "outside-source"
+    outside.mkdir()
+    unsafe_source = tmp_path / "unsafe-source"
+    unsafe_source.symlink_to(outside, target_is_directory=True)
+    blocked = build_migration_plan(
+        inspected,
+        choices={
+            "trigger_mode": "manual",
+            "source_directory": str(unsafe_source),
+            "output_directory": str(missing_output),
+        },
+        available_bytes=10**9,
+    )
+    assert blocked.readiness_summary["source_status"] == "unsafe"
+    assert blocked.readiness_summary["output_status"] == "unavailable"
+    assert blocked.requires_user_choices == ("output_directory", "source_directory")
+    assert not blocked.readiness_summary["can_start"]
