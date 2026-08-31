@@ -2,60 +2,132 @@ from __future__ import annotations
 
 import json
 
-from live_clipper.project_migration import build_migration_v2_plan, inspect_legacy_state
+from live_clipper.project_migration import build_migration_plan, inspect_legacy_state
 
 
-def test_v2_migration_extension_is_explicit_and_does_not_scan_artifacts(tmp_path):
-    service_dir = tmp_path / "service"
-    service_dir.mkdir()
-    (service_dir / "runs.json").write_text(
+def test_history_classifies_importable_compatibility_quarantine_duplicates_and_safe_result(tmp_path):
+    service = tmp_path / "service"
+    source = tmp_path / "source"
+    output = tmp_path / "output"
+    service.mkdir()
+    source.mkdir()
+    output.mkdir()
+    runs = [
+        {
+            "run_id": "completed",
+            "content_id": "content-completed",
+            "source_path": str(source / "a.mp4"),
+            "phase": "rendered",
+            "created_at": "2026-08-01T00:00:00Z",
+            "result_path": str(output / "a.mp4"),
+            "result_sha256": "a" * 64,
+        },
+        {
+            "run_id": "review",
+            "content_id": "content-review",
+            "source_path": str(source / "b.mp4"),
+            "phase": "needs_review",
+            "created_at": "2026-08-01T00:00:00Z",
+        },
+        {
+            "run_id": "processing",
+            "content_id": "content-processing",
+            "source_path": str(source / "c.mp4"),
+            "phase": "processing",
+            "created_at": "2026-08-01T00:00:00Z",
+        },
+        {
+            "run_id": "duplicate-1",
+            "content_id": "duplicate",
+            "source_path": str(source / "d.mp4"),
+            "phase": "failed",
+            "created_at": "2026-08-01T00:00:00Z",
+        },
+        {
+            "run_id": "duplicate-2",
+            "content_id": "duplicate",
+            "source_path": str(source / "e.mp4"),
+            "phase": "failed",
+            "created_at": "2026-08-01T00:00:00Z",
+        },
+        {"run_id": "missing", "phase": "failed"},
+        {
+            "run_id": "bad-time",
+            "content_id": "bad-time",
+            "source_path": str(source / "f.mp4"),
+            "phase": "failed",
+            "created_at": "not-a-time",
+        },
+    ]
+    (service / "runs.json").write_text(json.dumps({"runs": runs}), encoding="utf-8")
+    inspected = inspect_legacy_state(service)
+    inspected = inspected.__class__(
+        **{
+            **inspected.__dict__,
+            "source_directory": str(source),
+            "output_directory": str(output),
+        }
+    )
+    plan = build_migration_plan(
+        inspected,
+        choices={"source_directory": str(source), "output_directory": str(output)},
+        available_bytes=10**9,
+    )
+    summary = plan.history_summary
+    assert summary["counts"] == {
+        "importable": 2,
+        "compatibility": 1,
+        "quarantined": 4,
+        "safe_result": 1,
+    }
+    entries = {item["legacy_run_id"]: item for item in summary["entries"]}
+    assert entries["completed"]["safe_result"]["sha256"] == "a" * 64
+    assert entries["review"]["category"] == "compatibility"
+    assert entries["processing"]["target_state"] == "failed"
+    assert entries["processing"]["failure_code"] == "legacy_processing_interrupted"
+    assert entries["duplicate-1"] == {
+        "category": "quarantined",
+        "legacy_run_id": "duplicate-1",
+        "reason_code": "duplicate_content_identity",
+    }
+    assert entries["duplicate-2"]["reason_code"] == "duplicate_content_identity"
+    assert entries["missing"]["reason_code"] == "content_identity_missing"
+    assert entries["bad-time"]["reason_code"] == "timestamp_untrusted"
+
+
+def test_result_is_not_inferred_from_unknown_or_same_named_output(tmp_path):
+    service = tmp_path / "service"
+    source = tmp_path / "source"
+    output = tmp_path / "output"
+    service.mkdir()
+    source.mkdir()
+    output.mkdir()
+    (output / "same-name.mp4").write_bytes(b"media-that-must-not-be-read")
+    (service / "runs.json").write_text(
         json.dumps(
             {
                 "runs": [
                     {
                         "run_id": "completed",
-                        "content_id": "content-completed",
-                        "phase": "rendered",
-                    },
-                    {
-                        "run_id": "legacy-review",
-                        "content_id": "content-review",
-                        "phase": "needs_review",
-                    },
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-    inspected = inspect_legacy_state(service_dir)
-    plan = build_migration_v2_plan(inspected)
-    summary = plan.summary()
-
-    assert summary["schema_version"] == 2
-    assert summary["automatic_result_index"] is False
-    assert len(plan.result_index_run_ids) == 1
-    assert len(plan.compatibility_run_ids) == 1
-    assert not (service_dir / "venus.sqlite3").exists()
-    assert not (service_dir / "migration-backups").exists()
-
-
-def test_v2_migration_plan_keeps_awaiting_review_out_of_new_result_candidates(tmp_path):
-    service_dir = tmp_path / "service"
-    service_dir.mkdir()
-    (service_dir / "runs.json").write_text(
-        json.dumps(
-            {
-                "runs": [
-                    {
-                        "run_id": "old-review",
                         "content_id": "content",
-                        "phase": "ready_to_render",
+                        "source_path": str(source / "same-name.mp4"),
+                        "phase": "rendered",
+                        "created_at": "2026-08-01T00:00:00Z",
                     }
                 ]
             }
         ),
         encoding="utf-8",
     )
-    plan = build_migration_v2_plan(inspect_legacy_state(service_dir))
-    assert plan.result_index_run_ids == ()
-    assert plan.compatibility_run_ids == (plan.foundation.runs[0]["run_id"],)
+    inspected = inspect_legacy_state(service)
+    inspected = inspected.__class__(
+        **{**inspected.__dict__, "source_directory": str(source), "output_directory": str(output)}
+    )
+    before = (output / "same-name.mp4").stat().st_atime_ns
+    plan = build_migration_plan(
+        inspected,
+        choices={"source_directory": str(source), "output_directory": str(output)},
+        available_bytes=10**9,
+    )
+    assert "safe_result" not in plan.history_summary["entries"][0]
+    assert (output / "same-name.mp4").stat().st_atime_ns == before

@@ -21,7 +21,12 @@ def test_schema_connection_contract_and_reopen(tmp_path):
     assert repo.connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
     assert repo.connection.execute("PRAGMA synchronous").fetchone()[0] == 2
     assert repo.connection.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
-    assert repo.connection.execute("SELECT version FROM schema_migrations").fetchall() == [(1,), (2,), (3,)]
+    assert repo.connection.execute("SELECT version FROM schema_migrations").fetchall() == [
+        (1,),
+        (2,),
+        (3,),
+        (4,),
+    ]
     repo.close()
 
     reopened = connect_database(tmp_path)

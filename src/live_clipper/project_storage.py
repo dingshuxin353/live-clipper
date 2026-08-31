@@ -4,6 +4,7 @@ import re
 import sqlite3
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -49,7 +50,68 @@ from .project_result_domain import (
     validate_titles,
 )
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
+
+MIGRATION_STATES = frozenset(
+    {
+        "backing_up",
+        "migrating",
+        "validating",
+        "completed_ready",
+        "completed_attention",
+        "failed_rolled_back",
+        "diagnostic_required",
+    }
+)
+_MIGRATION_TRANSITIONS: dict[str, frozenset[str]] = {
+    "backing_up": frozenset({"backing_up", "migrating", "failed_rolled_back", "diagnostic_required"}),
+    "migrating": frozenset({"migrating", "validating", "failed_rolled_back", "diagnostic_required"}),
+    "validating": frozenset(
+        {"validating", "completed_ready", "completed_attention", "failed_rolled_back", "diagnostic_required"}
+    ),
+    "failed_rolled_back": frozenset({"backing_up", "diagnostic_required"}),
+    "completed_ready": frozenset(),
+    "completed_attention": frozenset(),
+    "diagnostic_required": frozenset(),
+}
+
+
+class MigrationSchemaError(RuntimeError):
+    """Stable fail-closed error for ambiguous pre-v4 migration state."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
+
+
+class MigrationStateError(ValueError):
+    """Raised when a durable migration transition violates the frozen contract."""
+
+
+@dataclass(frozen=True)
+class MigrationSession:
+    migration_id: str
+    source_fingerprint: str
+    plan_version: int
+    plan_hash: str
+    source_manifest: list[dict[str, Any]]
+    choices: dict[str, Any]
+    state: str
+    stage: str | None
+    revision: int
+    request_id: str | None
+    request_hash: str | None
+    project_id: str | None
+    backup_path: str | None
+    backup_status: str
+    failure_code: str | None
+    failure_summary: str | None
+    report: dict[str, Any] | None
+    created_at: str
+    started_at: str | None
+    updated_at: str
+    completed_at: str | None
+    acknowledged_at: str | None
 
 
 def database_path(service_dir: str | Path) -> Path:
@@ -538,6 +600,59 @@ SELECT migration_fault('after_first_run_table');
 """
 
 
+SCHEMA_V4 = """
+SELECT migration_fault('before_migration_sessions_table');
+CREATE TABLE migration_sessions (
+    migration_id TEXT PRIMARY KEY,
+    source_fingerprint TEXT NOT NULL UNIQUE CHECK (
+      length(source_fingerprint) = 64 AND source_fingerprint NOT GLOB '*[^0-9a-f]*'
+    ),
+    plan_version INTEGER NOT NULL CHECK (plan_version >= 1),
+    plan_hash TEXT NOT NULL CHECK (
+      length(plan_hash) = 64 AND plan_hash NOT GLOB '*[^0-9a-f]*'
+    ),
+    source_manifest_json TEXT NOT NULL,
+    choices_json TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN (
+      'backing_up', 'migrating', 'validating', 'completed_ready',
+      'completed_attention', 'failed_rolled_back', 'diagnostic_required'
+    )),
+    stage TEXT,
+    revision INTEGER NOT NULL CHECK (revision >= 1),
+    request_id TEXT UNIQUE,
+    request_hash TEXT,
+    project_id TEXT,
+    backup_path TEXT,
+    backup_status TEXT NOT NULL CHECK (backup_status IN ('pending', 'completed', 'failed')),
+    failure_code TEXT,
+    failure_summary TEXT,
+    report_json TEXT,
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT,
+    acknowledged_at TEXT,
+    CHECK ((request_id IS NULL) = (request_hash IS NULL)),
+    CHECK (request_hash IS NULL OR (
+      length(request_hash) = 64 AND request_hash NOT GLOB '*[^0-9a-f]*'
+    )),
+    CHECK (state NOT IN ('completed_ready', 'completed_attention') OR (
+      project_id IS NOT NULL AND backup_path IS NOT NULL AND backup_status = 'completed'
+      AND report_json IS NOT NULL AND completed_at IS NOT NULL
+    )),
+    CHECK (state != 'failed_rolled_back' OR (
+      failure_code IS NOT NULL AND failure_summary IS NOT NULL
+    )),
+    CHECK (acknowledged_at IS NULL OR state IN ('completed_ready', 'completed_attention')),
+    FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE RESTRICT
+);
+CREATE INDEX migration_sessions_state_updated ON migration_sessions(state, updated_at);
+SELECT migration_fault('after_migration_sessions_table');
+DROP TABLE legacy_imports;
+SELECT migration_fault('after_legacy_imports_drop');
+"""
+
+
 def connect_database(service_dir: str | Path) -> sqlite3.Connection:
     path = database_path(service_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -573,6 +688,12 @@ def initialize_schema(
         raise RuntimeError("database schema history is incomplete")
     if SCHEMA_VERSION in versions:
         return
+    if 3 in versions and 4 not in versions:
+        legacy_table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'legacy_imports'"
+        ).fetchone()
+        if legacy_table is not None and connection.execute("SELECT 1 FROM legacy_imports LIMIT 1").fetchone():
+            raise MigrationSchemaError("legacy_import_state_requires_diagnostic")
 
     def inject(phase: str) -> int:
         if migration_fault is not None:
@@ -600,15 +721,25 @@ VALUES ('data_mode', 'legacy', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));""",
 VALUES (2, 'result and issue foundation v2', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));""",
             ]
         )
-    statements.extend(
-        [
-            SCHEMA_V3,
-            """INSERT INTO schema_migrations(version, name, applied_at)
+    if 3 not in versions:
+        statements.extend(
+            [
+                SCHEMA_V3,
+                """INSERT INTO schema_migrations(version, name, applied_at)
 VALUES (3, 'first-run state foundation v3', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));""",
-            "SELECT migration_fault('after_first_run_version');",
-            "COMMIT;",
-        ]
-    )
+                "SELECT migration_fault('after_first_run_version');",
+            ]
+        )
+    if 4 not in versions:
+        statements.extend(
+            [
+                SCHEMA_V4,
+                """INSERT INTO schema_migrations(version, name, applied_at)
+VALUES (4, 'migration state and plan foundation v4', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));""",
+                "SELECT migration_fault('after_migration_version');",
+            ]
+        )
+    statements.append("COMMIT;")
     try:
         connection.executescript("\n".join(statements))
     except BaseException:
@@ -677,6 +808,40 @@ def _first_run_session(row: Mapping[str, Any]) -> FirstRunSession:
     )
 
 
+def _migration_session(row: Mapping[str, Any]) -> MigrationSession:
+    manifest = parse_json(str(row["source_manifest_json"]))
+    choices = parse_json(str(row["choices_json"]))
+    report = parse_json(str(row["report_json"])) if row["report_json"] is not None else None
+    if not isinstance(manifest, list) or not all(isinstance(item, Mapping) for item in manifest):
+        raise RuntimeError("migration source manifest is invalid")
+    if not isinstance(choices, Mapping) or (report is not None and not isinstance(report, Mapping)):
+        raise RuntimeError("migration persisted payload is invalid")
+    return MigrationSession(
+        migration_id=str(row["migration_id"]),
+        source_fingerprint=str(row["source_fingerprint"]),
+        plan_version=int(row["plan_version"]),
+        plan_hash=str(row["plan_hash"]),
+        source_manifest=[dict(item) for item in manifest],
+        choices=dict(choices),
+        state=str(row["state"]),
+        stage=str(row["stage"]) if row["stage"] is not None else None,
+        revision=int(row["revision"]),
+        request_id=str(row["request_id"]) if row["request_id"] is not None else None,
+        request_hash=str(row["request_hash"]) if row["request_hash"] is not None else None,
+        project_id=str(row["project_id"]) if row["project_id"] is not None else None,
+        backup_path=str(row["backup_path"]) if row["backup_path"] is not None else None,
+        backup_status=str(row["backup_status"]),
+        failure_code=str(row["failure_code"]) if row["failure_code"] is not None else None,
+        failure_summary=str(row["failure_summary"]) if row["failure_summary"] is not None else None,
+        report=dict(report) if report is not None else None,
+        created_at=str(row["created_at"]),
+        started_at=str(row["started_at"]) if row["started_at"] is not None else None,
+        updated_at=str(row["updated_at"]),
+        completed_at=str(row["completed_at"]) if row["completed_at"] is not None else None,
+        acknowledged_at=str(row["acknowledged_at"]) if row["acknowledged_at"] is not None else None,
+    )
+
+
 class ProjectRepository:
     def __init__(self, service_dir: str | Path, *, connection: sqlite3.Connection | None = None) -> None:
         self.service_dir = Path(service_dir).expanduser().resolve()
@@ -736,8 +901,8 @@ class ProjectRepository:
                     raise FirstRunStateError("first-run session requires projects data mode")
                 if self.connection.execute("SELECT 1 FROM projects LIMIT 1").fetchone() is not None:
                     raise FirstRunStateError("first-run session cannot start after a project exists")
-                if self.connection.execute("SELECT 1 FROM legacy_imports LIMIT 1").fetchone() is not None:
-                    raise FirstRunStateError("first-run session cannot start after a legacy import")
+                if self.connection.execute("SELECT 1 FROM migration_sessions LIMIT 1").fetchone() is not None:
+                    raise FirstRunStateError("first-run session cannot start after a migration session")
                 self.connection.execute(
                     """INSERT INTO first_run_sessions(
                          session_id, state, current_step, revision, draft_json, started_at, updated_at
@@ -2925,104 +3090,255 @@ class ProjectRepository:
         )
         return [self._recovery_from_row(row) for row in rows]
 
-    def get_legacy_import(self, source_fingerprint: str) -> dict[str, Any] | None:
+    def get_migration_session(self, migration_id: str) -> MigrationSession | None:
+        row = _one(
+            self.connection.execute("SELECT * FROM migration_sessions WHERE migration_id = ?", (migration_id,))
+        )
+        return _migration_session(row) if row else None
+
+    def get_migration_session_by_fingerprint(self, source_fingerprint: str) -> MigrationSession | None:
+        fingerprint = validate_sha256(source_fingerprint, field="source_fingerprint")
+        assert fingerprint is not None
         row = _one(
             self.connection.execute(
-                "SELECT * FROM legacy_imports WHERE source_fingerprint = ?", (source_fingerprint,)
+                "SELECT * FROM migration_sessions WHERE source_fingerprint = ?", (fingerprint,)
             )
         )
-        if row is not None:
-            row["plan"] = parse_json(row.pop("plan_json"))
-            row["summary"] = parse_json(row.pop("summary_json"))
-        return row
+        return _migration_session(row) if row else None
 
-    def apply_legacy_import(
+    def get_migration_session_by_request(self, request_id: str) -> MigrationSession | None:
+        normalized = validate_public_identifier(request_id, field="request_id")
+        row = _one(
+            self.connection.execute("SELECT * FROM migration_sessions WHERE request_id = ?", (normalized,))
+        )
+        return _migration_session(row) if row else None
+
+    def list_migration_sessions(self) -> list[MigrationSession]:
+        rows = _dicts(self.connection.execute("SELECT * FROM migration_sessions ORDER BY created_at, migration_id"))
+        return [_migration_session(row) for row in rows]
+
+    @staticmethod
+    def _require_migration_revision(current: MigrationSession, expected_revision: int) -> None:
+        if not isinstance(expected_revision, int) or isinstance(expected_revision, bool) or expected_revision < 1:
+            raise ValueError("expected_revision must be a positive integer")
+        if current.revision != expected_revision:
+            raise RevisionConflictError("migration session revision conflict")
+
+    def create_migration_session(
         self,
         *,
+        migration_id: str,
         source_fingerprint: str,
-        import_id: str,
-        project_id: str,
-        project_name: str,
-        project_config: Mapping[str, Any],
-        runs: Sequence[Mapping[str, Any]],
-        plan_summary: Mapping[str, Any],
-        backup_path: str,
-        occurred_at: str,
-    ) -> tuple[bool, str]:
-        """Atomically persist one already-backed-up legacy plan without switching data mode."""
-        validated = validate_project_config(project_config)
-        occurred_at = normalize_utc(occurred_at)
+        plan_version: int,
+        plan_hash: str,
+        source_manifest: Sequence[Mapping[str, Any]],
+        choices: Mapping[str, Any],
+        request_id: str,
+        request_hash: str,
+        backup_path: str | None = None,
+        occurred_at: str | None = None,
+    ) -> MigrationSession:
+        migration_id = validate_public_identifier(migration_id, field="migration_id")
+        request_id = validate_public_identifier(request_id, field="request_id")
+        fingerprint = validate_sha256(source_fingerprint, field="source_fingerprint")
+        normalized_plan_hash = validate_sha256(plan_hash, field="plan_hash")
+        normalized_request_hash = validate_sha256(request_hash, field="request_hash")
+        assert fingerprint and normalized_plan_hash and normalized_request_hash
+        plan_version = _integer(plan_version, field="plan_version", minimum=1)
+        safe_manifest = _safe_payload(list(source_manifest))
+        safe_choices = _safe_payload(dict(choices))
+        timestamp = normalize_utc(occurred_at)
         with self.transaction():
-            existing = _one(
-                self.connection.execute(
-                    "SELECT summary_json FROM legacy_imports WHERE source_fingerprint = ?",
-                    (source_fingerprint,),
-                )
-            )
-            if existing is not None:
-                summary = parse_json(existing["summary_json"])
-                return False, str(summary["project_id"])
+            existing_request = self.get_migration_session_by_request(request_id)
+            if existing_request is not None:
+                if (
+                    existing_request.request_hash == normalized_request_hash
+                    and existing_request.source_fingerprint == fingerprint
+                    and existing_request.plan_hash == normalized_plan_hash
+                ):
+                    return existing_request
+                raise RequestConflictError("migration request identity was reused with different content")
+            existing = self.list_migration_sessions()
+            if existing:
+                same = next((item for item in existing if item.source_fingerprint == fingerprint), None)
+                if same is not None and same.plan_hash == normalized_plan_hash:
+                    return same
+                raise MigrationStateError("a different migration session already exists")
+            if self.get_data_mode() != "legacy":
+                raise MigrationStateError("migration session requires legacy data mode")
+            if self.connection.execute("SELECT 1 FROM projects LIMIT 1").fetchone() is not None:
+                raise MigrationStateError("migration session cannot start after projects exist")
             self.connection.execute(
-                """INSERT INTO projects(
-                     project_id, name, description, activation_state, current_config_revision,
-                     created_at, updated_at
-                   ) VALUES (?, ?, '', 'inactive', 1, ?, ?)""",
-                (project_id, project_name, occurred_at, occurred_at),
-            )
-            self.connection.execute(
-                "INSERT INTO project_config_revisions VALUES (?, 1, ?, 1, ?)",
-                (project_id, stable_json(validated), occurred_at),
-            )
-            self.connection.execute(
-                """INSERT INTO project_runtime(
-                     project_id, readiness_state, auto_scan_state, first_scan_state
-                   ) VALUES (?, 'ready', 'off', 'not_required')""",
-                (project_id,),
-            )
-            for item in runs:
-                self.connection.execute(
-                    """INSERT INTO runs(
-                         run_id, project_id, content_id, processing_sequence, origin_run_id,
-                         source_scan_id, trigger_source, first_seen_path, latest_seen_path,
-                         status, current_stage, config_revision, parameter_snapshot_json,
-                         queued_at, started_at, review_at, completed_at, updated_at,
-                         error_code, error_summary
-                       ) VALUES (?, ?, ?, 1, NULL, NULL, 'legacy_import', ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (
-                        item["run_id"],
-                        project_id,
-                        item["content_id"],
-                        item["first_seen_path"],
-                        item["latest_seen_path"],
-                        item["status"],
-                        item.get("current_stage"),
-                        stable_json(item["parameter_snapshot"]),
-                        item["queued_at"],
-                        item.get("started_at"),
-                        item.get("review_at"),
-                        item.get("completed_at"),
-                        item["updated_at"],
-                        item.get("error_code"),
-                        item.get("error_summary"),
-                    ),
-                )
-            summary = {**plan_summary, "project_id": project_id, "imported_run_count": len(runs)}
-            self.connection.execute(
-                """INSERT INTO legacy_imports(
-                     import_id, source_fingerprint, plan_json, backup_path, status,
-                     summary_json, failure_summary, created_at, completed_at
-                   ) VALUES (?, ?, ?, ?, 'completed', ?, NULL, ?, ?)""",
+                """INSERT INTO migration_sessions(
+                     migration_id, source_fingerprint, plan_version, plan_hash,
+                     source_manifest_json, choices_json, state, stage, revision,
+                     request_id, request_hash, backup_path, backup_status,
+                     created_at, started_at, updated_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, 'backing_up', 'backup', 1, ?, ?, ?, 'pending', ?, ?, ?)""",
                 (
-                    import_id,
-                    source_fingerprint,
-                    stable_json(plan_summary),
+                    migration_id,
+                    fingerprint,
+                    plan_version,
+                    normalized_plan_hash,
+                    stable_json(safe_manifest),
+                    stable_json(safe_choices),
+                    request_id,
+                    normalized_request_hash,
                     backup_path,
-                    stable_json(summary),
-                    occurred_at,
-                    occurred_at,
+                    timestamp,
+                    timestamp,
+                    timestamp,
                 ),
             )
-        return True, project_id
+        created = self.get_migration_session(migration_id)
+        assert created is not None
+        return created
+
+    def update_migration_stage(
+        self,
+        migration_id: str,
+        expected_revision: int,
+        *,
+        state: str,
+        stage: str | None,
+        backup_status: str | None = None,
+        backup_path: str | None = None,
+        occurred_at: str | None = None,
+    ) -> MigrationSession:
+        timestamp = normalize_utc(occurred_at)
+        target_state = str(state)
+        if target_state not in MIGRATION_STATES:
+            raise MigrationStateError("unknown migration state")
+        if target_state in {"completed_ready", "completed_attention", "failed_rolled_back"}:
+            raise MigrationStateError("use the dedicated terminal transition")
+        if backup_status is not None and backup_status not in {"pending", "completed", "failed"}:
+            raise MigrationStateError("invalid backup status")
+        with self.transaction():
+            current = self.get_migration_session(migration_id)
+            if current is None:
+                raise MigrationStateError("migration session does not exist")
+            self._require_migration_revision(current, expected_revision)
+            if target_state not in _MIGRATION_TRANSITIONS[current.state]:
+                raise MigrationStateError("invalid migration state transition")
+            if target_state == "migrating" and (backup_status or current.backup_status) != "completed":
+                raise MigrationStateError("migration cannot start before backup completes")
+            reset_failure = target_state == "backing_up"
+            self.connection.execute(
+                """UPDATE migration_sessions
+                   SET state = ?, stage = ?, backup_status = COALESCE(?, backup_status),
+                       backup_path = COALESCE(?, backup_path),
+                       failure_code = CASE WHEN ? THEN NULL ELSE failure_code END,
+                       failure_summary = CASE WHEN ? THEN NULL ELSE failure_summary END,
+                       revision = revision + 1, updated_at = ?
+                   WHERE migration_id = ? AND revision = ?""",
+                (
+                    target_state,
+                    stage,
+                    backup_status,
+                    backup_path,
+                    reset_failure,
+                    reset_failure,
+                    timestamp,
+                    migration_id,
+                    expected_revision,
+                ),
+            )
+        updated = self.get_migration_session(migration_id)
+        assert updated is not None
+        return updated
+
+    def record_migration_failure(
+        self,
+        migration_id: str,
+        expected_revision: int,
+        *,
+        failure_code: str,
+        failure_summary: str,
+        backup_status: str = "failed",
+        occurred_at: str | None = None,
+    ) -> MigrationSession:
+        code = validate_public_identifier(failure_code, field="failure_code")
+        summary = sanitize_persisted_text(failure_summary).strip()[:240]
+        if backup_status not in {"completed", "failed"}:
+            raise MigrationStateError("failed migration backup status must be completed or failed")
+        timestamp = normalize_utc(occurred_at)
+        with self.transaction():
+            current = self.get_migration_session(migration_id)
+            if current is None:
+                raise MigrationStateError("migration session does not exist")
+            self._require_migration_revision(current, expected_revision)
+            if "failed_rolled_back" not in _MIGRATION_TRANSITIONS[current.state]:
+                raise MigrationStateError("migration cannot fail from the current state")
+            self.connection.execute(
+                """UPDATE migration_sessions
+                   SET state = 'failed_rolled_back', stage = 'rolled_back', backup_status = ?,
+                       failure_code = ?, failure_summary = ?, revision = revision + 1, updated_at = ?
+                   WHERE migration_id = ? AND revision = ?""",
+                (backup_status, code, summary, timestamp, migration_id, expected_revision),
+            )
+        failed = self.get_migration_session(migration_id)
+        assert failed is not None
+        return failed
+
+    def complete_migration_session(
+        self,
+        migration_id: str,
+        expected_revision: int,
+        *,
+        project_id: str,
+        report: Mapping[str, Any],
+        attention_required: bool,
+        occurred_at: str | None = None,
+    ) -> MigrationSession:
+        project_id = validate_public_identifier(project_id, field="project_id")
+        safe_report = _safe_payload(dict(report))
+        timestamp = normalize_utc(occurred_at)
+        target = "completed_attention" if attention_required else "completed_ready"
+        with self.transaction():
+            current = self.get_migration_session(migration_id)
+            if current is None:
+                raise MigrationStateError("migration session does not exist")
+            self._require_migration_revision(current, expected_revision)
+            if current.state != "validating":
+                raise MigrationStateError("migration can only complete from validating")
+            if current.backup_status != "completed" or current.backup_path is None:
+                raise MigrationStateError("migration completion requires a completed backup")
+            if self.get_data_mode() != "projects" or self.get_project(project_id) is None:
+                raise MigrationStateError("migration completion requires the durable projects result")
+            self.connection.execute(
+                """UPDATE migration_sessions
+                   SET state = ?, stage = 'complete', project_id = ?, report_json = ?,
+                       failure_code = NULL, failure_summary = NULL, revision = revision + 1,
+                       updated_at = ?, completed_at = ?
+                   WHERE migration_id = ? AND revision = ?""",
+                (target, project_id, stable_json(safe_report), timestamp, timestamp, migration_id, expected_revision),
+            )
+        completed = self.get_migration_session(migration_id)
+        assert completed is not None
+        return completed
+
+    def acknowledge_migration_session(
+        self, migration_id: str, expected_revision: int, *, occurred_at: str | None = None
+    ) -> MigrationSession:
+        timestamp = normalize_utc(occurred_at)
+        with self.transaction():
+            current = self.get_migration_session(migration_id)
+            if current is None:
+                raise MigrationStateError("migration session does not exist")
+            self._require_migration_revision(current, expected_revision)
+            if current.state not in {"completed_ready", "completed_attention"}:
+                raise MigrationStateError("only a completed migration can be acknowledged")
+            if current.acknowledged_at is not None:
+                return current
+            self.connection.execute(
+                """UPDATE migration_sessions
+                   SET acknowledged_at = ?, revision = revision + 1, updated_at = ?
+                   WHERE migration_id = ? AND revision = ?""",
+                (timestamp, timestamp, migration_id, expected_revision),
+            )
+        acknowledged = self.get_migration_session(migration_id)
+        assert acknowledged is not None
+        return acknowledged
 
     def execute_many_in_transaction(self, statement: str, parameters: Sequence[Sequence[Any]]) -> None:
         with self.transaction():

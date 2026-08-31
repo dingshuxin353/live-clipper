@@ -80,6 +80,19 @@ class StartupDetection:
     data_mode: str = "absent"
     project_count: int = 0
     has_first_run_session: bool = False
+    migration_session_count: int = 0
+
+
+@dataclass(frozen=True)
+class MigrationStartupSession:
+    migration_id: str
+    state: str
+    revision: int
+    project_id: str | None
+    backup_status: str
+    has_report: bool
+    completed_at: str | None
+    acknowledged_at: str | None
 
 
 @dataclass(frozen=True)
@@ -174,8 +187,10 @@ def decide_startup(
     *,
     session: FirstRunSession | None,
     existing_project_ids: Collection[str],
+    migration_sessions: Collection[MigrationStartupSession] = (),
 ) -> StartupDecision:
     project_ids = frozenset(existing_project_ids)
+    migrations = tuple(migration_sessions)
     evidence_codes = frozenset(detection.evidence_codes)
     has_new_facts = detection.project_count > 0 or session is not None
 
@@ -183,6 +198,12 @@ def decide_startup(
         return StartupDecision("diagnostic_required", reason_code="project_count_mismatch")
     if detection.has_first_run_session != (session is not None):
         return StartupDecision("diagnostic_required", reason_code="first_run_session_mismatch")
+    if detection.migration_session_count != len(migrations):
+        return StartupDecision("diagnostic_required", reason_code="migration_session_count_mismatch")
+    if len(migrations) > 1:
+        return StartupDecision("diagnostic_required", reason_code="multiple_migration_sessions")
+    if migrations and session is not None:
+        return StartupDecision("diagnostic_required", reason_code="migration_first_run_conflict")
     if session is not None:
         request_pair_matches = (session.project_request_id is None) == (session.project_request_hash is None)
         state_shape_matches = (
@@ -206,7 +227,52 @@ def decide_startup(
         if not state_shape_matches:
             return StartupDecision("diagnostic_required", reason_code="invalid_first_run_session")
 
+    if migrations:
+        migration = migrations[0]
+        if migration.revision < 1 or not migration.migration_id:
+            return StartupDecision("diagnostic_required", reason_code="invalid_migration_session")
+        if migration.state in {"backing_up", "migrating", "validating", "failed_rolled_back"}:
+            backup_shape_matches = (
+                migration.state == "backing_up"
+                or migration.backup_status == "completed"
+                or (migration.state == "failed_rolled_back" and migration.backup_status == "failed")
+            )
+            consistent_legacy = (
+                detection.has_legacy_evidence
+                and detection.data_mode == "legacy"
+                and detection.project_count == 0
+                and not project_ids
+                and migration.project_id is None
+                and not migration.has_report
+                and migration.completed_at is None
+                and migration.acknowledged_at is None
+                and backup_shape_matches
+            )
+            if not consistent_legacy:
+                return StartupDecision("diagnostic_required", reason_code="migration_state_conflict")
+            reason = "migration_retry" if migration.state == "failed_rolled_back" else "migration_resume"
+            return StartupDecision("migration_required", reason_code=reason)
+        if migration.state in {"completed_ready", "completed_attention"}:
+            consistent_completion = (
+                detection.data_mode == "projects"
+                and detection.project_count == 1
+                and len(project_ids) == 1
+                and migration.project_id in project_ids
+                and migration.backup_status == "completed"
+                and migration.has_report
+                and migration.completed_at is not None
+            )
+            if not consistent_completion:
+                return StartupDecision("diagnostic_required", reason_code="migration_completion_conflict")
+            reason = None if migration.acknowledged_at is not None else "migration_completed_unacknowledged"
+            return StartupDecision("workbench", reason_code=reason)
+        if migration.state == "diagnostic_required":
+            return StartupDecision("diagnostic_required", reason_code="migration_diagnostic_required")
+        return StartupDecision("diagnostic_required", reason_code="unknown_migration_state")
+
     if detection.has_legacy_evidence:
+        if "legacy_import_state_requires_diagnostic" in evidence_codes:
+            return StartupDecision("diagnostic_required", reason_code="legacy_import_state_requires_diagnostic")
         if evidence_codes & {"project_database_unreadable", "legacy_config_unreadable"}:
             return StartupDecision("diagnostic_required", reason_code="unreadable_startup_evidence")
         if has_new_facts:

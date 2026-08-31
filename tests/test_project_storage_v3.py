@@ -45,7 +45,7 @@ def _logical_dump(connection: sqlite3.Connection) -> str:
     return "\n".join(connection.iterdump())
 
 
-def test_v2_upgrades_to_v3_without_rebuilding_result_tables(tmp_path):
+def test_v2_upgrades_to_current_schema_without_rebuilding_result_tables(tmp_path):
     connection = _v2_database(tmp_path)
     result_sql = connection.execute(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'run_results'"
@@ -56,6 +56,7 @@ def test_v2_upgrades_to_v3_without_rebuilding_result_tables(tmp_path):
         (1,),
         (2,),
         (3,),
+        (4,),
     ]
     assert connection.execute(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'run_results'"

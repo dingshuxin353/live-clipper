@@ -9,6 +9,7 @@ from typing import Any
 
 from .first_run_state import (
     FirstRunSession,
+    MigrationStartupSession,
     StartupDecision,
     StartupDetection,
     decide_startup,
@@ -25,7 +26,8 @@ class _DatabaseFacts:
     data_mode: str = "absent"
     project_ids: tuple[str, ...] = ()
     session: FirstRunSession | None = None
-    has_legacy_import: bool = False
+    migration_sessions: tuple[MigrationStartupSession, ...] = ()
+    has_blocked_legacy_import: bool = False
     unreadable: bool = False
 
 
@@ -68,6 +70,19 @@ def _session_from_row(row: sqlite3.Row) -> FirstRunSession:
     )
 
 
+def _migration_from_row(row: sqlite3.Row) -> MigrationStartupSession:
+    return MigrationStartupSession(
+        migration_id=str(row["migration_id"]),
+        state=str(row["state"]),
+        revision=int(row["revision"]),
+        project_id=str(row["project_id"]) if row["project_id"] is not None else None,
+        backup_status=str(row["backup_status"]),
+        has_report=row["report_json"] is not None,
+        completed_at=str(row["completed_at"]) if row["completed_at"] is not None else None,
+        acknowledged_at=str(row["acknowledged_at"]) if row["acknowledged_at"] is not None else None,
+    )
+
+
 def _read_database_facts(path: Path) -> _DatabaseFacts:
     if not path.is_file():
         return _DatabaseFacts()
@@ -97,10 +112,18 @@ def _read_database_facts(path: Path) -> _DatabaseFacts:
             ).fetchone()
             if row is not None:
                 session = _session_from_row(row)
-        has_legacy_import = False
-        if "legacy_imports" in tables:
-            has_legacy_import = connection.execute("SELECT 1 FROM legacy_imports LIMIT 1").fetchone() is not None
-        return _DatabaseFacts(data_mode, project_ids, session, has_legacy_import)
+        migration_sessions: tuple[MigrationStartupSession, ...] = ()
+        if "migration_sessions" in tables:
+            rows = connection.execute(
+                "SELECT * FROM migration_sessions ORDER BY created_at, migration_id"
+            ).fetchall()
+            migration_sessions = tuple(_migration_from_row(row) for row in rows)
+        has_blocked_legacy_import = False
+        if "migration_sessions" not in tables and "legacy_imports" in tables:
+            has_blocked_legacy_import = (
+                connection.execute("SELECT 1 FROM legacy_imports LIMIT 1").fetchone() is not None
+            )
+        return _DatabaseFacts(data_mode, project_ids, session, migration_sessions, has_blocked_legacy_import)
     except (OSError, sqlite3.DatabaseError, TypeError, ValueError, json.JSONDecodeError):
         return _DatabaseFacts(unreadable=True)
     finally:
@@ -148,8 +171,8 @@ def _inspect(
         not current_project_runtime or (service / "runs.json").exists()
     ):
         evidence.add("legacy_metadata")
-    if facts.has_legacy_import:
-        evidence.add("legacy_project_import")
+    if facts.has_blocked_legacy_import:
+        evidence.add("legacy_import_state_requires_diagnostic")
     if facts.data_mode == "legacy":
         evidence.add("legacy_data_mode")
     if facts.unreadable:
@@ -161,6 +184,7 @@ def _inspect(
         data_mode=facts.data_mode,
         project_count=len(facts.project_ids),
         has_first_run_session=facts.session is not None,
+        migration_session_count=len(facts.migration_sessions),
     )
     return detection, facts
 
@@ -176,4 +200,9 @@ def inspect_startup(
     *, config_path: str | Path, env_path: str | Path, service_dir: str | Path
 ) -> StartupDecision:
     detection, facts = _inspect(config_path=config_path, env_path=env_path, service_dir=service_dir)
-    return decide_startup(detection, session=facts.session, existing_project_ids=facts.project_ids)
+    return decide_startup(
+        detection,
+        session=facts.session,
+        existing_project_ids=facts.project_ids,
+        migration_sessions=facts.migration_sessions,
+    )

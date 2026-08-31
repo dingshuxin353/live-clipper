@@ -11,7 +11,7 @@ from live_clipper.config import DEFAULT_CONFIG_TEMPLATE
 from live_clipper.first_run_detection import detect_first_run_environment, inspect_startup
 from live_clipper.project_domain import default_project_config
 from live_clipper.project_service import ProjectError, open_project_repository
-from live_clipper.project_storage import database_path
+from live_clipper.project_storage import SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, ProjectRepository, database_path
 
 
 def _fingerprint(root: Path) -> dict[str, tuple[int, int, str]]:
@@ -157,17 +157,25 @@ INSERT INTO system_state VALUES ('data_mode', 'legacy', '2026-08-29T00:00:01Z');
     assert check.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall() == [(1,), (2,)]
 
 
-def test_legacy_import_and_projects_conflict_is_diagnostic(tmp_path):
+def test_pre_v4_nonempty_legacy_import_is_diagnostic_without_upgrade(tmp_path):
     service_dir = tmp_path / "service"
-    repository = open_project_repository(service_dir)
-    repository.begin_first_run_session()
-    repository.connection.execute(
-        """INSERT INTO legacy_imports(
-             import_id, source_fingerprint, plan_json, backup_path, status, summary_json, created_at, completed_at
-           ) VALUES ('import-1', 'fingerprint', '{}', 'backup', 'completed', '{}', ?, ?)""",
-        ("2026-08-29T00:00:00Z", "2026-08-29T00:00:00Z"),
+    service_dir.mkdir()
+    connection = sqlite3.connect(database_path(service_dir), isolation_level=None)
+    connection.create_function("migration_fault", 1, lambda _phase: 0)
+    connection.executescript(
+        "BEGIN;"
+        + SCHEMA_V1
+        + "INSERT INTO schema_migrations VALUES (1, 'v1', '2026-09-01T00:00:00Z');"
+        + "INSERT INTO system_state VALUES ('data_mode', 'legacy', '2026-09-01T00:00:00Z');"
+        + SCHEMA_V2
+        + "INSERT INTO schema_migrations VALUES (2, 'v2', '2026-09-01T00:00:01Z');"
+        + SCHEMA_V3
+        + "INSERT INTO schema_migrations VALUES (3, 'v3', '2026-09-01T00:00:02Z');"
+        + "INSERT INTO legacy_imports VALUES ('import-1', 'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff', '{}', 'backup', 'completed', '{}', NULL, '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z');"
+        + "COMMIT;"
     )
-    repository.close()
+    connection.close()
+    before = _fingerprint(tmp_path)
 
     detection = detect_first_run_environment(
         config_path=tmp_path / "missing.toml", env_path=tmp_path / "missing.env", service_dir=service_dir
@@ -175,5 +183,37 @@ def test_legacy_import_and_projects_conflict_is_diagnostic(tmp_path):
     decision = inspect_startup(
         config_path=tmp_path / "missing.toml", env_path=tmp_path / "missing.env", service_dir=service_dir
     )
-    assert "legacy_project_import" in detection.evidence_codes
+    assert "legacy_import_state_requires_diagnostic" in detection.evidence_codes
     assert decision.entry == "diagnostic_required"
+    assert decision.reason_code == "legacy_import_state_requires_diagnostic"
+    assert _fingerprint(tmp_path) == before
+
+
+def test_durable_active_migration_is_detected_read_only_and_routes_to_resume(tmp_path):
+    service_dir = tmp_path / "service"
+    repository = ProjectRepository(service_dir)
+    repository.create_migration_session(
+        migration_id="migration-1",
+        source_fingerprint="a" * 64,
+        plan_version=3,
+        plan_hash="b" * 64,
+        source_manifest=[],
+        choices={},
+        request_id="request-1",
+        request_hash="c" * 64,
+        backup_path="/backup",
+    )
+    repository.close()
+    (service_dir / "runs.json").write_text('{"runs": []}', encoding="utf-8")
+    before = _fingerprint(tmp_path)
+
+    detection = detect_first_run_environment(
+        config_path=tmp_path / "missing.toml", env_path=tmp_path / "missing.env", service_dir=service_dir
+    )
+    decision = inspect_startup(
+        config_path=tmp_path / "missing.toml", env_path=tmp_path / "missing.env", service_dir=service_dir
+    )
+
+    assert detection.migration_session_count == 1
+    assert decision.entry == "migration_required" and decision.reason_code == "migration_resume"
+    assert _fingerprint(tmp_path) == before
