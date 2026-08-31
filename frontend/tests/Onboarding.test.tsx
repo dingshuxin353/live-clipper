@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { MemoryRouter } from "react-router-dom";
 
 import { Onboarding } from "../src/Onboarding";
-import type { OnboardingSession, OnboardingSnapshot } from "../src/project-dto";
+import type { OnboardingDraft, OnboardingSession, OnboardingSnapshot } from "../src/project-dto";
 import { installFetchMock as installBaseFetchMock, jsonResponse } from "./helpers";
 
 const SESSION: OnboardingSession = { state: "in_progress", current_step: "welcome", revision: 1, draft: {}, pending_finish_request_id: null, failure: null, first_project: null };
@@ -12,12 +12,32 @@ const MODELS = [
   { id: "accurate", display_name: "Accurate", backend: "mlx", tier: "high_accuracy", tier_label: "高精度", size_note: "1.6 GiB", ram_note: "内存较高", speed_note: "处理较慢", accuracy_note: "精度优先", recommended: false, state: "damaged", state_reason: "hash", installed: false, downloading: false, job_id: null, installed_bytes: 0, partial_bytes: 300, bytes_downloaded: 300, bytes_total: 1000, download_source: "modelscope", current: false },
 ] as OnboardingSnapshot["model_catalog"];
 
-function installFetchMock(overrides: Record<string, unknown> = {}) {
+function mergeDraft(current: OnboardingDraft, patch: OnboardingDraft): OnboardingDraft {
+  const merged = { ...current };
+  for (const section of ["asr", "ai", "project"] as const) {
+    if (patch[section] !== undefined) merged[section] = { ...(current[section] ?? {}), ...patch[section] };
+  }
+  return merged;
+}
+
+function installFetchMock(overrides: Record<string, unknown> = {}, initialSession: OnboardingSession = SESSION) {
+  let currentSession = initialSession;
   return installBaseFetchMock({
     "/api/onboarding/environment-check": { ok: true, environment: onboardingSnapshot().environment },
     "/api/onboarding/session": (options?: RequestInit) => {
       const body = JSON.parse(String(options?.body || "{}"));
-      return jsonResponse({ ok: true, session: { ...SESSION, revision: Number(body.expected_revision || 1) + 1, current_step: body.current_step || "welcome", draft: body.patch || {} } });
+      if (currentSession.state !== "in_progress" || body.current_step === "complete") {
+        return jsonResponse({ ok: false, error: { code: "validation_failed", message: "首次设置草稿无效", fields: { current_step: "进行中的首次设置不能保存为完成步骤" } } }, 422);
+      }
+      if (body.expected_revision !== currentSession.revision) {
+        return jsonResponse({ ok: false, error: { code: "onboarding_revision_conflict", message: "设置已在另一个窗口更新", fields: {} } }, 409);
+      }
+      const draft = mergeDraft(currentSession.draft, body.patch || {});
+      const currentStep = body.current_step || currentSession.current_step;
+      if (JSON.stringify(draft) !== JSON.stringify(currentSession.draft) || currentStep !== currentSession.current_step) {
+        currentSession = { ...currentSession, revision: currentSession.revision + 1, current_step: currentStep, draft };
+      }
+      return jsonResponse({ ok: true, session: currentSession });
     },
     ...overrides,
   });
@@ -120,24 +140,42 @@ describe("five-step first-run setup", () => {
   it("derives the untouched project name from the selected source and performs final validation", async () => {
     const selectFolder = vi.fn(async () => "/recordings/interviews"); window.liveClipperShell = { selectFolder };
     const session = { ...SESSION, current_step: "project" as const, draft: { project: { trigger_mode: "manual" as const, schedule_mode: "daily" as const, daily_time: "22:00", interval_minutes: 60, output_directory: "/output" } } };
-    installFetchMock({ "/api/onboarding/project/validate": { ok: true, valid: true, fatal: [], blockers: [], warnings: [], checks: { asr: { ready: true }, ai: { ready: true }, source_directory: { status: "ready" }, output_directory: { status: "creatable" } }, summary: { recording_source: "/recordings/interviews", discovery: "new_only", processing: "ai_auto", output: "/output" }, existing_video_count: 2, normalized_config: {} } }); renderOnboarding(onboardingSnapshot(session));
+    const calls = installFetchMock({ "/api/onboarding/project/validate": { ok: true, valid: true, fatal: [], blockers: [], warnings: [], checks: { asr: { ready: true }, ai: { ready: true }, source_directory: { status: "ready" }, output_directory: { status: "creatable" } }, summary: { recording_source: "/recordings/interviews", discovery: "new_only", processing: "ai_auto", output: "/output" }, existing_video_count: 2, normalized_config: {} } }, session); renderOnboarding(onboardingSnapshot(session));
     fireEvent.click(screen.getAllByRole("button", { name: "选择…" })[0]);
     expect(await screen.findByDisplayValue("interviews")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "检查配置" }));
     expect(await screen.findByText("所有必要配置均已就绪。")).toBeVisible();
     expect(screen.getByText("目录可读 · 发现 2 个已有录像，默认不会自动处理")).toBeVisible();
+    const sequence = calls.filter(([path]) => ["/api/onboarding/session", "/api/onboarding/project/validate"].includes(path));
+    expect(sequence.map(([path]) => path)).toEqual(["/api/onboarding/session", "/api/onboarding/project/validate"]);
+    expect(JSON.parse(String(sequence[0][1]?.body)).current_step).toBe("project");
+    expect(calls.filter(([path]) => path === "/api/onboarding/session").every(([, options]) => JSON.parse(String(options?.body)).current_step !== "complete")).toBe(true);
   });
 
   it("reuses one finish request identity across a failed retry", async () => {
-    const session = { ...SESSION, current_step: "complete" as const, revision: 3, draft: { project: { name: "项目", source_directory: "/source", trigger_mode: "manual" as const, schedule_mode: "daily" as const, daily_time: "22:00", interval_minutes: 60, output_directory: "/output" } } };
+    const session = { ...SESSION, current_step: "project" as const, revision: 3, draft: { project: { name: "项目", source_directory: "/source", trigger_mode: "manual" as const, schedule_mode: "daily" as const, daily_time: "22:00", interval_minutes: 60, output_directory: "/output" } } };
     let attempts = 0; const calls = installFetchMock({
       "/api/onboarding/project/validate": { ok: true, valid: true, fatal: [], blockers: [], warnings: [], checks: { asr: { ready: true }, ai: { ready: true }, source_directory: { status: "ready" }, output_directory: { status: "ready" } }, summary: { recording_source: "/source", discovery: "new_only", processing: "ai_auto", output: "/output" }, existing_video_count: 0, normalized_config: {} },
-      "/api/onboarding/finish": () => { attempts += 1; return attempts === 1 ? jsonResponse({ ok: false, error: { code: "project_creation_uncertain", message: "稍后重试" } }, 500) : jsonResponse({ ok: true, session: { ...session, state: "completed", first_project: { project_id: "p1", name: "项目", activation_state: "active", readiness_state: "ready" } } }, 201); },
-    });
-    renderOnboarding(onboardingSnapshot(session)); fireEvent.click(screen.getByRole("button", { name: "重新检查" })); await screen.findByText("所有必要配置均已就绪。");
-    fireEvent.click(screen.getByRole("button", { name: "完成设置并创建项目" })); expect(await screen.findByText("稍后重试")).toBeVisible();
+      "/api/onboarding/finish": () => { attempts += 1; return attempts === 1 ? Promise.reject(new Error("offline")) : jsonResponse({ ok: true, session: { ...session, state: "completed", current_step: "complete", first_project: { project_id: "p1", name: "项目", activation_state: "active", readiness_state: "ready" } } }, 201); },
+    }, session);
+    renderOnboarding(onboardingSnapshot(session)); fireEvent.click(screen.getByRole("button", { name: "检查配置" })); await screen.findByText("所有必要配置均已就绪。");
+    fireEvent.click(screen.getByRole("button", { name: "完成设置并创建项目" })); expect(await screen.findByText("创建结果暂时无法确认，请保持当前窗口后重试")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "完成设置并创建项目" })); await screen.findByText("项目 已经可以工作");
     const ids = calls.filter(([path]) => path === "/api/onboarding/finish").map(([, options]) => JSON.parse(String(options?.body)).request_id); expect(new Set(ids).size).toBe(1);
+    const patches = calls.filter(([path]) => path === "/api/onboarding/session").map(([, options]) => JSON.parse(String(options?.body)));
+    expect(patches.every((body) => body.current_step === "project")).toBe(true);
+  });
+
+  it("accepts activation pending with complete only from the finish response", async () => {
+    const session = { ...SESSION, current_step: "project" as const, revision: 3, draft: { project: { name: "项目", source_directory: "/source", trigger_mode: "manual" as const, schedule_mode: "daily" as const, daily_time: "22:00", interval_minutes: 60, output_directory: "/output" } } };
+    const pending = { ...session, state: "activation_pending" as const, current_step: "complete" as const, pending_finish_request_id: "finish-1", failure: { code: "service_not_ready", summary: "服务未启动" }, first_project: { project_id: "p1", name: "项目", activation_state: "active" as const, readiness_state: "blocked" } };
+    const calls = installFetchMock({
+      "/api/onboarding/project/validate": { ok: true, valid: true, fatal: [], blockers: [], warnings: [], checks: { asr: { ready: true }, ai: { ready: true }, source_directory: { status: "ready" }, output_directory: { status: "ready" } }, summary: { recording_source: "/source", discovery: "new_only", processing: "ai_auto", output: "/output" }, existing_video_count: 0, normalized_config: {} },
+      "/api/onboarding/finish": () => jsonResponse({ ok: true, session: pending }, 202),
+    }, session);
+    renderOnboarding(onboardingSnapshot(session)); fireEvent.click(screen.getByRole("button", { name: "检查配置" })); await screen.findByText("所有必要配置均已就绪。");
+    fireEvent.click(screen.getByRole("button", { name: "完成设置并创建项目" })); expect(await screen.findByText("项目已保存，本机服务尚未启动")).toBeVisible();
+    expect(calls.filter(([path]) => path === "/api/onboarding/session").every(([, options]) => JSON.parse(String(options?.body)).current_step === "project")).toBe(true);
   });
 
   it("activation pending exposes retry only and never sends finish", async () => {

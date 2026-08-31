@@ -167,11 +167,11 @@ export function Onboarding({ snapshot, onSession, onRefresh, onPaused, onClose }
     updateDraft("project", kind === "source" ? "source_directory" : "output_directory", value);
     if (kind === "source" && !nameEdited.current) { const name = value.split(/[\\/]/).filter(Boolean).at(-1) || "直播录像精选"; updateDraft("project", "name", name); }
   }
-  async function validateProject() { setBusy("validate"); setError(""); try { await flush("complete"); const result = await projectApi.onboardingValidate(sessionRef.current.revision); setValidation(result); setStep("complete"); } catch (caught) { handleFailure(caught); } finally { setBusy(""); } }
+  async function validateProject() { setBusy("validate"); setError(""); try { await flush("project"); const result = await projectApi.onboardingValidate(sessionRef.current.revision); setValidation(result); setStep("complete"); } catch (caught) { handleFailure(caught); } finally { setBusy(""); } }
   async function finish() {
     if (busy) return; setBusy("finish"); setError("");
     try {
-      await flush("complete"); if (!finishId.current) finishId.current = sessionRef.current.pending_finish_request_id || requestId("onboarding-finish");
+      await flush("project"); if (!finishId.current) finishId.current = sessionRef.current.pending_finish_request_id || requestId("onboarding-finish");
       const result = await projectApi.onboardingFinish(sessionRef.current.revision, finishId.current); adoptSession(result.session);
     } catch (caught) {
       if (caught instanceof ApiError && caught.code === "network_error") {
