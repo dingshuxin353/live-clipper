@@ -108,6 +108,24 @@ def test_react_renderer_package_and_frozen_build_contract():
     assert "npm --prefix frontend ci" in build_script
     assert "npm --prefix frontend run check" in build_script
     assert "git diff --exit-code -- src/live_clipper/web_static/react" in build_script
+
+
+def test_desktop_backend_build_fails_closed_without_mlx_before_any_side_effect():
+    build_script = Path("desktop/scripts/build-backend.sh").read_text(encoding="utf-8")
+    runtime_guard = '.venv/bin/python -c "import mlx, mlx_whisper"'
+
+    assert runtime_guard in build_script
+    assert '.venv/bin/pip install ".[mlx]"' in build_script
+    assert "packaged app will need ASR backend 'openai'" not in build_script
+    assert "--collect-all mlx" in build_script
+    assert "--collect-all mlx_whisper" in build_script
+    for side_effect in (
+        "npm --prefix frontend ci",
+        ".venv/bin/pip install",
+        "rm -rf desktop/backend-dist desktop/backend-build",
+        ".venv/bin/pyinstaller",
+    ):
+        assert build_script.index(runtime_guard) < build_script.index(side_effect)
     assert build_script.index("npm --prefix frontend ci") < build_script.index(".venv/bin/pyinstaller")
 
 
