@@ -60,6 +60,15 @@ describe("five-step first-run setup", () => {
     expect(body.patch.project.source_directory).toBe(""); expect(await screen.findByText("非密钥设置已保存。")).toBeVisible();
   });
 
+  it("clears the failed save state after a revision conflict reload succeeds", async () => {
+    const session = { ...SESSION, current_step: "project" as const, draft: { project: { name: "本地草稿", source_directory: "/source", output_directory: "/output", trigger_mode: "manual" as const } } };
+    const latestSession = { ...session, revision: 4, draft: { project: { ...session.draft.project, name: "服务器草稿" } } }; const latest = onboardingSnapshot(latestSession);
+    installFetchMock({ "/api/onboarding/session": () => jsonResponse({ ok: false, error: { code: "onboarding_revision_conflict", message: "设置已在另一个窗口更新", fields: {} } }, 409) });
+    renderOnboarding(onboardingSnapshot(session), { onRefresh: vi.fn(async () => latest) }); fireEvent.change(screen.getByLabelText("项目名称"), { target: { value: "冲突修改" } });
+    expect(await screen.findByText("自动保存失败，请处理后重试。", {}, { timeout: 1500 })).toBeVisible(); fireEvent.click(screen.getByRole("button", { name: "重新加载" }));
+    expect(await screen.findByDisplayValue("服务器草稿")).toBeVisible(); expect(screen.queryByText("设置已在另一个窗口更新")).not.toBeInTheDocument(); expect(screen.queryByText("自动保存失败，请处理后重试。")).not.toBeInTheDocument(); expect(screen.getByText("非密钥设置已保存。")).toBeVisible();
+  });
+
   it("flushes the current step before pausing and keeps the overlay open on failure", async () => {
     const calls = installFetchMock({
       "/api/onboarding/session": { ok: true, session: { ...SESSION, revision: 2 } },
