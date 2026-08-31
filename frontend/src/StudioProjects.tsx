@@ -2,13 +2,19 @@ import { useEffect } from "react";
 import { Link } from "react-router-dom";
 
 import { projectApi } from "./project-api";
-import type { ProjectSummary, ResultSummary, Run, StudioPayload } from "./project-dto";
+import type { OnboardingSnapshot, ProjectSummary, ResultSummary, Run, StudioPayload } from "./project-dto";
 import { ErrorState, LoadingState, Metric, PageHeading, ProjectRow, RunCard, SectionHeading, basename, sortProjects, type PollingState, usePolling } from "./workbench-shared";
 
-export function StudioPage({ notify, state }: { notify(message: string): void; state: PollingState<StudioPayload> }) {
+export function StudioPage({ notify, state, onboarding = null, resumeOnboarding = async () => undefined, resumeTriggerRef }: { notify(message: string): void; state: PollingState<StudioPayload>; onboarding?: OnboardingSnapshot | null; resumeOnboarding?(): Promise<void>; resumeTriggerRef?: React.RefObject<HTMLButtonElement | null> }) {
   const studio = state.data;
   const active = Boolean(studio && (studio.workload.processing || studio.workload.queued));
   useEffect(() => { if (!active) return; const id = window.setInterval(() => { if (!document.hidden) void state.refresh(); }, 5000); return () => window.clearInterval(id); }, [active, state.refresh]);
+  if (onboarding?.session?.state === "paused") {
+    const steps = { welcome: "开始", asr: "语音识别", ai: "AI 服务", project: "第一个项目", complete: "完成" } as const;
+    const current = steps[onboarding.session.current_step] ?? "首次设置";
+    const ready = [onboarding.resources.asr.ready ? "语音识别已准备" : null, onboarding.resources.ai.ready ? "AI 服务已准备" : null].filter(Boolean);
+    return <section className="page onboarding-paused-page"><PageHeading eyebrow="首次使用准备" title="工作室" description="完成设置后，Venus 才会开始发现和处理录像。" /><article className="onboarding-paused-card"><img src="/static/venus-mark.png" alt="" /><span>首次设置尚未完成</span><h1>继续准备你的内容工作台</h1><p>已安全保存的配置和模型下载进度都在本机保留。</p><div className="onboarding-paused-progress"><strong>将从“{current}”继续</strong><small>{ready.length ? ready.join(" · ") : "还没有提交资源配置"}</small></div><button ref={resumeTriggerRef} className="button primary" onClick={() => void resumeOnboarding()}>继续首次设置</button></article></section>;
+  }
   if (state.loading && !studio) return <LoadingState />;
   if (!studio) return <ErrorState message={state.error} retry={() => void state.refresh()} />;
   const projectById = new Map(studio.projects.map((item) => [item.project_id, item]));

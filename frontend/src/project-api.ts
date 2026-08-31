@@ -1,5 +1,5 @@
 import { api, patch, post } from "./api";
-import type { ClipsPayload, FormOptionsPayload, IssueDetail, OutputMaterial, ProjectConfig, ProjectSummary, RecoveryAttempt, RepairContext, Run, RunFilter, RunOutput, RunResultPayload, ScanEvent, ScanPreviewPayload, SourceFile, StageEvent, StudioPayload, ValidationPayload } from "./project-dto";
+import type { ClipsPayload, FormOptionsPayload, IssueDetail, ModelJob, OnboardingFinishPayload, OnboardingSessionPayload, OnboardingSnapshot, OnboardingStep, OnboardingValidationPayload, OutputMaterial, ProjectConfig, ProjectSummary, RecoveryAttempt, RepairContext, Run, RunFilter, RunOutput, RunResultPayload, ScanEvent, ScanPreviewPayload, SourceFile, StageEvent, StudioPayload, ValidationPayload } from "./project-dto";
 
 export const projectApi = {
   studio: (signal?: AbortSignal) => api<StudioPayload>("/api/studio", {}, signal),
@@ -31,6 +31,21 @@ export const projectApi = {
   updateConnection: (resourceId: string, issueId: string, apiBase: string, apiKey: string) => patch<{ ok: true; resource_id: string; api_base: string; model: string; credential_updated: boolean; reused: boolean }>(`/api/resources/${encodeURIComponent(resourceId)}/connection`, { request_id: requestId("resource-save"), issue_id: issueId, api_base: apiBase, ...(apiKey.trim() ? { api_key: apiKey } : {}) }),
   testConnection: (resourceId: string, issueId: string) => post<{ ok: true; resource_id: string; success: boolean; tested_at: string; reused: boolean }>(`/api/resources/${encodeURIComponent(resourceId)}/connection-test`, { request_id: requestId("resource-test"), issue_id: issueId }),
   legacyAwaitingReview: (signal?: AbortSignal) => api<{ ok: true; runs: Array<{ run: Run; project: { project_id: string; name: string }; detail_url: string }>; count: number }>("/api/legacy/awaiting-review", {}, signal),
+  onboarding: (signal?: AbortSignal) => api<OnboardingSnapshot>("/api/onboarding", {}, signal),
+  onboardingStart: (signal?: AbortSignal) => post<OnboardingSessionPayload>("/api/onboarding/start", {}, signal),
+  onboardingPatch: (expectedRevision: number, currentStep: OnboardingStep, draftPatch: object) => patch<OnboardingSessionPayload>("/api/onboarding/session", { request_id: requestId("onboarding-draft"), expected_revision: expectedRevision, current_step: currentStep, patch: draftPatch }),
+  onboardingPause: (expectedRevision: number) => post<OnboardingSessionPayload>("/api/onboarding/pause", { request_id: requestId("onboarding-pause"), expected_revision: expectedRevision }),
+  onboardingResume: (expectedRevision: number) => post<OnboardingSessionPayload>("/api/onboarding/resume", { request_id: requestId("onboarding-resume"), expected_revision: expectedRevision }),
+  onboardingEnvironment: (expectedRevision: number) => post<{ ok: true; environment: OnboardingSnapshot["environment"] }>("/api/onboarding/environment-check", { request_id: requestId("onboarding-environment"), expected_revision: expectedRevision }),
+  onboardingAsrLocal: (expectedRevision: number, modelId: string, modelSource: string) => post<OnboardingSessionPayload>("/api/onboarding/resources/asr/local", { request_id: requestId("onboarding-asr-local"), expected_revision: expectedRevision, model_id: modelId, model_source: modelSource }),
+  onboardingAsrCloud: (expectedRevision: number, apiBase: string, model: string, apiKey: string) => post<OnboardingSessionPayload>("/api/onboarding/resources/asr/cloud", { request_id: requestId("onboarding-asr-cloud"), expected_revision: expectedRevision, api_base: apiBase, model, api_key: apiKey }),
+  onboardingAi: (expectedRevision: number, providerId: string, providerLabel: string, apiBase: string, model: string, apiKey: string) => post<OnboardingSessionPayload>("/api/onboarding/resources/ai", { request_id: requestId("onboarding-ai"), expected_revision: expectedRevision, provider_id: providerId, provider_label: providerLabel, api_base: apiBase, model, api_key: apiKey }),
+  onboardingValidate: (expectedRevision: number) => post<OnboardingValidationPayload>("/api/onboarding/project/validate", { request_id: requestId("onboarding-project-validate"), expected_revision: expectedRevision }),
+  onboardingFinish: (expectedRevision: number, id: string) => post<OnboardingFinishPayload>("/api/onboarding/finish", { request_id: id, expected_revision: expectedRevision }),
+  onboardingRetry: (expectedRevision: number, id: string) => post<OnboardingFinishPayload>("/api/onboarding/service/retry", { request_id: id, expected_revision: expectedRevision }),
+  modelCatalog: (signal?: AbortSignal) => api<{ ok: true; models: OnboardingSnapshot["model_catalog"] }>("/api/asr/models", {}, signal),
+  downloadModel: (modelId: string, source: string) => post<{ ok: true; job: ModelJob }>("/api/asr/models/download", { model: modelId, source }),
+  job: (jobId: string, signal?: AbortSignal) => api<{ ok: true; job: ModelJob }>(`/api/jobs/${encodeURIComponent(jobId)}`, {}, signal),
 };
 
 export function requestId(prefix: string): string { return `${prefix}-${crypto.randomUUID()}`; }

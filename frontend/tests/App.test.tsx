@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import { App } from "../src/App";
-import { PROJECT, RUN, installFetchMock, jsonResponse } from "./helpers";
+import { PROJECT, RUN, WORKBENCH_ONBOARDING, installFetchMock, jsonResponse } from "./helpers";
 
 function route(path: string) { window.history.replaceState({}, "", path); }
 
@@ -22,6 +22,65 @@ async function openCreateWizard() {
 
 describe("Venus 1.0 core workbench", () => {
   beforeEach(() => { route("/studio"); localStorage.clear(); });
+
+  it("holds back the workbench until startup classification completes", async () => {
+    installFetchMock({ "/api/onboarding": () => new Promise<Response>(() => undefined) }); render(<App />);
+    expect(screen.getByText("正在准备 Venus")).toBeVisible();
+    expect(screen.queryByRole("navigation", { name: "主导航" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /新建项目/ })).not.toBeInTheDocument();
+  });
+
+  it("aborts the startup classification when the gate is discarded", async () => {
+    let signal: AbortSignal | undefined;
+    installFetchMock({ "/api/onboarding": (options?: RequestInit) => { signal = options?.signal as AbortSignal | undefined; return new Promise<Response>(() => undefined); } });
+    const view = render(<App />); await waitFor(() => expect(signal).toBeDefined()); view.unmount(); expect(signal?.aborted).toBe(true);
+  });
+
+  it("fails closed for the retired or unknown startup DTO", async () => {
+    installFetchMock({ "/api/onboarding": { needs_onboarding: false } }); render(<App />);
+    expect(await screen.findByText("暂时无法确认数据状态")).toBeVisible(); expect(screen.queryByRole("navigation", { name: "主导航" })).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["migration_required", "检测到现有数据"],
+    ["diagnostic_required", "数据状态需要检查"],
+  ])("renders the %s safety boundary without onboarding or project creation", async (mode, title) => {
+    installFetchMock({ "/api/onboarding": { ...WORKBENCH_ONBOARDING, entry: { mode, onboarding: null, reason_code: "safe-123", evidence_codes: ["existing"] } } }); render(<App />);
+    expect(await screen.findByText(title)).toBeVisible(); expect(screen.getByText("问题编号：safe-123")).toBeVisible();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument(); expect(screen.queryByRole("button", { name: /新建项目/ })).not.toBeInTheDocument();
+  });
+
+  it("starts a new session before opening the five-step overlay", async () => {
+    const session = { state: "in_progress", current_step: "welcome", revision: 1, draft: {}, pending_finish_request_id: null, failure: null, first_project: null };
+    const calls = installFetchMock({
+      "/api/onboarding": { ...WORKBENCH_ONBOARDING, entry: { mode: "onboarding", onboarding: "new", reason_code: null, evidence_codes: [] }, session: null },
+      "/api/onboarding/start": { ok: true, session },
+    });
+    render(<App />); expect(await screen.findByRole("dialog", { name: "开始" })).toBeVisible();
+    expect(calls.some(([path]) => path === "/api/onboarding/start")).toBe(true);
+  });
+
+  it("keeps a paused session in Studio with one resume entry", async () => {
+    const session = { state: "paused", current_step: "ai", revision: 4, draft: {}, pending_finish_request_id: null, failure: null, first_project: null };
+    installFetchMock({ "/api/onboarding": { ...WORKBENCH_ONBOARDING, entry: { mode: "onboarding", onboarding: "paused", reason_code: null, evidence_codes: [] }, session } }); render(<App />);
+    expect(await screen.findByText("首次设置尚未完成")).toBeVisible(); expect(screen.getAllByRole("button", { name: "继续首次设置" })).toHaveLength(2);
+    expect(screen.queryByRole("button", { name: /新建项目/ })).not.toBeInTheDocument(); expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("returns focus to the Studio resume entry after Escape pauses onboarding", async () => {
+    const session = { state: "in_progress" as const, current_step: "welcome" as const, revision: 1, draft: {}, pending_finish_request_id: null, failure: null, first_project: null };
+    const saved = { ...session, revision: 2 }; const paused = { ...saved, state: "paused" as const, revision: 3 };
+    installFetchMock({
+      "/api/onboarding": { ...WORKBENCH_ONBOARDING, entry: { mode: "onboarding", onboarding: "resume", reason_code: null, evidence_codes: [] }, session },
+      "/api/onboarding/environment-check": { ok: true, environment: WORKBENCH_ONBOARDING.environment },
+      "/api/onboarding/session": { ok: true, session: saved },
+      "/api/onboarding/pause": { ok: true, session: paused },
+    });
+    render(<App />); const dialog = await screen.findByRole("dialog", { name: "开始" });
+    const pauseButton = within(dialog).getAllByRole("button", { name: "稍后继续" })[0]; await waitFor(() => expect(pauseButton).toBeEnabled()); fireEvent.keyDown(document, { key: "Escape" });
+    const pausedCard = (await screen.findByText("首次设置尚未完成")).closest("article"); expect(pausedCard).not.toBeNull();
+    const resume = within(pausedCard!).getByRole("button", { name: "继续首次设置" }); await waitFor(() => expect(resume).toHaveFocus());
+  });
 
   it("uses frozen navigation order and routes deep links with browser history", async () => {
     installFetchMock(); render(<App />);

@@ -71,6 +71,42 @@ export const RUN = {
   error_summary: null, queue_position: null, has_result: false, result_summary: null, active_issue_summary: null, legacy_awaiting_review: false,
 };
 
+export const WORKBENCH_ONBOARDING = {
+  ok: true,
+  entry: {
+    mode: "workbench",
+    onboarding: null,
+    reason_code: null,
+    evidence_codes: [],
+  },
+  session: null,
+  environment: {
+    status: "ready",
+    checks: [],
+  },
+  resources: {
+    asr: {
+      configured: true,
+      ready: true,
+      credential_present: false,
+      problem: null,
+    },
+    ai: {
+      configured: true,
+      ready: true,
+      credential_present: true,
+      problem: null,
+    },
+  },
+  model_catalog: [],
+  initial_local_model: "",
+  provider_presets: [],
+  suggestions: {
+    project_name: "直播录像精选",
+    output_directory: "/output",
+  },
+};
+
 export function jsonResponse(body: unknown, status = 200) {
   return Promise.resolve(new Response(JSON.stringify(body), {
     status,
@@ -81,7 +117,7 @@ export function jsonResponse(body: unknown, status = 200) {
 export function installFetchMock(overrides: Record<string, unknown> = {}) {
   const calls: Array<[string, RequestInit | undefined]> = [];
   const base: Record<string, unknown> = {
-    "/api/onboarding": { needs_onboarding: false },
+    "/api/onboarding": WORKBENCH_ONBOARDING,
     "/api/service": {
       ok: true,
       running: false,

@@ -17,13 +17,40 @@ export type ApiErrorCode =
   | "source_unavailable"
   | "source_path_outside_project"
   | "resource_unavailable"
-  | "initial_scan_failed";
+  | "initial_scan_failed"
+  | "onboarding_not_started"
+  | "onboarding_state_conflict"
+  | "onboarding_revision_conflict"
+  | "onboarding_contract_replaced"
+  | "environment_not_ready"
+  | "model_not_ready"
+  | "model_download_active"
+  | "model_download_unavailable"
+  | "insufficient_disk_space"
+  | "asr_request_failed"
+  | "asr_unreachable"
+  | "asr_auth_failed"
+  | "asr_model_unavailable"
+  | "ai_request_failed"
+  | "ai_unreachable"
+  | "ai_auth_failed"
+  | "ai_model_unavailable"
+  | "resource_commit_failed"
+  | "project_validation_failed"
+  | "project_creation_uncertain"
+  | "service_not_ready";
 
 const API_ERROR_CODES: ReadonlySet<ApiErrorCode> = new Set([
   "network_error", "invalid_response", "unknown_error", "validation_failed", "migration_required",
   "route_not_found", "project_not_found", "run_not_found", "request_id_conflict", "data_integrity_error",
   "revision_conflict", "project_not_ready", "scan_in_progress", "source_unavailable",
   "source_path_outside_project", "resource_unavailable", "initial_scan_failed",
+  "onboarding_not_started", "onboarding_state_conflict", "onboarding_revision_conflict",
+  "onboarding_contract_replaced", "environment_not_ready", "model_not_ready", "model_download_active",
+  "model_download_unavailable", "insufficient_disk_space", "asr_request_failed", "asr_unreachable",
+  "asr_auth_failed", "asr_model_unavailable", "ai_request_failed", "ai_unreachable", "ai_auth_failed",
+  "ai_model_unavailable", "resource_commit_failed", "project_validation_failed", "project_creation_uncertain",
+  "service_not_ready",
 ]);
 
 function apiErrorCode(value: unknown): ApiErrorCode {
