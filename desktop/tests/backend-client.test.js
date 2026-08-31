@@ -32,15 +32,54 @@ test("backend errors and logs never echo the authentication token", async () => 
   assert.equal(redactText(`before ${token} after`, [token]), "before [REDACTED] after");
 });
 
-test("readiness requires both the stable shell endpoint and project database", async () => {
+test("readiness validates onboarding mode and only opens project data for workbench", async () => {
   const paths = [];
   const client = new BackendClient({
     port: 43210,
     token: "token",
-    transport: async (options) => { paths.push(options.path); return { statusCode: 200, body: '{"ok":true,"pending_review_count":0}' }; },
+    transport: async (options) => {
+      paths.push(options.path);
+      if (options.path === "/api/onboarding") {
+        return { statusCode: 200, body: '{"ok":true,"entry":{"mode":"workbench","onboarding":null}}' };
+      }
+      return { statusCode: 200, body: '{"ok":true,"pending_review_count":0}' };
+    },
   });
-  await client.checkReady();
+  const snapshot = await client.checkReady();
+  assert.equal(snapshot.entry.mode, "workbench");
   assert.deepEqual(paths, ["/api/onboarding", "/api/studio"]);
+
+  for (const [mode, onboarding] of [
+    ["onboarding", "new"],
+    ["migration_required", null],
+    ["diagnostic_required", null],
+  ]) {
+    paths.length = 0;
+    client.transport = async (options) => {
+      paths.push(options.path);
+      return { statusCode: 200, body: JSON.stringify({ ok: true, entry: { mode, onboarding } }) };
+    };
+    const result = await client.checkReady();
+    assert.equal(result.entry.mode, mode);
+    assert.deepEqual(paths, ["/api/onboarding"]);
+  }
+});
+
+test("readiness rejects retired, unknown, and internally inconsistent startup DTOs", async () => {
+  const payloads = [
+    { needs_onboarding: true },
+    { ok: true, entry: { mode: "unknown", onboarding: null } },
+    { ok: true, entry: { mode: "onboarding", onboarding: null } },
+    { ok: true, entry: { mode: "workbench", onboarding: "new" } },
+  ];
+  for (const payload of payloads) {
+    const client = new BackendClient({
+      port: 43210,
+      token: "token",
+      transport: async () => ({ statusCode: 200, body: JSON.stringify(payload) }),
+    });
+    await assert.rejects(client.checkReady(), /启动状态无效/);
+  }
 });
 
 test("readiness retries transient failures and stops if the backend exits", async () => {
@@ -50,10 +89,12 @@ test("readiness retries transient failures and stops if the backend exits", asyn
   client.checkReady = async () => {
     attempts += 1;
     if (attempts < 3) throw new Error("not ready");
+    return { ok: true, entry: { mode: "onboarding", onboarding: "new" } };
   };
-  await client.waitUntilReady({ sleep: async () => { sleeps += 1; } });
+  const snapshot = await client.waitUntilReady({ sleep: async () => { sleeps += 1; } });
   assert.equal(attempts, 3);
   assert.equal(sleeps, 2);
+  assert.equal(snapshot.entry.mode, "onboarding");
 
   await assert.rejects(
     client.waitUntilReady({ isAlive: () => false }),

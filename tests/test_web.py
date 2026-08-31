@@ -18,6 +18,103 @@ from live_clipper.utils import write_json
 from live_clipper.web import LiveClipperRequestHandler, WebPaths, build_run_detail, build_runs_index, handle_api_request
 
 
+def _filesystem_facts(root):
+    facts = {}
+    for path in sorted(root.rglob("*")):
+        stat = path.stat()
+        facts[str(path.relative_to(root))] = (
+            path.is_dir(),
+            stat.st_mode,
+            stat.st_mtime_ns,
+            path.read_bytes() if path.is_file() else None,
+        )
+    return facts
+
+
+def test_restricted_startup_web_allows_only_shell_and_onboarding_without_writes(tmp_path):
+    home = tmp_path / "legacy-home"
+    service_dir = home / "work" / "service"
+    service_dir.mkdir(parents=True)
+    config_path = home / "live-clipper.toml"
+    config_path.write_text("[recording_source.default]\nsource_dir = '/Volumes/legacy'\n", encoding="utf-8")
+    (service_dir / "jobs.json").write_text(
+        '[{"id":"legacy-job","status":"running"}]\n',
+        encoding="utf-8",
+    )
+
+    class RestrictedHandler(LiveClipperRequestHandler):
+        paths = WebPaths(
+            output_root=home / "output",
+            state_dir=home / "work" / "automation_state",
+            log_dir=home / "work" / "automation_logs",
+            input_dir=home / "input",
+            service_dir=service_dir,
+            config_path=config_path,
+        )
+        access_token = "test-token"
+        restricted_startup = "migration_required"
+
+    before = _filesystem_facts(home)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), RestrictedHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    headers = {"Authorization": "Bearer test-token"}
+    try:
+        shell = urlopen(f"{base}/studio", timeout=5)
+        assert shell.status == 200 and b'<div id="root"></div>' in shell.read()
+        onboarding_response = urlopen(Request(f"{base}/api/onboarding", headers=headers), timeout=5)
+        onboarding_payload = json.loads(onboarding_response.read())
+        assert onboarding_payload["entry"]["mode"] == "migration_required"
+        assert onboarding_payload["session"] is None
+
+        for method, route, data in [
+            ("GET", "/api/studio", None),
+            ("GET", "/api/config", None),
+            ("POST", "/api/service/start", b"{}"),
+            ("POST", "/api/onboarding/start", b"{}"),
+        ]:
+            request = Request(f"{base}{route}", headers=headers, method=method, data=data)
+            if data is not None:
+                request.add_header("Content-Type", "application/json")
+            with pytest.raises(HTTPError) as blocked:
+                urlopen(request, timeout=5)
+            payload = json.loads(blocked.value.read())
+            assert blocked.value.code == 409
+            assert payload["error_code"] == "migration_required"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    assert _filesystem_facts(home) == before
+
+
+def test_run_web_server_skips_job_recovery_in_restricted_startup(tmp_path, monkeypatch):
+    calls = []
+
+    class FakeServer:
+        def __init__(self, address, handler):
+            calls.append((address, handler.restricted_startup))
+
+        def serve_forever(self):
+            return None
+
+        def server_close(self):
+            return None
+
+    monkeypatch.setattr(web, "ThreadingHTTPServer", FakeServer)
+    monkeypatch.setattr(web.jobs, "sweep_interrupted", lambda service_dir: pytest.fail("restricted startup must not sweep jobs"))
+    web.run_web_server(
+        port=43210,
+        paths=WebPaths(service_dir=tmp_path / "service", config_path=tmp_path / "live-clipper.toml"),
+        access_token="test-token",
+        restricted_startup="diagnostic_required",
+    )
+
+    assert calls == [(('127.0.0.1', 43210), "diagnostic_required")]
+
+
 def test_build_runs_index_merges_files_state_and_log(tmp_path, monkeypatch):
     output_root = tmp_path / "output"
     state_dir = tmp_path / "state"

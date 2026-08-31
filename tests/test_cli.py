@@ -922,7 +922,7 @@ def test_main_reports_cheap_model_service_errors_without_traceback(tmp_path, mon
     )
 
 
-def test_run_app_upgrades_existing_home_without_touching_app_files(monkeypatch, tmp_path):
+def test_run_app_keeps_legacy_home_byte_for_byte_and_starts_only_restricted_web(monkeypatch, tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("LIVE_CLIPPER_HOME", str(home))
@@ -951,13 +951,117 @@ def test_run_app_upgrades_existing_home_without_touching_app_files(monkeypatch, 
     legacy_fixture = home / "input" / "keep.txt"
     legacy_fixture.parent.mkdir()
     legacy_fixture.write_bytes(fixture_bytes)
-    monkeypatch.setattr(cli, "run_web_server", lambda **kwargs: None)
-    monkeypatch.setattr(cli, "start_embedded_service", lambda *args, **kwargs: {"ok": True})
+    def facts():
+        result = {}
+        for path in sorted(home.rglob("*")):
+            stat = path.stat()
+            result[str(path.relative_to(home))] = (
+                path.is_dir(),
+                stat.st_mode,
+                stat.st_mtime_ns,
+                path.read_bytes() if path.is_file() else None,
+            )
+        return result
+
+    captured = {}
+    monkeypatch.setattr(cli, "run_web_server", lambda **kwargs: captured.update(kwargs))
+    monkeypatch.setattr(
+        cli,
+        "start_embedded_service",
+        lambda *args, **kwargs: pytest.fail("legacy startup must not start the embedded service"),
+    )
+    before = facts()
 
     cli.run_app()
 
-    assert f'workspace_root = "{home / "workspace"}"' in config_path.read_text(encoding="utf-8")
-    assert (home / "workspace" / "runs").is_dir()
+    assert facts() == before
+    assert captured["restricted_startup"] == "migration_required"
+    assert captured["paths"].service_dir == home / "work" / "service"
+    assert captured["paths"].config_path == config_path
     assert (home / ".env").read_bytes() == env_bytes
     assert marker.read_bytes() == marker_bytes
     assert legacy_fixture.read_bytes() == fixture_bytes
+    assert not (home / "workspace").exists()
+    assert not (home / "work" / "config_backups").exists()
+    assert not (home / "work" / "service" / "venus.sqlite3").exists()
+
+
+def test_run_app_keeps_conflicting_project_home_unchanged_in_diagnostic_mode(monkeypatch, tmp_path):
+    from live_clipper.project_domain import default_project_config
+    from live_clipper.project_service import open_project_repository
+
+    home = tmp_path / "home"
+    service_dir = home / "work" / "service"
+    source = home / "source"
+    output = home / "output"
+    source.mkdir(parents=True)
+    output.mkdir()
+    repository = open_project_repository(service_dir)
+    repository.create_project("已有项目", default_project_config(source, output))
+    repository.close()
+    config_path = home / "live-clipper.toml"
+    config_path.write_text(
+        f"[recording_source.default]\nsource_dir = '{home / 'legacy-source'}'\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("LIVE_CLIPPER_HOME", str(home))
+    captured = {}
+    monkeypatch.setattr(cli, "run_web_server", lambda **kwargs: captured.update(kwargs))
+    monkeypatch.setattr(
+        cli,
+        "start_embedded_service",
+        lambda *args, **kwargs: pytest.fail("diagnostic startup must not start the embedded service"),
+    )
+
+    before = {
+        str(path.relative_to(home)): (path.stat().st_mode, path.stat().st_mtime_ns, path.read_bytes() if path.is_file() else None)
+        for path in sorted(home.rglob("*"))
+    }
+    cli.run_app()
+    after = {
+        str(path.relative_to(home)): (path.stat().st_mode, path.stat().st_mtime_ns, path.read_bytes() if path.is_file() else None)
+        for path in sorted(home.rglob("*"))
+    }
+
+    assert captured["restricted_startup"] == "diagnostic_required"
+    assert after == before
+
+
+def test_run_app_restores_workbench_without_rewriting_current_config_or_database(monkeypatch, tmp_path):
+    from live_clipper.config import render_app_config_template
+    from live_clipper.project_domain import default_project_config
+    from live_clipper.project_service import open_project_repository
+    from live_clipper.project_storage import database_path
+
+    home = tmp_path / "home"
+    monkeypatch.chdir(tmp_path)
+    source = home / "source"
+    output = home / "output"
+    source.mkdir(parents=True)
+    output.mkdir()
+    config_path = home / "live-clipper.toml"
+    config_path.write_text(render_app_config_template(home / "workspace"), encoding="utf-8")
+    env_path = home / ".env"
+    env_path.write_text("CHEAP_MODEL_API_KEY=\nASR_API_KEY=\n", encoding="utf-8")
+    service_dir = home / "work" / "service"
+    repository = open_project_repository(service_dir, config_path=config_path, env_path=env_path)
+    repository.create_project("已有项目", default_project_config(source, output))
+    repository.close()
+    config_before = config_path.read_bytes()
+    database_before = database_path(service_dir).read_bytes()
+    monkeypatch.setenv("LIVE_CLIPPER_HOME", str(home))
+    captured = {}
+
+    def fake_embedded(settings_loader, *, service_dir):
+        assert settings_loader().paths.workspace_root == home / "workspace"
+        captured["embedded_service_dir"] = service_dir
+        return {"ok": True}
+
+    monkeypatch.setattr(cli, "start_embedded_service", fake_embedded)
+    monkeypatch.setattr(cli, "run_web_server", lambda **kwargs: captured.update(kwargs))
+    cli.run_app()
+
+    assert captured.get("restricted_startup") is None
+    assert captured["embedded_service_dir"] == service_dir
+    assert config_path.read_bytes() == config_before
+    assert database_path(service_dir).read_bytes() == database_before

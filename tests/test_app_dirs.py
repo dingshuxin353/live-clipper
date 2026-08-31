@@ -10,6 +10,14 @@ def test_default_app_home_env_override(monkeypatch, tmp_path):
     assert app_dirs.default_app_home() == tmp_path / "home"
 
 
+def test_resolve_app_home_is_absolute_and_has_no_filesystem_side_effect(monkeypatch, tmp_path):
+    home = tmp_path / "missing" / "home"
+    monkeypatch.setenv("LIVE_CLIPPER_HOME", str(home))
+
+    assert app_dirs.resolve_app_home() == home.resolve()
+    assert not home.exists()
+
+
 def test_default_output_root_stays_in_home_with_env_override(monkeypatch, tmp_path):
     monkeypatch.setenv("LIVE_CLIPPER_HOME", str(tmp_path / "home"))
     assert app_dirs.default_output_root(tmp_path / "home") == tmp_path / "home" / "output"
@@ -57,13 +65,26 @@ def test_run_app_bootstraps_home(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     captured = {}
 
-    def fake_run_web_server(*, host, port, paths, access_token=None):
+    def fake_run_web_server(*, host, port, paths, access_token=None, restricted_startup=None):
         captured["host"] = host
         captured["port"] = port
         captured["paths"] = paths
+        captured["restricted_startup"] = restricted_startup
 
     monkeypatch.setattr(cli, "run_web_server", fake_run_web_server)
-    monkeypatch.setattr(cli, "start_embedded_service", lambda *args, **kwargs: {"ok": True})
+
+    def fake_start_embedded_service(*args, **kwargs):
+        from live_clipper.project_storage import SCHEMA_VERSION, ProjectRepository
+
+        service_dir = kwargs["service_dir"]
+        with ProjectRepository(service_dir) as repository:
+            versions = repository.connection.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall()
+            assert tuple(row[0] for row in versions) == tuple(range(1, SCHEMA_VERSION + 1))
+            assert repository.get_data_mode() == "projects"
+        captured["embedded_service_started"] = True
+        return {"ok": True}
+
+    monkeypatch.setattr(cli, "start_embedded_service", fake_start_embedded_service)
     cli.run_app(host="127.0.0.1", port=9999)
 
     config_text = (home / "live-clipper.toml").read_text(encoding="utf-8")
@@ -74,7 +95,11 @@ def test_run_app_bootstraps_home(monkeypatch, tmp_path):
     assert (home / ".env").exists()
     assert Path.cwd() == home
     assert captured["port"] == 9999
-    assert captured["paths"].output_root == Path("output")
+    assert captured["paths"].output_root == home / "output"
+    assert captured["paths"].service_dir == home / "work" / "service"
+    assert captured["paths"].config_path == home / "live-clipper.toml"
+    assert captured["restricted_startup"] is None
+    assert captured["embedded_service_started"] is True
 
 
 def test_write_default_config_keeps_cli_mlx_default(tmp_path):

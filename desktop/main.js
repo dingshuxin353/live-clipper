@@ -8,6 +8,7 @@ const {
   appUrl,
   createBadgePoller,
   createFileSelections,
+  createFolderSelection,
   createOutputActions,
   createRuntimeState,
   isInternalAppUrl,
@@ -22,6 +23,7 @@ let backendClient = null;
 let badgePoller = null;
 let outputActions = null;
 let fileSelections = null;
+let folderSelection = null;
 let exitingNow = false;
 const runtime = createRuntimeState();
 const backendToken = require("crypto").randomBytes(16).toString("hex");
@@ -90,12 +92,8 @@ function assertTrustedRenderer(event) {
 
 ipcMain.handle("lc:select-folder", async (event, title) => {
   assertTrustedRenderer(event);
-  const options = {
-    title: typeof title === "string" && title ? title : "选择文件夹",
-    properties: ["openDirectory", "createDirectory"],
-  };
-  const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
-  return result.canceled ? null : result.filePaths[0];
+  if (!folderSelection) throw new Error("桌面文件夹选择尚未就绪");
+  return folderSelection.select(title);
 });
 
 ipcMain.handle("lc:read-clipboard-text", (event) => {
@@ -356,6 +354,7 @@ async function shutdownBackend() {
     backendClient = null;
     outputActions = null;
     fileSelections = null;
+    folderSelection = null;
     return;
   }
   const proc = backendProcess;
@@ -378,6 +377,7 @@ async function shutdownBackend() {
   backendClient = null;
   outputActions = null;
   fileSelections = null;
+  folderSelection = null;
 }
 
 async function prepareForQuit() {
@@ -408,8 +408,10 @@ if (!app.requestSingleInstanceLock()) {
         runtime,
         getWindow: () => mainWindow,
       });
+      folderSelection = createFolderSelection({ dialog, runtime, getWindow: () => mainWindow });
       startBackend(backendPort);
-      await backendClient.waitUntilReady({ isAlive: () => Boolean(backendProcess) });
+      const startup = await backendClient.waitUntilReady({ isAlive: () => Boolean(backendProcess) });
+      if (!startup?.entry?.mode) throw new Error("后台启动状态无效");
       await session.defaultSession.cookies.set({
         url: `http://127.0.0.1:${backendPort}`,
         name: "lc_token",
