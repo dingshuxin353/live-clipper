@@ -1360,7 +1360,14 @@ class LiveClipperRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        self._write_response_body(body)
+
+    def _write_response_body(self, body: bytes) -> None:
+        """A disconnected local client is transport completion, not a server fault."""
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
 
     def do_HEAD(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         parsed_path = urlparse(self.path).path
@@ -1447,7 +1454,7 @@ class LiveClipperRequestHandler(BaseHTTPRequestHandler):
                     self.send_header("Content-Length", str(len(response_body)))
                 self.end_headers()
                 if not head_only:
-                    self.wfile.write(response_body)
+                    self._write_response_body(response_body)
                 return
         body_payload: dict[str, Any] | None = None
         retired_onboarding_route = method == "POST" and parsed_path in {
@@ -1485,7 +1492,7 @@ class LiveClipperRequestHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         if not head_only:
-            self.wfile.write(body)
+            self._write_response_body(body)
 
     def _serve_static(self, *, head_only: bool = False) -> None:
         target = STATIC_DIR / "react" / "index.html" if self.path == "/" else _static_path(self.path)

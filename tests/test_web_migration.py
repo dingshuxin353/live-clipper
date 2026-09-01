@@ -69,6 +69,18 @@ def test_migration_rejects_unknown_body_fields(tmp_path):
     assert status == 422 and payload["error_code"] == "validation_failed"
 
 
+def test_api_response_disconnect_is_silent_transport_completion():
+    class DisconnectedStream:
+        def write(self, _body):
+            raise BrokenPipeError("client closed")
+
+    handler = object.__new__(LiveClipperRequestHandler)
+    handler.wfile = DisconnectedStream()
+    handler.close_connection = False
+    handler._write_response_body(b'{"ok":true}')
+    assert handler.close_connection is True
+
+
 def test_restricted_real_http_executes_then_switches_to_project_api(tmp_path, monkeypatch):
     paths = _paths(tmp_path)
     monkeypatch.setattr(service, "ensure_service_ready", lambda *args, **kwargs: {"ok": True})
