@@ -50,6 +50,30 @@ export interface Run {
   updated_at: string; error_code: string | null; error_summary: string | null; queue_position?: number | null;
   has_result?: boolean; result_summary?: ResultSummary | null; active_issue_summary?: IssueSummary | null; legacy_awaiting_review?: boolean;
 }
+export type ReprocessBlockerAction = "source_repair" | "project_settings" | "asr_settings" | "ai_settings" | "active_run" | "recheck";
+export interface ReprocessSettingsSummary {
+  asr: string | null; analysis: string | null; ai_review: string | null; render: string | null;
+  naming: string | null; output_directory: string | null; retention: string | null;
+}
+export interface ReprocessVersion {
+  run_id: string; status: RunStatus; current_stage: RunStage | null; processing_sequence: number; origin_run_id: string | null;
+  config_revision: number; queued_at: string; started_at: string | null; review_at: string | null; completed_at: string | null;
+  updated_at: string; error_code: string | null; settings_summary: ReprocessSettingsSummary;
+  result_summary: { result_type: ResultType; selected_count: number; available_output_count: number; failed_output_count: number; total_duration_ms: number; result_revision: number; completed_at: string } | null;
+  changed_fields: Array<keyof ReprocessSettingsSummary | "result_summary">;
+}
+export interface ReprocessPreflight {
+  ok: true;
+  run: Pick<Run, "run_id" | "project_id" | "status" | "processing_sequence">;
+  source: { path: string; name: string; expected_content_id: string; content_id: string | null; bytes: number | null; mtime_ns: number | null; state: "ready" | "missing" | "identity_mismatch" };
+  current_settings: { config_revision: number; summary: ReprocessSettingsSummary; snapshot: Record<string, unknown> };
+  changes: Array<{ field: keyof ReprocessSettingsSummary; before: unknown; after: unknown }>;
+  space: { work_directory: string; required_bytes: number; available_bytes: number; additional_estimate_bytes: number | null; sufficient: boolean };
+  active_run: ReprocessVersion | null; next_processing_sequence: number;
+  blockers: Array<{ code: string; action: ReprocessBlockerAction; related_id: string }>;
+  can_reprocess: boolean; preflight_revision: string;
+}
+export interface ReprocessVersionsPayload { ok: true; run_id: string; project_id: string; content_id: string; versions: ReprocessVersion[] }
 export interface ProjectSummary {
   project_id: string; name: string; description: string; activation_state: ActivationState; current_config_revision: number;
   created_at: string; updated_at: string; activated_at: string | null; paused_at: string | null; main_status: ProjectMainStatus;

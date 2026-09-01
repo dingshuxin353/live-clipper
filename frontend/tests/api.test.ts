@@ -1,4 +1,5 @@
 import { api, ApiError } from "../src/api";
+import { projectApi } from "../src/project-api";
 import { jsonResponse } from "./helpers";
 
 describe("typed API client", () => {
@@ -51,5 +52,19 @@ describe("typed API client", () => {
   it("normalizes unrecognized backend error codes to the stable fallback", async () => {
     vi.stubGlobal("fetch", vi.fn(() => jsonResponse({ ok: false, error: { code: "future_backend_code", message: "未知错误", fields: {} } }, 500)));
     await expect(api("/api/projects")).rejects.toEqual(expect.objectContaining({ code: "unknown_error" }));
+  });
+
+  it("uses the frozen reprocess routes and two-field create body", async () => {
+    const fetchMock = vi.fn((_input: RequestInfo | URL, _options?: RequestInit) => jsonResponse({ ok: true, run: { run_id: "next" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    await projectApi.reprocessPreflight("origin");
+    await projectApi.reprocessVersions("origin");
+    await projectApi.createReprocess("origin", "request-1", "revision-1");
+    expect(fetchMock.mock.calls.map(([path]) => path)).toEqual([
+      "/api/runs/origin/reprocess-preflight",
+      "/api/runs/origin/versions",
+      "/api/runs/origin/reprocess",
+    ]);
+    expect(JSON.parse(String(fetchMock.mock.calls[2][1]?.body))).toEqual({ request_id: "request-1", expected_preflight_revision: "revision-1" });
   });
 });
