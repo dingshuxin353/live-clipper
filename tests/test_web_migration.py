@@ -77,7 +77,20 @@ def test_api_response_disconnect_is_silent_transport_completion():
     handler = object.__new__(LiveClipperRequestHandler)
     handler.wfile = DisconnectedStream()
     handler.close_connection = False
-    handler._write_response_body(b'{"ok":true}')
+    handler.send_response = lambda _status: None
+    handler.send_header = lambda _key, _value: None
+    handler.end_headers = lambda: None
+    handler._emit_response(200, {"Content-Type": "application/json"}, b'{"ok":true}')
+    assert handler.close_connection is True
+
+
+def test_api_response_header_disconnect_is_silent_transport_completion():
+    handler = object.__new__(LiveClipperRequestHandler)
+    handler.close_connection = False
+    handler.send_response = lambda _status: None
+    handler.send_header = lambda _key, _value: None
+    handler.end_headers = lambda: (_ for _ in ()).throw(BrokenPipeError("client reset"))
+    handler._emit_response(200, {"Content-Type": "application/json"}, b'{"ok":true}')
     assert handler.close_connection is True
 
 

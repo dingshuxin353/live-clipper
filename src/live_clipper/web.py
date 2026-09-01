@@ -1356,16 +1356,30 @@ class LiveClipperRequestHandler(BaseHTTPRequestHandler):
 
     def _reject_unauthorized(self) -> None:
         body = json.dumps(_structured_error("unauthorized", "缺少或错误的访问令牌")).encode("utf-8")
-        self.send_response(HTTPStatus.UNAUTHORIZED)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self._write_response_body(body)
+        self._emit_response(
+            HTTPStatus.UNAUTHORIZED,
+            {"Content-Type": "application/json; charset=utf-8"},
+            body,
+        )
 
-    def _write_response_body(self, body: bytes) -> None:
-        """A disconnected local client is transport completion, not a server fault."""
+    def _emit_response(
+        self,
+        status: int,
+        headers: dict[str, str],
+        body: bytes,
+        *,
+        head_only: bool = False,
+    ) -> None:
+        """Emit the complete HTTP response under one client-disconnect boundary."""
         try:
-            self.wfile.write(body)
+            self.send_response(status)
+            for key, value in headers.items():
+                self.send_header(key, value)
+            if "Content-Length" not in headers:
+                self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if not head_only:
+                self.wfile.write(body)
         except (BrokenPipeError, ConnectionResetError):
             self.close_connection = True
 
@@ -1447,14 +1461,7 @@ class LiveClipperRequestHandler(BaseHTTPRequestHandler):
                     if isinstance(payload, bytes)
                     else json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
                 )
-                self.send_response(status)
-                for key, value in headers.items():
-                    self.send_header(key, value)
-                if "Content-Length" not in headers:
-                    self.send_header("Content-Length", str(len(response_body)))
-                self.end_headers()
-                if not head_only:
-                    self._write_response_body(response_body)
+                self._emit_response(status, headers, response_body, head_only=head_only)
                 return
         body_payload: dict[str, Any] | None = None
         retired_onboarding_route = method == "POST" and parsed_path in {
@@ -1485,14 +1492,7 @@ class LiveClipperRequestHandler(BaseHTTPRequestHandler):
             head_only=head_only,
         )
         body = payload if isinstance(payload, bytes) else json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
-        self.send_response(status)
-        for key, value in headers.items():
-            self.send_header(key, value)
-        if "Content-Length" not in headers:
-            self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        if not head_only:
-            self._write_response_body(body)
+        self._emit_response(status, headers, body, head_only=head_only)
 
     def _serve_static(self, *, head_only: bool = False) -> None:
         target = STATIC_DIR / "react" / "index.html" if self.path == "/" else _static_path(self.path)
