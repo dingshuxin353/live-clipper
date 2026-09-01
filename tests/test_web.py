@@ -67,6 +67,11 @@ def test_restricted_startup_web_allows_only_shell_and_onboarding_without_writes(
         onboarding_payload = json.loads(onboarding_response.read())
         assert onboarding_payload["entry"]["mode"] == "migration_required"
         assert onboarding_payload["session"] is None
+        migration_response = urlopen(Request(f"{base}/api/migration", headers=headers), timeout=5)
+        migration_payload = json.loads(migration_response.read())
+        assert migration_response.status == 200
+        assert migration_payload["entry"] in {"inspect", "review"}
+        assert migration_payload["source"]["detected"] is True
 
         for method, route, data in [
             ("GET", "/api/studio", None),

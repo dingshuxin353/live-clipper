@@ -24,6 +24,7 @@ from .project_domain import (
     RunStageEvent,
     ScanEvent,
     WorkspaceEvent,
+    legacy_id,
     new_id,
     normalize_utc,
     parse_json,
@@ -3174,7 +3175,7 @@ class ProjectRepository:
                      source_manifest_json, choices_json, state, stage, revision,
                      request_id, request_hash, backup_path, backup_status,
                      created_at, started_at, updated_at
-                   ) VALUES (?, ?, ?, ?, ?, ?, 'backing_up', 'backup', 1, ?, ?, ?, 'pending', ?, ?, ?)""",
+                   ) VALUES (?, ?, ?, ?, ?, ?, 'backing_up', 'copy', 1, ?, ?, ?, 'pending', ?, ?, ?)""",
                 (
                     migration_id,
                     fingerprint,
@@ -3317,6 +3318,278 @@ class ProjectRepository:
         assert completed is not None
         return completed
 
+    def apply_migration_transaction(
+        self,
+        migration_id: str,
+        expected_revision: int,
+        *,
+        source_fingerprint: str,
+        plan_hash: str,
+        project_id: str,
+        project_name: str,
+        config: Mapping[str, Any],
+        history_entries: Sequence[Mapping[str, Any]],
+        safe_results: Sequence[Mapping[str, Any]],
+        blocker_codes: Sequence[str],
+        report: Mapping[str, Any],
+        fault_injection: Callable[[str], None] | None = None,
+        occurred_at: str | None = None,
+    ) -> MigrationSession:
+        """Atomically publish the complete legacy-to-projects business result.
+
+        Backup and control-stage changes happen before this method. Every new
+        project-mode fact, the terminal report and the data-mode switch share
+        this one transaction; data_mode is deliberately written last.
+        """
+        migration_id = validate_public_identifier(migration_id, field="migration_id")
+        project_id = validate_public_identifier(project_id, field="project_id")
+        fingerprint = validate_sha256(source_fingerprint, field="source_fingerprint")
+        normalized_plan_hash = validate_sha256(plan_hash, field="plan_hash")
+        validated_config = validate_project_config(config)
+        safe_report = _safe_payload(dict(report))
+        timestamp = normalize_utc(occurred_at)
+        blockers = tuple(sorted({validate_public_identifier(code, field="blocker_code") for code in blocker_codes}))
+        activation_state = "inactive" if blockers else "active"
+        readiness_state = "blocked" if blockers else "ready"
+        auto_scan_state = (
+            "scheduled"
+            if not blockers and bool(validated_config["schedule"]["enabled"])
+            else ("blocked" if blockers else "off")
+        )
+
+        def inject(phase: str) -> None:
+            if fault_injection is not None:
+                fault_injection(phase)
+
+        with self.transaction():
+            current = self.get_migration_session(migration_id)
+            if current is None:
+                raise MigrationStateError("migration session does not exist")
+            self._require_migration_revision(current, expected_revision)
+            if current.state != "validating" or current.stage not in {"database", "runtime"}:
+                raise MigrationStateError("migration apply requires the validating database stage")
+            if current.source_fingerprint != fingerprint or current.plan_hash != normalized_plan_hash:
+                raise MigrationStateError("migration apply no longer matches its durable plan")
+            if current.backup_status != "completed" or current.backup_path is None:
+                raise MigrationStateError("migration apply requires a completed backup")
+            if self.get_data_mode() != "legacy":
+                raise MigrationStateError("migration apply requires legacy data mode")
+            if self.connection.execute("SELECT 1 FROM projects LIMIT 1").fetchone() is not None:
+                raise MigrationStateError("migration apply requires an empty project store")
+
+            schema_version = int(validated_config["schema_version"])
+            activated_at = timestamp if activation_state == "active" else None
+            self.connection.execute(
+                """INSERT INTO projects(
+                     project_id, name, description, activation_state, current_config_revision,
+                     created_at, updated_at, activated_at, paused_at
+                   ) VALUES (?, ?, '', ?, 1, ?, ?, ?, NULL)""",
+                (project_id, project_name, activation_state, timestamp, timestamp, activated_at),
+            )
+            self.connection.execute(
+                """INSERT INTO project_config_revisions(
+                     project_id, revision, config_json, schema_version, created_at
+                   ) VALUES (?, 1, ?, ?, ?)""",
+                (project_id, stable_json(validated_config), schema_version, timestamp),
+            )
+            self.connection.execute(
+                """INSERT INTO project_runtime(
+                     project_id, readiness_state, auto_scan_state, failure_code,
+                     failure_summary, discovery_baseline, first_scan_state
+                   ) VALUES (?, ?, ?, ?, ?, ?, 'pending')""",
+                (
+                    project_id,
+                    readiness_state,
+                    auto_scan_state,
+                    blockers[0] if blockers else None,
+                    "迁移完成后需要修复项目条件" if blockers else None,
+                    timestamp,
+                ),
+            )
+            self.connection.execute(
+                """INSERT INTO workspace_events(event_type, project_id, occurred_at, payload_json)
+                   VALUES ('project_created', ?, ?, ?)""",
+                (project_id, timestamp, stable_json({"source": "legacy_migration"})),
+            )
+            inject("after_project")
+
+            run_ids: dict[str, str] = {}
+            for entry in history_entries:
+                if entry.get("category") == "quarantined":
+                    continue
+                legacy_run_id = str(entry["legacy_run_id"])
+                run_id = legacy_id(fingerprint, f"run:{legacy_run_id}")
+                run_ids[legacy_run_id] = run_id
+                target_state = str(entry["target_state"])
+                if target_state not in {"completed", "failed"}:
+                    raise MigrationStateError("imported history cannot become queued work")
+                created_at = normalize_utc(str(entry["created_at"]))
+                updated_at = normalize_utc(str(entry["updated_at"]))
+                error_code = None
+                error_summary = None
+                if target_state == "failed":
+                    error_code = str(
+                        entry.get("failure_code")
+                        or ("legacy_compatibility_history" if entry.get("category") == "compatibility" else "legacy_import_failed")
+                    )
+                    error_summary = "历史处理记录已保留，且不会进入处理队列"
+                self.connection.execute(
+                    """INSERT INTO runs(
+                         run_id, project_id, content_id, processing_sequence, origin_run_id,
+                         source_scan_id, trigger_source, first_seen_path, latest_seen_path,
+                         status, current_stage, config_revision, parameter_snapshot_json,
+                         queued_at, started_at, completed_at, updated_at, error_code, error_summary
+                       ) VALUES (?, ?, ?, 1, NULL, NULL, 'legacy_import', ?, ?, ?, NULL, 1,
+                         ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        run_id,
+                        project_id,
+                        str(entry["content_id"]),
+                        str(entry["source_identity"]),
+                        str(entry["source_identity"]),
+                        target_state,
+                        stable_json(
+                            {
+                                "migration": {"source_fingerprint": fingerprint, "legacy_run_id": legacy_run_id},
+                                "output": {"directory": validated_config["output"]["directory"]},
+                            }
+                        ),
+                        created_at,
+                        created_at,
+                        updated_at if target_state == "completed" else None,
+                        updated_at,
+                        error_code,
+                        error_summary,
+                    ),
+                )
+            inject("after_runs")
+
+            for fact in safe_results:
+                legacy_run_id = str(fact["legacy_run_id"])
+                run_id = run_ids.get(legacy_run_id)
+                if run_id is None:
+                    raise MigrationStateError("safe result does not belong to imported history")
+                review_id = legacy_id(fingerprint, f"review:{legacy_run_id}")
+                candidate_id = legacy_id(fingerprint, f"candidate:{legacy_run_id}")
+                output_id = legacy_id(fingerprint, f"output:{legacy_run_id}")
+                decision_id = legacy_id(fingerprint, f"decision:{legacy_run_id}")
+                material_id = legacy_id(fingerprint, f"material:{legacy_run_id}")
+                duration_ms = int(fact["duration_ms"])
+                self.connection.execute(
+                    """INSERT INTO ai_review_sessions(
+                         review_session_id, run_id, attempt_number, status, resource_ref, model_name,
+                         strategy_version, config_revision, parameter_snapshot_json, format_version,
+                         overall_summary, warnings_json, candidate_count, selected_count, rejected_count,
+                         evidence_relative_path, evidence_sha256, started_at, completed_at, validated_at, updated_at
+                       ) VALUES (?, ?, 1, 'selected', 'legacy.analysis.default', 'legacy', 'migration_v1',
+                         1, '{}', 1, '历史安全结果', '[]', 1, 1, 0, NULL, ?, ?, ?, ?, ?)""",
+                    (review_id, run_id, str(fact["sha256"]), timestamp, timestamp, timestamp, timestamp),
+                )
+                self.connection.execute(
+                    """INSERT INTO run_outputs(
+                         output_id, run_id, review_session_id, candidate_id, display_order, status,
+                         storage_kind, relative_path, file_name, duration_ms, width, height, container,
+                         video_codec, byte_size, generated_at, verified_at, updated_at
+                       ) VALUES (?, ?, ?, ?, 1, 'ready', 'project_output', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        output_id,
+                        run_id,
+                        review_id,
+                        candidate_id,
+                        str(fact["relative_path"]),
+                        str(fact["file_name"]),
+                        duration_ms,
+                        int(fact["width"]),
+                        int(fact["height"]),
+                        str(fact["container"]),
+                        str(fact["video_codec"]),
+                        int(fact["byte_size"]),
+                        timestamp,
+                        timestamp,
+                        timestamp,
+                    ),
+                )
+                self.connection.execute(
+                    """INSERT INTO candidate_decisions(
+                         decision_id, review_session_id, run_id, candidate_id, decision, rank,
+                         candidate_type, source_start_ms, source_end_ms, selected_start_ms,
+                         selected_end_ms, remove_ranges_json, hook, core_value, reason,
+                         risks_json, transcript_excerpt, output_id
+                       ) VALUES (?, ?, ?, ?, 'selected', 1, 'legacy_safe_result', 0, ?, 0, ?,
+                         '[]', '', '', '历史安全结果', '[]', '', ?)""",
+                    (decision_id, review_id, run_id, candidate_id, duration_ms, duration_ms, output_id),
+                )
+                self.connection.execute(
+                    """INSERT INTO output_materials(
+                         material_id, output_id, title_candidates_json, preferred_title_id,
+                         description, tags_json, generation_source, status, material_revision,
+                         created_at, updated_at
+                       ) VALUES (?, ?, '[]', NULL, '', '[]', 'indexed_v1', 'pending', 1, ?, ?)""",
+                    (material_id, output_id, timestamp, timestamp),
+                )
+                self.connection.execute(
+                    """INSERT INTO run_results(
+                         run_id, review_session_id, result_type, candidate_count, selected_count,
+                         rejected_count, available_output_count, failed_output_count, total_duration_ms,
+                         overall_summary, warnings_json, format_version, result_revision, source_kind,
+                         evidence_hash, completed_at, updated_at
+                       ) VALUES (?, ?, 'clips_ready', 1, 1, 0, 1, 0, ?, '历史安全结果', '[]',
+                         1, 1, 'indexed_v1', ?, ?, ?)""",
+                    (run_id, review_id, duration_ms, str(fact["sha256"]), timestamp, timestamp),
+                )
+            inject("after_results")
+
+            for code in blockers:
+                self._discover_issue_in_transaction(
+                    issue_code=code,
+                    category="project",
+                    scope_type="project",
+                    project_id=project_id,
+                    run_id=None,
+                    output_id=None,
+                    material_id=None,
+                    issue_group_key="migration-readiness",
+                    status="action_required",
+                    impact_level="blocking",
+                    title="迁移后项目条件需要修复",
+                    summary=f"迁移计划记录了待修复条件：{code}",
+                    impact="项目不会自动扫描或创建新 Run",
+                    preserved_content="历史记录与备份已安全保留",
+                    next_step="进入项目问题页完成修复",
+                    recovery_capability="operational_repair",
+                    occurred_at=timestamp,
+                    issue_id=legacy_id(fingerprint, f"issue:readiness:{code}"),
+                )
+            inject("after_issues")
+
+            target = "completed_attention" if blockers else "completed_ready"
+            self.connection.execute(
+                """UPDATE migration_sessions
+                   SET state = ?, stage = NULL, project_id = ?, report_json = ?,
+                       failure_code = NULL, failure_summary = NULL, revision = revision + 1,
+                       updated_at = ?, completed_at = ?
+                   WHERE migration_id = ? AND revision = ?""",
+                (
+                    target,
+                    project_id,
+                    stable_json(safe_report),
+                    timestamp,
+                    timestamp,
+                    migration_id,
+                    expected_revision,
+                ),
+            )
+            inject("before_mode")
+            self.connection.execute(
+                """INSERT INTO system_state(key, value, updated_at) VALUES ('data_mode', 'projects', ?)
+                   ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at""",
+                (timestamp,),
+            )
+            inject("after_mode")
+        completed = self.get_migration_session(migration_id)
+        assert completed is not None
+        return completed
+
     def acknowledge_migration_session(
         self, migration_id: str, expected_revision: int, *, occurred_at: str | None = None
     ) -> MigrationSession:
@@ -3339,6 +3612,63 @@ class ProjectRepository:
         acknowledged = self.get_migration_session(migration_id)
         assert acknowledged is not None
         return acknowledged
+
+    def mark_completed_migration_attention(
+        self,
+        migration_id: str,
+        expected_revision: int,
+        *,
+        failure_code: str,
+        occurred_at: str | None = None,
+    ) -> MigrationSession:
+        code = validate_public_identifier(failure_code, field="failure_code")
+        timestamp = normalize_utc(occurred_at)
+        with self.transaction():
+            current = self.get_migration_session(migration_id)
+            if current is None or current.project_id is None or current.report is None:
+                raise MigrationStateError("completed migration result is unavailable")
+            self._require_migration_revision(current, expected_revision)
+            if current.state != "completed_ready":
+                raise MigrationStateError("only a ready migration can become attention")
+            report = {**current.report, "readiness": "attention"}
+            self.connection.execute(
+                """UPDATE projects SET activation_state = 'inactive', activated_at = NULL,
+                     updated_at = ? WHERE project_id = ?""",
+                (timestamp, current.project_id),
+            )
+            self.connection.execute(
+                """UPDATE project_runtime SET readiness_state = 'blocked', auto_scan_state = 'blocked',
+                     failure_code = ?, failure_summary = ? WHERE project_id = ?""",
+                (code, "迁移完成，但项目运行服务尚未就绪", current.project_id),
+            )
+            self._discover_issue_in_transaction(
+                issue_code=code,
+                category="project",
+                scope_type="project",
+                project_id=current.project_id,
+                run_id=None,
+                output_id=None,
+                material_id=None,
+                issue_group_key="migration-runtime-readiness",
+                status="action_required",
+                impact_level="blocking",
+                title="迁移完成后服务尚未就绪",
+                summary="项目数据已安全迁移，但运行服务需要修复",
+                impact="项目不会自动扫描或创建新 Run",
+                preserved_content="迁移项目、历史和备份均已保留",
+                next_step="进入项目问题页完成运行环境修复",
+                recovery_capability="operational_repair",
+                occurred_at=timestamp,
+                issue_id=legacy_id(current.source_fingerprint, "issue:migration-runtime-readiness"),
+            )
+            self.connection.execute(
+                """UPDATE migration_sessions SET state = 'completed_attention', report_json = ?,
+                     revision = revision + 1, updated_at = ? WHERE migration_id = ? AND revision = ?""",
+                (stable_json(report), timestamp, migration_id, expected_revision),
+            )
+        attention = self.get_migration_session(migration_id)
+        assert attention is not None
+        return attention
 
     def execute_many_in_transaction(self, statement: str, parameters: Sequence[Sequence[Any]]) -> None:
         with self.transaction():

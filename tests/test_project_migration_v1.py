@@ -8,7 +8,13 @@ from pathlib import Path
 import pytest
 
 import live_clipper.project_migration as migration
-from live_clipper.project_migration import LegacySourceError, build_migration_plan, inspect_legacy_state
+from live_clipper.project_migration import (
+    LegacySourceError,
+    build_migration_plan,
+    create_migration_backup,
+    inspect_legacy_state,
+    verify_migration_backup,
+)
 
 
 def _tree(tmp_path: Path, *, weekly: bool = True):
@@ -204,6 +210,7 @@ def test_backup_space_and_resource_readiness_are_facts_not_side_effects(tmp_path
     assert enough.readiness_summary["resource_problems"] == ("asr",)
     assert not enough.readiness_summary["can_start"]
     assert enough.plan_hash != insufficient.plan_hash
+    assert enough.plan_hash == build_migration_plan(inspected, available_bytes=10**9 + 1).plan_hash
     assert hashlib.sha256(enough.stable_json().encode()).hexdigest()
 
 
@@ -235,3 +242,54 @@ def test_ready_resources_allow_start_but_explicit_bad_directories_remain_blocker
     assert blocked.readiness_summary["output_status"] == "unavailable"
     assert blocked.requires_user_choices == ("output_directory", "source_directory")
     assert not blocked.readiness_summary["can_start"]
+
+
+def test_backup_is_verified_atomically_reused_and_contains_only_approved_metadata(tmp_path):
+    config, service, _source, _output = _tree(tmp_path, weekly=False)
+    inspection = inspect_legacy_state(service, config_path=config)
+    before = _snapshot(tmp_path)
+    backup = create_migration_backup(
+        inspection,
+        backup_root=tmp_path / "migration-backups",
+        migration_id="migration-1",
+    )
+    assert not backup.reused
+    assert not list((tmp_path / "migration-backups").glob("*.partial-*"))
+    verified = verify_migration_backup(
+        backup.path,
+        migration_id="migration-1",
+        source_fingerprint=inspection.source_fingerprint,
+        source_manifest=inspection.source_manifest,
+    )
+    assert len(verified) == len(inspection.source_manifest)
+    reused = create_migration_backup(
+        inspection,
+        backup_root=tmp_path / "migration-backups",
+        migration_id="migration-1",
+    )
+    assert reused.reused and reused.path == backup.path
+    assert not any(path.suffix.lower() in {".mp4", ".mov", ".mkv"} for path in backup.path.rglob("*"))
+    for relative, fact in before.items():
+        path = tmp_path / relative
+        assert path.read_bytes() == fact[0]
+
+
+def test_backup_copy_failure_removes_partial_and_does_not_publish(tmp_path, monkeypatch):
+    config, service, _source, _output = _tree(tmp_path, weekly=False)
+    inspection = inspect_legacy_state(service, config_path=config)
+    original_write = migration.os.write
+    failed = False
+
+    def fail_once(descriptor, data):
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise OSError("disk failure")
+        return original_write(descriptor, data)
+
+    monkeypatch.setattr(migration.os, "write", fail_once)
+    backup_root = tmp_path / "migration-backups"
+    with pytest.raises(OSError, match="disk failure"):
+        create_migration_backup(inspection, backup_root=backup_root, migration_id="migration-fail")
+    assert not (backup_root / "migration-fail").exists()
+    assert not list(backup_root.glob("*.partial-*"))

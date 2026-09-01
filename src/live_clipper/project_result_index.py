@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
+import subprocess
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -61,6 +63,78 @@ class ProjectResultIndexApplyResult:
 
 
 _SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
+
+
+def inspect_safe_migration_result(
+    path: str | Path,
+    *,
+    output_root: str | Path,
+    expected_sha256: str,
+) -> dict[str, Any] | None:
+    """Verify one explicitly registered legacy result without discovering neighbours."""
+    target = Path(path).expanduser()
+    root = Path(output_root).expanduser()
+    if target.is_symlink() or root.is_symlink() or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+        return None
+    try:
+        resolved_root = root.resolve(strict=True)
+        resolved = target.resolve(strict=True)
+        relative = resolved.relative_to(resolved_root)
+    except (OSError, ValueError):
+        return None
+    if not resolved.is_file():
+        return None
+    digest = hashlib.sha256()
+    _hash_file(digest, resolved)
+    if digest.hexdigest() != expected_sha256:
+        return None
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe is None:
+        return None
+    try:
+        process = subprocess.run(
+            [
+                ffprobe,
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration,format_name:stream=codec_type,codec_name,width,height",
+                "-of",
+                "json",
+                str(resolved),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+        payload = json.loads(process.stdout) if process.returncode == 0 else {}
+        streams = payload.get("streams", []) if isinstance(payload, Mapping) else []
+        video = next(
+            (item for item in streams if isinstance(item, Mapping) and item.get("codec_type") == "video"),
+            None,
+        )
+        format_payload = payload.get("format", {}) if isinstance(payload, Mapping) else {}
+        duration_ms = max(1, round(float(format_payload.get("duration")) * 1000))
+        width = int(video.get("width")) if video else 0
+        height = int(video.get("height")) if video else 0
+        container = str(format_payload.get("format_name") or "")
+        codec = str(video.get("codec_name") or "") if video else ""
+    except (OSError, ValueError, TypeError, json.JSONDecodeError, subprocess.SubprocessError):
+        return None
+    if width <= 0 or height <= 0 or not container or not codec:
+        return None
+    return {
+        "relative_path": relative.as_posix(),
+        "file_name": resolved.name,
+        "sha256": expected_sha256,
+        "duration_ms": duration_ms,
+        "width": width,
+        "height": height,
+        "container": container,
+        "video_codec": codec,
+        "byte_size": resolved.stat().st_size,
+    }
 
 
 def _candidate_id(item: Mapping[str, Any]) -> str:
