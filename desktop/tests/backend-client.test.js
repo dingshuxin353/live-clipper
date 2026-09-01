@@ -118,6 +118,7 @@ test("desktop output and file selection calls encode IDs and keep selected paths
 
   await client.resolveOutputPath("output/with space");
   await client.registerFileSelection("issue/with space", "source", "/private/source.mp4");
+  await client.showMigrationBackup("migration/with space");
 
   assert.equal(seen[0][0].path, "/api/desktop/outputs/output%2Fwith%20space/path");
   assert.equal(seen[1][0].path, "/api/desktop/file-selections");
@@ -127,4 +128,6 @@ test("desktop output and file selection calls encode IDs and keep selected paths
     selected_path: "/private/source.mp4",
   });
   assert.equal(seen[1][0].path.includes("private/source"), false);
+  assert.equal(seen[2][0].path, "/api/migration/migration%2Fwith%20space/backup-action");
+  assert.equal(seen[2][0].headers.Authorization, "Bearer token");
 });

@@ -59,6 +59,10 @@ def test_migration_http_contract_and_backup_action_auth(tmp_path):
         "GET", "/api/migration/not-real/backup-action", paths, auth_context="browser"
     )
     assert status == 403 and denied["error_code"] == "bearer_required"
+    status, _headers, invalid = handle_api_request(
+        "GET", "/api/migration/%2Funsafe/backup-action", paths, auth_context="bearer"
+    )
+    assert status == 404 and invalid["error_code"] == "backup_not_available"
 
 
 def test_migration_rejects_unknown_body_fields(tmp_path):
@@ -152,6 +156,11 @@ def test_restricted_real_http_executes_then_switches_to_project_api(tmp_path, mo
         else:
             raise AssertionError("HTTP migration did not complete")
         migration_id = accepted["session"]["migration_id"]
+        _, startup = request("GET", "/api/onboarding")
+        assert startup["entry"]["mode"] == "workbench"
+        assert startup["migration"]["entry"] == "completed"
+        assert startup["migration"]["session"]["migration_id"] == migration_id
+        assert startup["migration"]["report"]["acknowledged_at"] is None
         with HTTPErrorContext(403):
             request(
                 "GET",
@@ -164,6 +173,19 @@ def test_restricted_real_http_executes_then_switches_to_project_api(tmp_path, mo
             "action": "reveal_backup",
             "migration_id": migration_id,
         }
+        _, acknowledged = request(
+            "POST",
+            "/api/migration/acknowledge",
+            {
+                "request_id": "acknowledge-http-1",
+                "migration_id": migration_id,
+                "expected_revision": current["session"]["revision"],
+            },
+        )
+        assert acknowledged["project_id"] == current["session"]["project_id"]
+        _, startup_after_acknowledge = request("GET", "/api/onboarding")
+        assert startup_after_acknowledge["entry"]["mode"] == "workbench"
+        assert startup_after_acknowledge["migration"] is None
         studio_status, studio = request("GET", "/api/studio")
         assert studio_status == 200 and studio["ok"] is True and len(studio["projects"]) == 1
     finally:

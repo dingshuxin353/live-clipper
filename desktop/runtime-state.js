@@ -118,6 +118,35 @@ function createOutputActions({ client, shell, runtime }) {
   };
 }
 
+function createMigrationActions({ client, runtime }) {
+  const inFlight = new Map();
+  return {
+    showBackup(migrationId) {
+      const id = requireDesktopId(migrationId, "migration_id");
+      if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(id)) {
+        throw new Error("migration_id无效");
+      }
+      if (!runtime.canStart()) throw new Error("应用正在退出，暂时无法显示迁移备份");
+      return reuseInFlight(inFlight, id, async () => {
+        let result;
+        try {
+          result = await client.showMigrationBackup(id);
+        } catch (_error) {
+          throw new Error("无法在 Finder 中显示迁移备份，请稍后重试");
+        }
+        if (
+          result?.ok !== true
+          || result?.action !== "reveal_backup"
+          || result?.migration_id !== id
+        ) {
+          throw new Error("迁移备份定位结果无效");
+        }
+        return { ok: true };
+      });
+    },
+  };
+}
+
 const SOURCE_FILTERS = [{ name: "视频文件", extensions: ["m4v", "mkv", "mov", "mp4", "webm"] }];
 
 function createFolderSelection({ dialog, runtime, getWindow = () => null }) {
@@ -243,6 +272,7 @@ module.exports = {
   createBadgePoller,
   createFileSelections,
   createFolderSelection,
+  createMigrationActions,
   createOutputActions,
   createRuntimeState,
   formatBadgeCount,
