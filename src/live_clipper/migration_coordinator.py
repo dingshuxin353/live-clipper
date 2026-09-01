@@ -591,7 +591,13 @@ class MigrationCoordinator:
                 "plan_version": PLAN_VERSION,
                 "plan_hash": plan.plan_hash,
                 "project": {"project_id": project_id, "name": plan.project_preview["name"]},
-                "discovery": dict(plan.discovery_summary),
+                "discovery": {
+                    **dict(plan.discovery_summary),
+                    "trigger_mode": plan.project_preview["trigger_mode"],
+                    "schedule_mode": plan.project_preview["schedule_mode"],
+                    "daily_time": plan.project_preview["daily_time"],
+                    "interval_minutes": plan.project_preview["interval_minutes"],
+                },
                 "imported": int(counts.get("importable", 0)),
                 "compatibility": int(counts.get("compatibility", 0)),
                 "quarantined": int(counts.get("quarantined", 0)),
@@ -606,6 +612,8 @@ class MigrationCoordinator:
                 ),
                 "backup_created": True,
                 "readiness": "attention" if blockers else "ready",
+                "blocker_count": len(blockers),
+                "blocker_codes": sorted(blockers),
                 "completed_at": normalize_utc(),
                 "acknowledged_at": None,
             }

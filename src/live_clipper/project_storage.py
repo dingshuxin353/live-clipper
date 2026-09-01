@@ -3630,7 +3630,15 @@ class ProjectRepository:
             self._require_migration_revision(current, expected_revision)
             if current.state != "completed_ready":
                 raise MigrationStateError("only a ready migration can become attention")
-            report = {**current.report, "readiness": "attention"}
+            blocker_codes = sorted(
+                {str(item) for item in current.report.get("blocker_codes", [])} | {code}
+            )
+            report = {
+                **current.report,
+                "readiness": "attention",
+                "blocker_count": len(blocker_codes),
+                "blocker_codes": blocker_codes,
+            }
             self.connection.execute(
                 """UPDATE projects SET activation_state = 'inactive', activated_at = NULL,
                      updated_at = ? WHERE project_id = ?""",

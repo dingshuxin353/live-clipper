@@ -131,6 +131,11 @@ ipcMain.handle("lc:show-migration-backup", (event, migrationId) => {
   if (!migrationActions) throw new Error("后台服务尚未就绪");
   return migrationActions.showBackup(migrationId);
 });
+ipcMain.handle("lc:quit-app", (event) => {
+  assertTrustedRenderer(event);
+  app.quit();
+  return { ok: true };
+});
 
 function createApplicationMenu() {
   const template = [];
