@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import stat
+import tempfile
 import tomllib
 from collections import Counter
 from collections.abc import Mapping
@@ -108,6 +109,13 @@ class MigrationPlan:
 
     def stable_json(self) -> str:
         return _stable_json(self.to_dict())
+
+
+@dataclass(frozen=True)
+class MigrationBackup:
+    path: Path = field(repr=False)
+    reused: bool
+    manifest: tuple[Mapping[str, Any], ...]
 
 
 def _freeze(value: Any) -> Any:
@@ -585,7 +593,12 @@ def build_migration_plan(
         "requires_user_choices": sorted(required_choices),
         "choices": _thaw(normalized_choices),
     }
-    plan_hash = hashlib.sha256(_stable_json(payload).encode()).hexdigest()
+    hash_payload = _thaw(payload)
+    # Free bytes change while the UI is open (and the migration database itself
+    # consumes space).  Bind execution to the safety classification and required
+    # amount, not to a volatile byte counter that would invalidate every request.
+    hash_payload["backup_summary"].pop("available_bytes", None)
+    plan_hash = hashlib.sha256(_stable_json(hash_payload).encode()).hexdigest()
     return MigrationPlan(
         plan_version=PLAN_VERSION,
         source_fingerprint=inspection.source_fingerprint,
@@ -600,3 +613,149 @@ def build_migration_plan(
         choices=_freeze(payload["choices"]),
         plan_hash=plan_hash,
     )
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _backup_manifest(path: Path) -> tuple[dict[str, Any], ...]:
+    try:
+        payload = json.loads((path / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise LegacySourceError("migration_backup_invalid") from exc
+    entries = payload.get("files") if isinstance(payload, Mapping) else None
+    if not isinstance(payload, Mapping) or payload.get("format_version") != 1 or not isinstance(entries, list):
+        raise LegacySourceError("migration_backup_invalid")
+    return tuple(dict(item) for item in entries if isinstance(item, Mapping))
+
+
+def verify_migration_backup(
+    path: str | Path,
+    *,
+    migration_id: str,
+    source_fingerprint: str,
+    source_manifest: tuple[SourceManifestEntry, ...],
+) -> tuple[Mapping[str, Any], ...]:
+    """Verify a published metadata-only backup without trusting its manifest."""
+    target = _absolute(path)
+    entries = _backup_manifest(target)
+    expected = {item.source_identity: item for item in source_manifest}
+    if {str(item.get("source_identity")) for item in entries} != set(expected):
+        raise LegacySourceError("migration_backup_invalid")
+    manifest_payload = json.loads((target / "manifest.json").read_text(encoding="utf-8"))
+    if (
+        manifest_payload.get("migration_id") != migration_id
+        or manifest_payload.get("source_fingerprint") != source_fingerprint
+    ):
+        raise LegacySourceError("migration_backup_invalid")
+    for item in entries:
+        identity = str(item["source_identity"])
+        registered = expected[identity]
+        candidate = target / "files" / identity
+        try:
+            resolved = candidate.resolve(strict=True)
+            resolved.relative_to((target / "files").resolve(strict=True))
+        except (OSError, ValueError) as exc:
+            raise LegacySourceError("migration_backup_invalid") from exc
+        if candidate.is_symlink() or not candidate.is_file():
+            raise LegacySourceError("migration_backup_invalid")
+        digest = hashlib.sha256()
+        size = 0
+        with candidate.open("rb") as handle:
+            while block := handle.read(1024 * 1024):
+                digest.update(block)
+                size += len(block)
+        if (
+            size != registered.size
+            or item.get("size") != registered.size
+            or digest.hexdigest() != registered.sha256
+            or item.get("sha256") != registered.sha256
+        ):
+            raise LegacySourceError("migration_backup_invalid")
+    return tuple(_freeze(item) for item in entries)
+
+
+def create_migration_backup(
+    inspection: LegacyInspection,
+    *,
+    backup_root: str | Path,
+    migration_id: str,
+) -> MigrationBackup:
+    """Copy approved metadata to a same-volume temporary tree and atomically publish it."""
+    root = _absolute(backup_root)
+    target = root / migration_id
+    root.mkdir(parents=True, exist_ok=True)
+    if root.is_symlink() or not root.is_dir() or root.resolve(strict=True) != root:
+        raise LegacySourceError("migration_backup_unsafe")
+    if target.exists():
+        if target.is_symlink():
+            raise LegacySourceError("migration_backup_unsafe")
+        manifest = verify_migration_backup(
+            target,
+            migration_id=migration_id,
+            source_fingerprint=inspection.source_fingerprint,
+            source_manifest=inspection.source_manifest,
+        )
+        return MigrationBackup(path=target, reused=True, manifest=manifest)
+
+    partial = Path(tempfile.mkdtemp(prefix=f".{migration_id}.partial-", dir=root))
+    try:
+        files_root = partial / "files"
+        files_root.mkdir()
+        entries: list[dict[str, Any]] = []
+        for source, registered in zip(inspection.source_files, inspection.source_manifest, strict=True):
+            identity = registered.source_identity
+            if identity.startswith("/") or ".." in Path(identity).parts:
+                raise LegacySourceError("migration_backup_unsafe")
+            destination = files_root / identity
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            source_fd = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            destination_fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            digest = hashlib.sha256()
+            size = 0
+            try:
+                while block := os.read(source_fd, 1024 * 1024):
+                    digest.update(block)
+                    size += len(block)
+                    view = memoryview(block)
+                    while view:
+                        written = os.write(destination_fd, view)
+                        view = view[written:]
+                os.fsync(destination_fd)
+            finally:
+                os.close(source_fd)
+                os.close(destination_fd)
+            if size != registered.size or digest.hexdigest() != registered.sha256:
+                raise LegacySourceError("legacy_source_changed")
+            entries.append(registered.to_dict())
+        manifest_payload = {
+            "format_version": 1,
+            "migration_id": migration_id,
+            "source_fingerprint": inspection.source_fingerprint,
+            "files": entries,
+        }
+        manifest_path = partial / "manifest.json"
+        with manifest_path.open("x", encoding="utf-8") as handle:
+            handle.write(_stable_json(manifest_payload))
+            handle.flush()
+            os.fsync(handle.fileno())
+        for directory in sorted((item for item in partial.rglob("*") if item.is_dir()), reverse=True):
+            _fsync_directory(directory)
+        _fsync_directory(partial)
+        os.rename(partial, target)
+        _fsync_directory(root)
+        manifest = verify_migration_backup(
+            target,
+            migration_id=migration_id,
+            source_fingerprint=inspection.source_fingerprint,
+            source_manifest=inspection.source_manifest,
+        )
+        return MigrationBackup(path=target, reused=False, manifest=manifest)
+    except Exception:
+        shutil.rmtree(partial, ignore_errors=True)
+        raise

@@ -291,6 +291,16 @@ class OnboardingCoordinator:
         except Exception:  # noqa: BLE001 - diagnostic startup must still return a safe DTO.
             settings = Settings()
         resources = onboarding_resources.resource_summaries(settings, self.service_dir)
+        migration = None
+        if decision.entry in {"migration_required", "diagnostic_required"}:
+            from .migration_coordinator import migration_summary_for_startup
+
+            migration = migration_summary_for_startup(
+                service_dir=self.service_dir,
+                config_path=self.config_path,
+                input_dir=self.input_dir,
+                output_root=self.output_root,
+            )
         return {
             "ok": True,
             "entry": {
@@ -306,6 +316,7 @@ class OnboardingCoordinator:
             "initial_local_model": initial_local_model,
             "provider_presets": [dict(item) for item in onboarding.PROVIDER_PRESETS],
             "suggestions": {"project_name": "我的第一个项目", "output_directory": str(self.output_root)},
+            "migration": migration,
         }
 
     def _require_writable_session(

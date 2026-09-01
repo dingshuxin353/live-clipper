@@ -18,6 +18,7 @@ from . import (
     config_editor,
     jobs,
     mcp_tools,
+    migration_coordinator,
     onboarding,
     onboarding_coordinator,
     review_automation,
@@ -185,6 +186,12 @@ def _restricted_onboarding_snapshot(paths: WebPaths, expected_mode: str) -> dict
     decision, detection = coordinator.decision()
     mode = decision.entry if decision.entry in {"migration_required", "diagnostic_required"} else expected_mode
     recommended = asr_models.recommended_model()["id"]
+    migration = migration_coordinator.migration_summary_for_startup(
+        service_dir=paths.service_dir,
+        config_path=paths.config_path,
+        input_dir=paths.input_dir,
+        output_root=paths.output_root,
+    )
     return {
         "ok": True,
         "entry": {
@@ -228,6 +235,7 @@ def _restricted_onboarding_snapshot(paths: WebPaths, expected_mode: str) -> dict
         "initial_local_model": recommended,
         "provider_presets": [dict(item) for item in onboarding.PROVIDER_PRESETS],
         "suggestions": {"project_name": "我的第一个项目", "output_directory": str(paths.output_root)},
+        "migration": migration,
     }
 
 
@@ -696,6 +704,35 @@ def handle_api_request(
     query = parse_qs(parsed.query, keep_blank_values=True)
     parts = [unquote(part) for part in parsed_path.split("/") if part]
     try:
+        if parts[:2] == ["api", "migration"]:
+            coordinator = migration_coordinator.MigrationCoordinator(
+                service_dir=paths.service_dir,
+                config_path=paths.config_path,
+                env_path=paths.config_path.parent / ".env",
+                input_dir=paths.input_dir,
+                output_root=paths.output_root,
+            )
+            try:
+                routed = coordinator.dispatch(
+                    method,
+                    request_path,
+                    body=body,
+                    auth_context=auth_context,
+                )
+            except migration_coordinator.MigrationError as exc:
+                return _json_response(
+                    {
+                        "ok": False,
+                        "error_code": exc.code,
+                        "message": exc.message,
+                        "error": {"code": exc.code, "message": exc.message, "fields": exc.fields},
+                        "fields": exc.fields,
+                    },
+                    status=exc.status,
+                )
+            if routed is not None:
+                status, payload = routed
+                return _json_response(payload, status=status)
         if method == "POST" and parts == ["api", "onboarding", "test-source"]:
             return _json_response(
                 _structured_error("onboarding_contract_replaced", "旧首次设置接口已停用，请使用新的 onboarding API"),
@@ -1369,24 +1406,49 @@ class LiveClipperRequestHandler(BaseHTTPRequestHandler):
             return
         parsed_path = urlparse(self.path).path
         if self.restricted_startup:
-            if method == "GET" and parsed_path == "/api/onboarding":
+            current_restriction = _startup_restricted(self.paths)
+            if current_restriction is None:
+                self.restricted_startup = None
+            elif method == "GET" and parsed_path == "/api/onboarding":
                 status, headers, payload = _json_response(
-                    _restricted_onboarding_snapshot(self.paths, self.restricted_startup)
+                    _restricted_onboarding_snapshot(self.paths, current_restriction)
                 )
-            else:
+            elif parsed_path == "/api/migration" or parsed_path.startswith("/api/migration/"):
+                body_payload: dict[str, Any] | None = None
+                if method in {"POST", "PATCH"}:
+                    raw_length = self.headers.get("Content-Length")
+                    length = int(raw_length) if raw_length else 0
+                    if length:
+                        raw_body = self.rfile.read(length).decode("utf-8")
+                        body_payload = json.loads(raw_body) if raw_body else None
+                status, headers, payload = handle_api_request(
+                    method,
+                    self.path,
+                    self.paths,
+                    body=body_payload,
+                    auth_context=self._auth_context(),
+                    head_only=head_only,
+                )
+            elif current_restriction is not None:
                 status, headers, payload = _json_response(
-                    _structured_error(self.restricted_startup, "当前数据需要先完成诊断或迁移"),
+                    _structured_error(current_restriction, "当前数据需要先完成诊断或迁移"),
                     status=409,
                 )
-            body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
-            self.send_response(status)
-            for key, value in headers.items():
-                self.send_header(key, value)
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            if not head_only:
-                self.wfile.write(body)
-            return
+            if current_restriction is not None:
+                response_body = (
+                    payload
+                    if isinstance(payload, bytes)
+                    else json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+                )
+                self.send_response(status)
+                for key, value in headers.items():
+                    self.send_header(key, value)
+                if "Content-Length" not in headers:
+                    self.send_header("Content-Length", str(len(response_body)))
+                self.end_headers()
+                if not head_only:
+                    self.wfile.write(response_body)
+                return
         body_payload: dict[str, Any] | None = None
         retired_onboarding_route = method == "POST" and parsed_path in {
             "/api/onboarding/test-source",
@@ -1524,6 +1586,14 @@ def run_web_server(
     paths = paths or WebPaths()
     if restricted_startup is None:
         jobs.sweep_interrupted(paths.service_dir)
+    elif restricted_startup == "migration_required":
+        migration_coordinator.MigrationCoordinator(
+            service_dir=paths.service_dir,
+            config_path=paths.config_path,
+            env_path=paths.config_path.parent / ".env",
+            input_dir=paths.input_dir,
+            output_root=paths.output_root,
+        ).recover_interrupted()
     handler = type(
         "ConfiguredLiveClipperRequestHandler",
         (LiveClipperRequestHandler,),
