@@ -34,6 +34,18 @@ def _default_check(
     issue: Issue,
     settings: Settings | None = None,
 ) -> dict[str, Any]:
+    if issue.scope_type == "project" and issue.recovery_capability == "operational_repair":
+        project = repository.get_project(issue.project_id)
+        runtime = repository.get_runtime(issue.project_id)
+        if project is None:
+            return {"ok": False, "reason": "project_missing"}
+        if runtime is None:
+            return {"ok": False, "reason": "runtime_missing"}
+        if project.activation_state != "active":
+            return {"ok": False, "reason": "project_inactive"}
+        if runtime.readiness_state != "ready" or runtime.auto_scan_state == "blocked" or runtime.failure_code:
+            return {"ok": False, "reason": "project_not_ready"}
+        return {"ok": True, "resolve_issue": True, "safe_checkpoint": "project_ready"}
     run = repository.get_run(str(issue.run_id)) if issue.run_id else None
     if run is None:
         return {"ok": False, "reason": "run_missing"}
@@ -120,6 +132,16 @@ def recheck_issue(
                     "UPDATE issues SET operational_overrides_json = ? WHERE issue_id = ?",
                     (stable_json(overrides), issue_id),
                 )
+        if result.get("resolve_issue"):
+            return repository.transition_issue(
+                issue_id,
+                expected_issue_revision=issue.issue_revision,
+                status="resolved",
+                event_type="resolved",
+                detail={"safe_checkpoint": result.get("safe_checkpoint")},
+                recovery_capability=issue.recovery_capability,
+                safe_checkpoint=str(result.get("safe_checkpoint") or issue.safe_checkpoint or "project_ready"),
+            )
         return repository.transition_issue(
             issue_id,
             expected_issue_revision=issue.issue_revision,

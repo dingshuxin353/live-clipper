@@ -9,7 +9,10 @@ import time
 import pytest
 
 from live_clipper import service
+from live_clipper.config import Settings
 from live_clipper.migration_coordinator import MigrationCoordinator, MigrationError
+from live_clipper.project_result_api import ProjectResultAPI
+from live_clipper.project_service import ProjectManager
 from live_clipper.project_storage import ProjectRepository, database_path
 
 
@@ -451,6 +454,55 @@ def test_service_start_failure_becomes_completed_attention_on_same_project(tmp_p
         assert project.activation_state == "inactive"
         assert runtime.readiness_state == "blocked"
         assert len(repository.list_issues(project_id=project.project_id, active_only=True)) == 1
+
+
+def test_recovered_migration_readiness_issue_closes_on_same_project_without_scanning(tmp_path, monkeypatch):
+    coordinator, service_dir = _legacy_home(tmp_path)
+    monkeypatch.setattr(
+        service,
+        "ensure_service_ready",
+        lambda *args, **kwargs: {"ok": False, "error_code": "service_not_ready"},
+    )
+    session = _execute_completed(coordinator)
+    assert session["state"] == "completed_attention"
+
+    settings = Settings(cheap_model_api_key="ready-key", cheap_model_name="ready-model")
+    with ProjectRepository(service_dir) as repository:
+        project = repository.list_projects()[0]
+        issue = repository.list_issues(project_id=project.project_id, active_only=True)[0]
+        run_ids = [run.run_id for run in repository.list_runs(project_id=project.project_id)]
+        scan_ids = [scan.scan_id for scan in repository.list_scan_events(project.project_id)]
+
+        ProjectManager(repository, settings).enable_project(project.project_id, request_id="enable-after-repair")
+        runtime = repository.get_runtime(project.project_id)
+        assert runtime is not None
+        assert repository.get_project(project.project_id).activation_state == "active"
+        assert runtime.readiness_state == "ready"
+        assert runtime.auto_scan_state == "off"
+        assert runtime.failure_code is None
+
+        api = ProjectResultAPI(
+            repository,
+            settings,
+            service_dir=service_dir,
+            config_path=tmp_path / "live-clipper.toml",
+        )
+        status, payload = api.handle(
+            "POST",
+            "/api/issue-groups/migration-runtime-readiness/recheck",
+            body={
+                "request_id": "recheck-after-repair",
+                "issue_revisions": {issue.issue_id: issue.issue_revision},
+            },
+        )
+
+        assert status == 200
+        assert payload["issues"][0]["issue_id"] == issue.issue_id
+        assert payload["issues"][0]["status"] == "resolved"
+        assert repository.list_issues(project_id=project.project_id, active_only=True) == []
+        assert [item.project_id for item in repository.list_projects()] == [project.project_id]
+        assert [run.run_id for run in repository.list_runs(project_id=project.project_id)] == run_ids
+        assert [scan.scan_id for scan in repository.list_scan_events(project.project_id)] == scan_ids
 
 
 def test_safe_result_is_hash_verified_and_written_with_result_identities(tmp_path):

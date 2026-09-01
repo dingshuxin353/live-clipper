@@ -2902,7 +2902,7 @@ class ProjectRepository:
             allowed_transitions = {
                 "retrying": {"action_required", "resolved"},
                 "action_required": {"checking"},
-                "checking": {"action_required", "ready_to_recover"},
+                "checking": {"action_required", "ready_to_recover", "resolved"},
                 "ready_to_recover": {"recovering"},
                 "recovering": {"action_required", "resolved"},
                 "resolved": set(),

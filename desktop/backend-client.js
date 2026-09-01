@@ -84,8 +84,8 @@ class BackendClient {
     });
   }
 
-  showMigrationBackup(migrationId) {
-    return this.request(`/api/migration/${encodeURIComponent(migrationId)}/backup-action`);
+  getMigrationBackupGrant(migrationId) {
+    return this.request(`/api/migration/${encodeURIComponent(migrationId)}/backup-grant`);
   }
 
   stopService(timeoutMs = 3000) {
@@ -94,7 +94,10 @@ class BackendClient {
 
   async checkReady() {
     const snapshot = requireOnboardingSnapshot(await this.request("/api/onboarding", { timeoutMs: 1000 }));
-    if (snapshot.entry.mode === "workbench") {
+    if (
+      snapshot.entry.mode === "workbench"
+      && snapshot.entry.reason_code !== "migration_completed_unacknowledged"
+    ) {
       await this.getStudio();
     }
     return snapshot;

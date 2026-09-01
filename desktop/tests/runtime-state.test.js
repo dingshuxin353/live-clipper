@@ -5,7 +5,9 @@ const {
   appUrl,
   createBadgePoller,
   createRuntimeState,
+  electronRuntimeHome,
   formatBadgeCount,
+  resolveTrustedAppHome,
 } = require("../runtime-state");
 
 test("formats only positive unseen result counts for the Dock", () => {
@@ -86,9 +88,72 @@ test("runtime enters quitting once and blocks later startup work", () => {
   assert.equal(runtime.canStart(), false);
 });
 
+test("runtime restricts project capabilities for onboarding, migration, diagnostics, and unacknowledged completion", () => {
+  const runtime = createRuntimeState();
+  for (const entry of [
+    { mode: "onboarding", onboarding: "new", reason_code: null },
+    { mode: "migration_required", onboarding: null, reason_code: "migration_resume" },
+    { mode: "diagnostic_required", onboarding: null, reason_code: "migration_diagnostic_required" },
+    { mode: "workbench", onboarding: null, reason_code: "migration_completed_unacknowledged" },
+  ]) {
+    runtime.setStartup({ ok: true, entry });
+    assert.equal(runtime.isRestricted(), true);
+    assert.equal(runtime.canUseProjectFeatures(), false);
+  }
+  runtime.setStartup({ ok: true, entry: { mode: "workbench", onboarding: null, reason_code: null } });
+  assert.equal(runtime.isRestricted(), false);
+  assert.equal(runtime.canUseProjectFeatures(), true);
+});
+
+test("badge poller never reads studio while desktop capabilities are restricted", async () => {
+  let reads = 0;
+  let allowed = false;
+  const poller = createBadgePoller({
+    client: { getStudio: async () => { reads += 1; return { unseen_result_count: 1 }; } },
+    dock: { setBadge: () => undefined },
+    platform: "darwin",
+    isAllowed: () => allowed,
+  });
+  await poller.start();
+  await poller.activate();
+  assert.equal(reads, 0);
+  allowed = true;
+  await poller.activate();
+  assert.equal(reads, 1);
+  poller.stop();
+});
+
 test("desktop URLs stay on the authenticated local origin", () => {
   assert.equal(appUrl(8765, "/studio"), "http://127.0.0.1:8765/studio");
   assert.equal(appUrl(8765, "/projects"), "http://127.0.0.1:8765/projects");
   assert.equal(appUrl(8765, "//example.com/steal"), "http://127.0.0.1:8765/studio");
   assert.equal(appUrl(8765, "https://example.com"), "http://127.0.0.1:8765/studio");
+});
+
+test("desktop app home is canonicalized without creating missing directories", () => {
+  const calls = [];
+  const fakeFs = {
+    existsSync(value) {
+      calls.push(value);
+      return value === "/private/existing";
+    },
+    realpathSync(value) {
+      assert.equal(value, "/private/existing");
+      return "/canonical/existing";
+    },
+  };
+  assert.equal(
+    resolveTrustedAppHome("/private/existing/new/home", fakeFs),
+    "/canonical/existing/new/home",
+  );
+  assert.deepEqual(calls, [
+    "/private/existing/new/home",
+    "/private/existing/new",
+    "/private/existing",
+  ]);
+  assert.throws(() => resolveTrustedAppHome("relative/home", fakeFs), /绝对路径/);
+  assert.equal(
+    electronRuntimeHome("/private/app-support/Venus"),
+    "/private/app-support/Venus-electron-runtime",
+  );
 });
