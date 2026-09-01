@@ -81,10 +81,44 @@ def test_startup_gate_pause_completion_and_trial_are_explicit():
     studio = Path("frontend/src/StudioProjects.tsx").read_text(encoding="utf-8")
     for token in ["migration_required", "diagnostic_required", "正在准备 Venus", "暂时无法确认数据状态"]:
         assert token in app
+    assert "MigrationFlow" in app
+    assert "Venus 没有初始化或修改这些数据。请等待迁移工具准备完成后再继续。" not in app
     for token in ["首次设置尚未完成", "继续首次设置"]:
         assert token in studio
     for token in ["项目已保存，本机服务尚未启动", "重新启动服务", "选择一条录像试运行", '"selected"', "selected_relative_paths"]:
         assert token in onboarding or token in Path("frontend/src/project-api.ts").read_text(encoding="utf-8")
+
+
+def test_migration_react_uses_real_o_contract_and_keeps_state_private():
+    migration = Path("frontend/src/features/migration/MigrationFlow.tsx").read_text(encoding="utf-8")
+    api = Path("frontend/src/project-api.ts").read_text(encoding="utf-8")
+    shell = Path("frontend/src/vite-env.d.ts").read_text(encoding="utf-8")
+
+    for endpoint in [
+        "/api/migration",
+        "/api/migration/inspect",
+        "/api/migration/validate",
+        "/api/migration/execute",
+        "/api/migration/retry",
+        "/api/migration/acknowledge",
+    ]:
+        assert endpoint in api
+    for token in [
+        'role="dialog"',
+        'aria-modal="true"',
+        'aria-live="polite"',
+        'event.key === "Escape"',
+        'event.key !== "Tab"',
+        'document.addEventListener("visibilitychange"',
+        "document.hidden ? 4000 : 1000",
+        'aria-describedby={fields.project_name ? "migration-project-name-error" : undefined}',
+    ]:
+        assert token in migration
+    for forbidden in ["localStorage", "sessionStorage", "indexedDB", "console."]:
+        assert forbidden not in migration
+    assert "showBackup(id)" in migration
+    assert "showBackup?(migrationId: string)" in shell
+    assert "quitApp?()" in shell
 
 
 def test_secret_inputs_are_uncontrolled_and_never_logged_or_persisted():

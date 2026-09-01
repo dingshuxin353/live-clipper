@@ -1,5 +1,5 @@
 import { api, patch, post } from "./api";
-import type { ClipsPayload, FormOptionsPayload, IssueDetail, ModelJob, OnboardingFinishPayload, OnboardingSessionPayload, OnboardingSnapshot, OnboardingStep, OnboardingValidationPayload, OutputMaterial, ProjectConfig, ProjectSummary, RecoveryAttempt, RepairContext, Run, RunFilter, RunOutput, RunResultPayload, ScanEvent, ScanPreviewPayload, SourceFile, StageEvent, StudioPayload, ValidationPayload } from "./project-dto";
+import type { ClipsPayload, FormOptionsPayload, IssueDetail, MigrationAcknowledgePayload, MigrationChoices, MigrationInspectPayload, MigrationPlan, MigrationPlanPayload, MigrationSessionPayload, MigrationSnapshot, ModelJob, OnboardingFinishPayload, OnboardingSessionPayload, OnboardingSnapshot, OnboardingStep, OnboardingValidationPayload, OutputMaterial, ProjectConfig, ProjectSummary, RecoveryAttempt, RepairContext, Run, RunFilter, RunOutput, RunResultPayload, ScanEvent, ScanPreviewPayload, SourceFile, StageEvent, StudioPayload, ValidationPayload } from "./project-dto";
 
 export const projectApi = {
   studio: (signal?: AbortSignal) => api<StudioPayload>("/api/studio", {}, signal),
@@ -32,6 +32,12 @@ export const projectApi = {
   testConnection: (resourceId: string, issueId: string) => post<{ ok: true; resource_id: string; success: boolean; tested_at: string; reused: boolean }>(`/api/resources/${encodeURIComponent(resourceId)}/connection-test`, { request_id: requestId("resource-test"), issue_id: issueId }),
   legacyAwaitingReview: (signal?: AbortSignal) => api<{ ok: true; runs: Array<{ run: Run; project: { project_id: string; name: string }; detail_url: string }>; count: number }>("/api/legacy/awaiting-review", {}, signal),
   onboarding: (signal?: AbortSignal) => api<OnboardingSnapshot>("/api/onboarding", {}, signal),
+  migration: (signal?: AbortSignal) => api<MigrationSnapshot>("/api/migration", {}, signal),
+  migrationInspect: (signal?: AbortSignal) => post<MigrationInspectPayload>("/api/migration/inspect", { request_id: requestId("migration-inspect") }, signal),
+  migrationValidate: (sourceFingerprint: string, planHash: string, choices: MigrationChoices) => post<MigrationPlanPayload>("/api/migration/validate", { source_fingerprint: sourceFingerprint, plan_hash: planHash, choices }),
+  migrationExecute: (id: string, plan: MigrationPlan) => post<MigrationSessionPayload>("/api/migration/execute", { request_id: id, source_fingerprint: plan.source_fingerprint, plan_hash: plan.plan_hash, choices: plan.choices }),
+  migrationRetry: (id: string, migrationId: string, expectedRevision: number) => post<MigrationSessionPayload>("/api/migration/retry", { request_id: id, migration_id: migrationId, expected_revision: expectedRevision }),
+  migrationAcknowledge: (id: string, migrationId: string, expectedRevision: number) => post<MigrationAcknowledgePayload>("/api/migration/acknowledge", { request_id: id, migration_id: migrationId, expected_revision: expectedRevision }),
   onboardingStart: (signal?: AbortSignal) => post<OnboardingSessionPayload>("/api/onboarding/start", {}, signal),
   onboardingPatch: (expectedRevision: number, currentStep: OnboardingStep, draftPatch: object) => patch<OnboardingSessionPayload>("/api/onboarding/session", { request_id: requestId("onboarding-draft"), expected_revision: expectedRevision, current_step: currentStep, patch: draftPatch }),
   onboardingPause: (expectedRevision: number) => post<OnboardingSessionPayload>("/api/onboarding/pause", { request_id: requestId("onboarding-pause"), expected_revision: expectedRevision }),

@@ -9,5 +9,7 @@ interface Window {
     revealOutput?(outputId: string): Promise<{ ok: true }>;
     selectIssueSource?(issueId: string): Promise<{ selectionToken: string; expiresAt: string } | null>;
     selectRecoveryOutput?(issueId: string): Promise<{ selectionToken: string; expiresAt: string } | null>;
+    showBackup?(migrationId: string): Promise<{ ok: true }>;
+    quitApp?(): Promise<{ ok: true }>;
   };
 }

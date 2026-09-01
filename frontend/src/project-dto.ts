@@ -148,11 +148,51 @@ export interface OnboardingModel {
   bytes_downloaded: number; bytes_total: number; download_source: string; current: boolean;
 }
 export interface OnboardingProviderPreset { id: string; label: string; api_base: string; model: string; signup_url?: string | null }
+export type MigrationEntry = "inspect" | "review" | "executing" | "completed" | "failed" | "diagnostic";
+export type MigrationSessionState = "backing_up" | "migrating" | "validating" | "completed_ready" | "completed_attention" | "failed_rolled_back" | "diagnostic_required";
+export type MigrationStage = "copy" | "project" | "history" | "database" | "complete" | "rolled_back" | null;
+export interface MigrationChoices {
+  project_name: string; source_directory: string; output_directory: string; trigger_mode: "manual" | "scheduled";
+  schedule_mode: "daily" | "interval" | null; daily_time: string | null; interval_minutes: number | null;
+}
+export interface MigrationHistoryEntry { display_identity: string; category: "importable" | "compatibility" | "quarantined"; reason_code: string | null; reason_label: string; safe_result: boolean }
+export interface MigrationPlan {
+  plan_version: number; source_fingerprint: string; plan_hash: string;
+  project: Omit<MigrationChoices, "project_name"> & { name: string; timezone: string };
+  resources: Record<string, { label: string; model: string | null; credential_present: boolean; status: "ready" | "problem" }>;
+  discovery: { legacy_weekly_detected: boolean; default_trigger_mode: "manual"; existing_recordings_scanned: boolean };
+  history: { counts: { importable: number; compatibility: number; quarantined: number; safe_result: number }; entries: MigrationHistoryEntry[]; quarantine_reason_codes: string[] };
+  backup: { target_display: string; source_bytes: number; required_bytes: number; available_bytes: number; space_status: "ready" | "insufficient" };
+  readiness: { source_status: string; output_status: string; resource_problems: string[]; can_start: boolean };
+  required_choices: string[]; warnings: string[]; choices: MigrationChoices;
+}
+export interface MigrationSession {
+  migration_id: string; state: MigrationSessionState; stage: MigrationStage; revision: number;
+  processed_history_count: number | null; total_history_count: number | null; backup_status: "pending" | "completed" | "failed";
+  failure: { code: string; summary: string } | null; project_id: string | null; started_at: string; updated_at: string;
+}
+export interface MigrationReport {
+  plan_version: number; plan_hash: string; project: { project_id: string; name: string };
+  discovery: { legacy_weekly_detected: boolean; existing_recordings_scanned: boolean; trigger_mode: "manual" | "scheduled"; schedule_mode: "daily" | "interval" | null; daily_time: string | null; interval_minutes: number | null };
+  imported: number; compatibility: number; quarantined: number; safe_results: number; history_total: number;
+  quarantine_reason_codes: string[]; backup_created: boolean; readiness: "ready" | "attention";
+  blocker_count: number; blocker_codes: string[]; completed_at: string; acknowledged_at: string | null;
+}
+export interface MigrationStartupSummary { entry: MigrationEntry; session: MigrationSession | null; report: MigrationReport | null }
+export interface MigrationSnapshot extends MigrationStartupSummary {
+  ok: true; source: { detected: true; checked_at: string; display_summary: { metadata_file_count: number; history_count?: number } };
+  plan: MigrationPlan | null;
+}
+export interface MigrationInspectPayload { ok: true; source: MigrationSnapshot["source"]; plan: MigrationPlan }
+export interface MigrationPlanPayload { ok: true; plan: MigrationPlan }
+export interface MigrationSessionPayload { ok: true; session: MigrationSession }
+export interface MigrationAcknowledgePayload extends MigrationSessionPayload { project_id: string }
 export interface OnboardingSnapshot {
   ok: true; entry: { mode: OnboardingEntryMode; onboarding: OnboardingEntryState; reason_code: string | null; evidence_codes: string[] };
   session: OnboardingSession | null; environment: OnboardingEnvironment; resources: { asr: OnboardingResourceSummary; ai: OnboardingResourceSummary };
   model_catalog: OnboardingModel[]; initial_local_model: string; provider_presets: OnboardingProviderPreset[];
   suggestions: { project_name: string; output_directory: string };
+  migration?: MigrationStartupSummary | null;
 }
 export interface OnboardingSessionPayload { ok: true; session: OnboardingSession; reused?: boolean }
 export interface OnboardingValidationPayload extends ValidationPayload {

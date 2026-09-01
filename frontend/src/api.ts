@@ -6,6 +6,14 @@ export type ApiErrorCode =
   | "unknown_error"
   | "validation_failed"
   | "migration_required"
+  | "migration_source_changed"
+  | "migration_plan_changed"
+  | "migration_space_insufficient"
+  | "migration_choices_required"
+  | "migration_conflict"
+  | "migration_not_found"
+  | "migration_interrupted"
+  | "diagnostic_required"
   | "route_not_found"
   | "project_not_found"
   | "run_not_found"
@@ -42,6 +50,9 @@ export type ApiErrorCode =
 
 const API_ERROR_CODES: ReadonlySet<ApiErrorCode> = new Set([
   "network_error", "invalid_response", "unknown_error", "validation_failed", "migration_required",
+  "migration_source_changed", "migration_plan_changed", "migration_space_insufficient",
+  "migration_choices_required", "migration_conflict", "migration_not_found", "migration_interrupted",
+  "diagnostic_required",
   "route_not_found", "project_not_found", "run_not_found", "request_id_conflict", "data_integrity_error",
   "revision_conflict", "project_not_ready", "scan_in_progress", "source_unavailable",
   "source_path_outside_project", "resource_unavailable", "initial_scan_failed",
