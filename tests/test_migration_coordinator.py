@@ -375,3 +375,40 @@ def test_fault_rolls_back_all_business_facts_and_retry_reuses_backup(tmp_path, f
     )[1]
     completed = _wait_completed(coordinator, retried["session"]["migration_id"])
     assert completed["session"]["state"] == "completed_ready"
+
+
+def test_retry_plan_change_returns_to_durable_failed_state(tmp_path, monkeypatch):
+    coordinator, service = _legacy_home(tmp_path)
+    plan = _validated(coordinator)
+    coordinator.fault_injection = lambda phase: (
+        (_ for _ in ()).throw(RuntimeError("fault")) if phase == "after_project" else None
+    )
+    accepted = coordinator.execute(
+        {
+            "request_id": "request-plan-change",
+            "source_fingerprint": plan["source_fingerprint"],
+            "plan_hash": plan["plan_hash"],
+            "choices": plan["choices"],
+        }
+    )[1]
+    failed = _wait_completed(coordinator, accepted["session"]["migration_id"])
+    coordinator.fault_injection = None
+    monkeypatch.setattr("live_clipper.project_migration._available_bytes", lambda _path: 0)
+
+    with pytest.raises(MigrationError) as changed:
+        coordinator.retry(
+            {
+                "request_id": "retry-plan-change",
+                "migration_id": failed["session"]["migration_id"],
+                "expected_revision": failed["session"]["revision"],
+            }
+        )
+
+    assert changed.value.code == "migration_plan_changed"
+    current = coordinator.snapshot()["session"]
+    assert current["state"] == "failed_rolled_back"
+    assert current["stage"] == "rolled_back"
+    assert current["failure"]["code"] == "migration_plan_changed"
+    with ProjectRepository(service) as repository:
+        assert repository.get_data_mode() == "legacy"
+        assert repository.list_projects() == []
