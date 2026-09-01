@@ -413,6 +413,13 @@ class MigrationCoordinator:
                 raise MigrationError("migration_source_changed", "旧版数据已变化，请重新检查", status=409)
             plan = build_migration_plan(inspection, choices=current.choices, backup_root=self.backup_root)
             if plan.plan_hash != current.plan_hash:
+                repository.record_migration_failure(
+                    migration_id,
+                    retrying.revision,
+                    failure_code="migration_plan_changed",
+                    failure_summary="迁移条件已变化，请重新检查",
+                    backup_status=current.backup_status,
+                )
                 raise MigrationError("migration_plan_changed", "迁移计划已变化", status=409)
             key = (str(self.service_dir), migration_id)
             self._futures[key] = self._executor.submit(self._run, inspection, plan, migration_id)
