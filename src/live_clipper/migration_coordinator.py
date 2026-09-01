@@ -31,6 +31,14 @@ from .project_storage import MigrationSession, MigrationStateError, ProjectRepos
 
 _PUBLIC_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 
+_HISTORY_REASON_LABELS = {
+    "content_identity_missing": "缺少可验证的内容身份，已隔离",
+    "duplicate_content_identity": "内容身份重复，已隔离",
+    "source_identity_unsupported": "录像来源无法安全确认，已隔离",
+    "timestamp_untrusted": "时间信息无法安全确认，已隔离",
+    "state_unrecognized": "旧状态无法识别，已隔离",
+}
+
 
 class MigrationError(RuntimeError):
     def __init__(
@@ -110,8 +118,30 @@ class MigrationCoordinator:
         backup = dict(raw["backup_summary"])
         backup.pop("target_path", None)
         history_entries = raw["history_summary"]["entries"]
+        public_entries = []
+        for position, item in enumerate(history_entries, start=1):
+            category = str(item["category"])
+            reason_code = str(item["reason_code"]) if item.get("reason_code") else None
+            if reason_code is not None:
+                reason_label = _HISTORY_REASON_LABELS.get(reason_code, "旧记录无法安全转换，已隔离")
+            elif category == "compatibility":
+                reason_label = "需要在新版本中继续处理"
+            elif item.get("safe_result"):
+                reason_label = "可安全导入，已有成片已核验"
+            else:
+                reason_label = "可安全导入"
+            public_entries.append(
+                {
+                    "display_identity": f"历史记录 {position}",
+                    "category": category,
+                    "reason_code": reason_code,
+                    "reason_label": reason_label,
+                    "safe_result": bool(item.get("safe_result")),
+                }
+            )
         public_history = {
             "counts": raw["history_summary"]["counts"],
+            "entries": public_entries,
             "quarantine_reason_codes": sorted(
                 {
                     str(item["reason_code"])
@@ -409,6 +439,8 @@ class MigrationCoordinator:
     def backup_action(self, migration_id: str, *, auth_context: str) -> tuple[int, dict[str, Any]]:
         if auth_context != "bearer":
             raise MigrationError("bearer_required", "备份动作仅允许桌面主进程访问", status=403)
+        if not _PUBLIC_ID.fullmatch(migration_id):
+            raise MigrationError("backup_not_available", "迁移备份不可用", status=404)
         with ProjectRepository(self.service_dir) as repository:
             session = repository.get_migration_session(migration_id)
         if session is None or not session.state.startswith("completed_") or not session.backup_path:
@@ -711,17 +743,31 @@ class MigrationCoordinator:
 
 
 def migration_summary_for_startup(
-    *, service_dir: str | Path, config_path: str | Path, input_dir: str | Path, output_root: str | Path
+    *,
+    service_dir: str | Path,
+    config_path: str | Path,
+    input_dir: str | Path,
+    output_root: str | Path,
+    include_inspection: bool = True,
 ) -> dict[str, Any] | None:
     """Return a DTO-safe M2 summary for the startup envelope."""
+    coordinator = MigrationCoordinator(
+        service_dir=service_dir,
+        config_path=config_path,
+        env_path=Path(config_path).parent / ".env",
+        input_dir=input_dir,
+        output_root=output_root,
+    )
+    if not include_inspection:
+        session = coordinator._read_session()
+        if (
+            session is None
+            or not session.state.startswith("completed_")
+            or session.acknowledged_at is not None
+        ):
+            return None
     try:
-        snapshot = MigrationCoordinator(
-            service_dir=service_dir,
-            config_path=config_path,
-            env_path=Path(config_path).parent / ".env",
-            input_dir=input_dir,
-            output_root=output_root,
-        ).snapshot()
+        snapshot = coordinator.snapshot()
     except MigrationError:
         return {"entry": "diagnostic", "session": None, "report": None}
     return {"entry": snapshot["entry"], "session": snapshot["session"], "report": snapshot["report"]}

@@ -9,6 +9,7 @@ const {
   createBadgePoller,
   createFileSelections,
   createFolderSelection,
+  createMigrationActions,
   createOutputActions,
   createRuntimeState,
   isInternalAppUrl,
@@ -24,6 +25,7 @@ let badgePoller = null;
 let outputActions = null;
 let fileSelections = null;
 let folderSelection = null;
+let migrationActions = null;
 let exitingNow = false;
 const runtime = createRuntimeState();
 const backendToken = require("crypto").randomBytes(16).toString("hex");
@@ -123,6 +125,11 @@ ipcMain.handle("lc:select-recovery-output", (event, issueId) => {
   assertTrustedRenderer(event);
   if (!fileSelections) throw new Error("后台服务尚未就绪");
   return fileSelections.selectRecoveryOutput(issueId);
+});
+ipcMain.handle("lc:show-migration-backup", (event, migrationId) => {
+  assertTrustedRenderer(event);
+  if (!migrationActions) throw new Error("后台服务尚未就绪");
+  return migrationActions.showBackup(migrationId);
 });
 
 function createApplicationMenu() {
@@ -355,6 +362,7 @@ async function shutdownBackend() {
     outputActions = null;
     fileSelections = null;
     folderSelection = null;
+    migrationActions = null;
     return;
   }
   const proc = backendProcess;
@@ -378,6 +386,7 @@ async function shutdownBackend() {
   outputActions = null;
   fileSelections = null;
   folderSelection = null;
+  migrationActions = null;
 }
 
 async function prepareForQuit() {
@@ -409,6 +418,7 @@ if (!app.requestSingleInstanceLock()) {
         getWindow: () => mainWindow,
       });
       folderSelection = createFolderSelection({ dialog, runtime, getWindow: () => mainWindow });
+      migrationActions = createMigrationActions({ client: backendClient, runtime });
       startBackend(backendPort);
       const startup = await backendClient.waitUntilReady({ isAlive: () => Boolean(backendProcess) });
       if (!startup?.entry?.mode) throw new Error("后台启动状态无效");

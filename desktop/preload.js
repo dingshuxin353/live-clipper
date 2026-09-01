@@ -8,5 +8,6 @@ contextBridge.exposeInMainWorld("liveClipperShell", {
   revealOutput: (outputId) => ipcRenderer.invoke("lc:reveal-output", outputId),
   selectIssueSource: (issueId) => ipcRenderer.invoke("lc:select-issue-source", issueId),
   selectRecoveryOutput: (issueId) => ipcRenderer.invoke("lc:select-recovery-output", issueId),
+  showBackup: (migrationId) => ipcRenderer.invoke("lc:show-migration-backup", migrationId),
   writeClipboardText: (text) => ipcRenderer.invoke("lc:write-clipboard-text", text),
 });

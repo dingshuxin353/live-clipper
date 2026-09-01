@@ -84,6 +84,10 @@ class BackendClient {
     });
   }
 
+  showMigrationBackup(migrationId) {
+    return this.request(`/api/migration/${encodeURIComponent(migrationId)}/backup-action`);
+  }
+
   stopService(timeoutMs = 3000) {
     return this.request("/api/service/stop", { method: "POST", body: {}, timeoutMs });
   }

@@ -106,6 +106,32 @@ def test_inspect_validate_are_zero_write_and_secret_free(tmp_path):
     assert after == before
 
 
+def test_plan_exposes_stable_safe_history_details_without_legacy_identifiers(tmp_path):
+    coordinator, _service = _legacy_home(tmp_path)
+    plan = coordinator.inspect({})[1]["plan"]
+
+    assert plan["history"]["entries"] == [
+        {
+            "display_identity": "历史记录 1",
+            "category": "importable",
+            "reason_code": None,
+            "reason_label": "可安全导入",
+            "safe_result": False,
+        },
+        {
+            "display_identity": "历史记录 2",
+            "category": "quarantined",
+            "reason_code": "content_identity_missing",
+            "reason_label": "缺少可验证的内容身份，已隔离",
+            "safe_result": False,
+        },
+    ]
+    serialized = json.dumps(plan["history"], ensure_ascii=False)
+    assert "old-completed" not in serialized
+    assert "content-1" not in serialized
+    assert str(tmp_path) not in serialized
+
+
 def test_execute_is_idempotent_and_atomically_switches_to_projects(tmp_path):
     coordinator, service = _legacy_home(tmp_path)
     legacy_before = {

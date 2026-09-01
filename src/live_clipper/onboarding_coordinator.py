@@ -292,7 +292,7 @@ class OnboardingCoordinator:
             settings = Settings()
         resources = onboarding_resources.resource_summaries(settings, self.service_dir)
         migration = None
-        if decision.entry in {"migration_required", "diagnostic_required"}:
+        if decision.entry in {"migration_required", "diagnostic_required", "workbench"}:
             from .migration_coordinator import migration_summary_for_startup
 
             migration = migration_summary_for_startup(
@@ -300,6 +300,7 @@ class OnboardingCoordinator:
                 config_path=self.config_path,
                 input_dir=self.input_dir,
                 output_root=self.output_root,
+                include_inspection=decision.entry in {"migration_required", "diagnostic_required"},
             )
         return {
             "ok": True,
