@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, unquote, urlparse, urlsplit
 
 from . import config_editor, onboarding
 from .config import Settings
-from .project_domain import stable_json
+from .project_domain import Run, stable_json
 from .project_file_grants import (
     FileSelectionGrantError,
     FileSelectionGrantStore,
@@ -701,7 +701,7 @@ class ProjectResultAPI:
             actions.append("recheck")
             if issue.issue_code in {"ai_resource_unavailable", "asr_resource_unavailable"}:
                 actions.append("open_resource_repair")
-            if issue.issue_code in {"source_missing", "source_unreadable"}:
+            if issue.issue_code in {"source_missing", "source_unreadable", "source_identity_mismatch"}:
                 actions.append("select_source")
             if issue.issue_code in {"output_unwritable", "storage_full"}:
                 actions.append("select_recovery_output")
@@ -742,7 +742,7 @@ class ProjectResultAPI:
                 operational_overrides=overrides,
                 settings=self.settings,
             )
-            if action == "source" and updated.status != "ready_to_recover":
+            if action == "source" and updated.status not in {"ready_to_recover", "resolved"}:
                 raise ResultAPIError("source_identity_mismatch", "所选录像与原始内容不一致")
             self._save_idempotency(scope, request_id, operation, "issue", issue_id)
             return {"ok": True, "issue": self.issue_dto(updated), "reused": False}
@@ -769,6 +769,13 @@ class ProjectResultAPI:
                 if action == "retry-material":
                     raise ResultAPIError("material_not_retryable", "当前问题不能重试物料") from exc
                 raise ResultAPIError("issue_not_ready", "当前问题不支持此恢复操作") from exc
+            if isinstance(attempt, Run):
+                return {
+                    "ok": True,
+                    "run_id": attempt.run_id,
+                    "reused": True,
+                    "reuse_reason": "active_run",
+                }
             return {"ok": True, **self.recovery_attempt_dto(attempt)}
         raise ResultAPIError("route_not_found", "API 路由不存在", status=404)
 

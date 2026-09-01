@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import Settings
-from .project_domain import new_id, normalize_utc, stable_json
+from .project_domain import Run, new_id, normalize_utc, stable_json
 from .project_resources import resource_map
 from .project_result_domain import (
     Issue,
@@ -49,7 +49,7 @@ def _default_check(
     run = repository.get_run(str(issue.run_id)) if issue.run_id else None
     if run is None:
         return {"ok": False, "reason": "run_missing"}
-    if issue.issue_code in {"source_missing", "source_unreadable"}:
+    if issue.issue_code in {"source_missing", "source_unreadable", "source_identity_mismatch"}:
         source = Path(run.latest_seen_path)
         return {
             "ok": source.is_file() and _sha256(source) == run.content_id,
@@ -126,6 +126,16 @@ def recheck_issue(
     except Exception:  # noqa: BLE001 - durable issue state must survive checker failures.
         result = {"ok": False, "reason": "check_failed"}
     if result.get("ok"):
+        if (
+            run is not None
+            and issue.recovery_capability == "operational_repair"
+            and overrides.get("source_path")
+        ):
+            return repository.resolve_run_source_issue(
+                issue_id,
+                expected_issue_revision=issue.issue_revision,
+                source_path=str(overrides["source_path"]),
+            )
         if overrides:
             with repository.transaction():
                 repository.connection.execute(
@@ -178,7 +188,7 @@ def _accepted_attempt(
     output_id: str | None = None,
     material_id: str | None = None,
     operational_overrides: Mapping[str, Any] | None = None,
-) -> RecoveryAttempt:
+) -> RecoveryAttempt | Run:
     existing = _existing_attempt(repository, issue.issue_id, request_id)
     if existing is not None:
         expected = (attempt_type, issue.run_id, output_id, material_id, sanitize_persisted_text(requested_by))
@@ -207,6 +217,17 @@ def _accepted_attempt(
             raise KeyError(issue.issue_id)
         if current[0] != "ready_to_recover" or int(current[1]) != expected_issue_revision:
             raise RevisionConflictError("issue_revision_conflict")
+        if attempt_type == "continue_run":
+            failed_run = repository.get_run(str(issue.run_id))
+            if failed_run is None:
+                raise KeyError(str(issue.run_id))
+            active = repository.find_active_run(
+                failed_run.project_id,
+                failed_run.content_id,
+                exclude_run_id=failed_run.run_id,
+            )
+            if active is not None:
+                return active
         repository.connection.execute(
             """INSERT INTO recovery_attempts(
                  attempt_id, issue_id, request_id, attempt_type, run_id, output_id,
@@ -288,7 +309,7 @@ def continue_run(
     request_id: str,
     requested_by: str,
     operational_overrides: Mapping[str, Any] | None = None,
-) -> RecoveryAttempt:
+) -> RecoveryAttempt | Run:
     issue = repository.get_issue(issue_id)
     if issue is None:
         raise KeyError(issue_id)

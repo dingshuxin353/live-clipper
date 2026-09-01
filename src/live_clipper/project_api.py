@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from .config import Settings
 from .project_domain import stable_json
 from .project_projection import project_projection_v2, queue_positions, result_workload_counts
+from .project_reprocess import ProjectReprocess
 from .project_result_api import ProjectResultAPI
 from .project_scan import ProjectScanError, list_source_files, scan_preview, scan_project
 from .project_service import ProjectError, ProjectManager, open_project_repository
@@ -45,6 +46,7 @@ class ProjectAPI:
         self.settings = settings
         self.repository = open_project_repository(self.service_dir)
         self.manager = ProjectManager(self.repository, settings)
+        self.reprocess = ProjectReprocess(self.repository, settings, self.service_dir)
         self.results = ProjectResultAPI(
             self.repository,
             settings,
@@ -212,6 +214,27 @@ class ProjectAPI:
                 if method == "GET" and len(parts) == 4 and parts[3] == "runs":
                     self._require_project(project_id)
                     return 200, self._runs_page(project_id, query)
+            if len(parts) == 4 and parts[:2] == ["api", "runs"]:
+                run_id = parts[2]
+                if method == "GET" and parts[3] == "reprocess-preflight":
+                    return 200, self.reprocess.preflight(run_id)
+                if method == "GET" and parts[3] == "versions":
+                    return 200, self.reprocess.versions(run_id)
+                if method == "POST" and parts[3] == "reprocess":
+                    _strict(
+                        payload,
+                        {"request_id", "expected_preflight_revision"},
+                        {"request_id", "expected_preflight_revision"},
+                    )
+                    response, status = self.reprocess.create(
+                        run_id,
+                        request_id=str(payload["request_id"]),
+                        expected_preflight_revision=str(payload["expected_preflight_revision"]),
+                    )
+                    return status, response
+                if method == "POST" and parts[3] == "reprocess-source-repair":
+                    _strict(payload, set())
+                    return 201, self.reprocess.source_repair(run_id)
             if method == "GET" and len(parts) == 3 and parts[:2] == ["api", "runs"]:
                 run = self.repository.get_run(parts[2])
                 if run is None:
