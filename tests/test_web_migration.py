@@ -7,7 +7,8 @@ from threading import Thread
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from live_clipper import service
+from live_clipper import config, service
+from live_clipper.project_storage import ProjectRepository
 from live_clipper.web import LiveClipperRequestHandler, WebPaths, handle_api_request
 
 
@@ -193,6 +194,129 @@ def test_restricted_real_http_executes_then_switches_to_project_api(tmp_path, mo
         assert startup_after_acknowledge["migration"] is None
         studio_status, studio = request("GET", "/api/studio")
         assert studio_status == 200 and studio["ok"] is True and len(studio["projects"]) == 1
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_real_http_recheck_closes_recovered_migration_readiness_issue_without_new_work(tmp_path, monkeypatch):
+    paths = _paths(tmp_path)
+    monkeypatch.setattr(config, "load_dotenv", lambda *args, **kwargs: None)
+    monkeypatch.setenv("CHEAP_MODEL_API_KEY", "synthetic-ready-ai-key")
+    service_ready = {"value": False}
+    monkeypatch.setattr(
+        service,
+        "ensure_service_ready",
+        lambda *args, **kwargs: (
+            {"ok": True}
+            if service_ready["value"]
+            else {"ok": False, "error_code": "service_not_ready"}
+        ),
+    )
+
+    class Handler(LiveClipperRequestHandler):
+        access_token = "migration-repair-token"
+        restricted_startup = "migration_required"
+
+    Handler.paths = paths
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    bearer = {"Authorization": "Bearer migration-repair-token", "Content-Type": "application/json"}
+
+    def request(method, route, body=None):
+        data = json.dumps(body).encode() if body is not None else None
+        try:
+            response = urlopen(Request(base + route, method=method, data=data, headers=bearer), timeout=5)
+        except HTTPError as error:
+            return error.code, json.loads(error.read())
+        return response.status, json.loads(response.read())
+
+    try:
+        _, inspected = request("POST", "/api/migration/inspect", {})
+        plan = inspected["plan"]
+        _, validated = request(
+            "POST",
+            "/api/migration/validate",
+            {
+                "source_fingerprint": plan["source_fingerprint"],
+                "plan_hash": plan["plan_hash"],
+                "choices": {"trigger_mode": "manual"},
+            },
+        )
+        plan = validated["plan"]
+        status, accepted = request(
+            "POST",
+            "/api/migration/execute",
+            {
+                "request_id": "http-attention-execute",
+                "source_fingerprint": plan["source_fingerprint"],
+                "plan_hash": plan["plan_hash"],
+                "choices": plan["choices"],
+            },
+        )
+        assert status == 202
+        for _ in range(200):
+            _, current = request("GET", "/api/migration")
+            if current["session"] and current["session"]["state"] == "completed_attention":
+                break
+            time.sleep(0.01)
+        else:
+            raise AssertionError("HTTP migration did not reach completed_attention")
+
+        migration_id = accepted["session"]["migration_id"]
+        project_id = current["session"]["project_id"]
+        _, acknowledged = request(
+            "POST",
+            "/api/migration/acknowledge",
+            {
+                "request_id": "http-attention-acknowledge",
+                "migration_id": migration_id,
+                "expected_revision": current["session"]["revision"],
+            },
+        )
+        assert acknowledged["project_id"] == project_id
+
+        with ProjectRepository(paths.service_dir) as repository:
+            issue = repository.list_issues(project_id=project_id, active_only=True)[0]
+            run_ids = [run.run_id for run in repository.list_runs(project_id=project_id)]
+            scan_ids = [scan.scan_id for scan in repository.list_scan_events(project_id)]
+
+        service_ready["value"] = True
+        enable_status, enabled = request(
+            "POST",
+            f"/api/projects/{project_id}/enable",
+            {"request_id": "http-enable-after-repair"},
+        )
+        assert enable_status == 200, enabled
+        assert enabled["project"]["activation_state"] == "active"
+        assert enabled["project"]["runtime"]["readiness_state"] == "ready"
+        assert enabled["initial_scan"] is None
+
+        recheck_status, rechecked = request(
+            "POST",
+            "/api/issue-groups/migration-runtime-readiness/recheck",
+            {
+                "request_id": "http-recheck-after-repair",
+                "issue_revisions": {issue.issue_id: issue.issue_revision},
+            },
+        )
+        assert recheck_status == 200
+        assert rechecked["issues"][0]["issue_id"] == issue.issue_id
+        assert rechecked["issues"][0]["status"] == "resolved"
+
+        with ProjectRepository(paths.service_dir) as repository:
+            project = repository.get_project(project_id)
+            runtime = repository.get_runtime(project_id)
+            assert project is not None and project.activation_state == "active"
+            assert runtime is not None and runtime.readiness_state == "ready"
+            assert runtime.auto_scan_state == "off" and runtime.failure_code is None
+            assert repository.list_issues(project_id=project_id, active_only=True) == []
+            assert [item.project_id for item in repository.list_projects()] == [project_id]
+            assert [run.run_id for run in repository.list_runs(project_id=project_id)] == run_ids
+            assert [scan.scan_id for scan in repository.list_scan_events(project_id)] == scan_ids
     finally:
         server.shutdown()
         server.server_close()
