@@ -94,6 +94,178 @@ def _wait_completed(coordinator, migration_id):
     raise AssertionError("migration did not finish")
 
 
+def _execute_completed(coordinator):
+    plan = _validated(coordinator)
+    accepted = coordinator.execute(
+        {
+            "request_id": "grant-execute",
+            "source_fingerprint": plan["source_fingerprint"],
+            "plan_hash": plan["plan_hash"],
+            "choices": plan["choices"],
+        }
+    )[1]
+    completed = _wait_completed(coordinator, accepted["session"]["migration_id"])
+    return completed["session"]
+
+
+def _tree_facts(root):
+    return {
+        str(path.relative_to(root)): (
+            path.lstat().st_mode,
+            path.lstat().st_size,
+            hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None,
+        )
+        for path in sorted(root.rglob("*"))
+    }
+
+
+@pytest.mark.parametrize("ready", [True, False])
+def test_completed_migration_returns_frozen_backup_grant_without_writes_or_system_commands(
+    tmp_path, monkeypatch, ready
+):
+    coordinator, _service_dir = _legacy_home(tmp_path)
+    monkeypatch.setattr(
+        service,
+        "ensure_service_ready",
+        lambda *args, **kwargs: {"ok": ready, **({} if ready else {"error_code": "service_not_ready"})},
+    )
+    session = _execute_completed(coordinator)
+    assert session["state"] == ("completed_ready" if ready else "completed_attention")
+    backup = coordinator.backup_root / session["migration_id"]
+    before = _tree_facts(backup)
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: pytest.fail("grant must not run a system command"))
+
+    status, payload = coordinator.backup_grant(session["migration_id"], auth_context="bearer")
+
+    assert status == 200
+    assert payload == {
+        "ok": True,
+        "grant": {
+            "grant_version": 1,
+            "kind": "migration_backup_reveal",
+            "migration_id": session["migration_id"],
+            "backup_path": str(backup),
+        },
+    }
+    assert _tree_facts(backup) == before
+
+
+def test_backup_grant_rejects_browser_invalid_missing_and_nonterminal_sessions(tmp_path):
+    coordinator, service_dir = _legacy_home(tmp_path)
+    with pytest.raises(MigrationError) as browser:
+        coordinator.backup_grant("not-real", auth_context="browser")
+    assert (browser.value.status, browser.value.code) == (403, "bearer_required")
+    with pytest.raises(MigrationError) as invalid:
+        coordinator.backup_grant("../unsafe", auth_context="bearer")
+    assert (invalid.value.status, invalid.value.code) == (404, "backup_not_available")
+    with pytest.raises(MigrationError) as missing:
+        coordinator.backup_grant("not-real", auth_context="bearer")
+    assert (missing.value.status, missing.value.code) == (404, "backup_not_available")
+
+    with ProjectRepository(service_dir) as repository:
+        session = repository.create_migration_session(
+            migration_id="migration-pending",
+            source_fingerprint="a" * 64,
+            plan_version=3,
+            plan_hash="b" * 64,
+            source_manifest=[],
+            choices={},
+            request_id="request-pending",
+            request_hash="c" * 64,
+            backup_path=str(coordinator.backup_root / "migration-pending"),
+        )
+    (coordinator.backup_root / session.migration_id).mkdir(parents=True)
+    with pytest.raises(MigrationError) as pending:
+        coordinator.backup_grant(session.migration_id, auth_context="bearer")
+    assert (pending.value.status, pending.value.code) == (404, "backup_not_available")
+    with ProjectRepository(service_dir) as repository:
+        failed_session = repository.record_migration_failure(
+            session.migration_id,
+            session.revision,
+            failure_code="migration_interrupted",
+            failure_summary="迁移未提交",
+            backup_status="failed",
+        )
+    with pytest.raises(MigrationError) as failed:
+        coordinator.backup_grant(failed_session.migration_id, auth_context="bearer")
+    assert (failed.value.status, failed.value.code) == (404, "backup_not_available")
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["absolute_outside", "dotdot", "wrong_id", "missing", "target_symlink_inside", "target_symlink_outside", "root_symlink"],
+)
+def test_backup_grant_rejects_path_conflicts_and_symlinks(tmp_path, case):
+    coordinator, service_dir = _legacy_home(tmp_path)
+    session = _execute_completed(coordinator)
+    migration_id = session["migration_id"]
+    root = coordinator.backup_root
+    target = root / migration_id
+    recorded = target
+
+    if case == "absolute_outside":
+        recorded = tmp_path / "outside"
+        recorded.mkdir()
+    elif case == "dotdot":
+        recorded = target / ".." / migration_id
+    elif case == "wrong_id":
+        recorded = root / "different-migration"
+        recorded.mkdir()
+    elif case == "missing":
+        shutil.rmtree(target)
+    elif case.startswith("target_symlink"):
+        shutil.rmtree(target)
+        destination = root / "real-backup" if case.endswith("inside") else tmp_path / "outside-backup"
+        destination.mkdir()
+        target.symlink_to(destination, target_is_directory=True)
+    elif case == "root_symlink":
+        real_root = tmp_path / "real-backup-root"
+        root.rename(real_root)
+        root.symlink_to(real_root, target_is_directory=True)
+
+    if recorded != target:
+        with ProjectRepository(service_dir) as repository:
+            repository.connection.execute(
+                "UPDATE migration_sessions SET backup_path=? WHERE migration_id=?",
+                (str(recorded), migration_id),
+            )
+            repository.connection.commit()
+
+    with pytest.raises(MigrationError) as rejected:
+        coordinator.backup_grant(migration_id, auth_context="bearer")
+    assert (rejected.value.status, rejected.value.code) == (
+        (404, "backup_not_available") if case == "missing" else (409, "diagnostic_required")
+    )
+
+
+def test_backup_grant_is_the_only_backup_route(tmp_path):
+    coordinator, _service_dir = _legacy_home(tmp_path)
+    assert coordinator.dispatch("GET", "/api/migration/migration-1/backup-action", auth_context="bearer") is None
+
+
+def test_backup_grant_rejects_target_replacement_during_validation(tmp_path, monkeypatch):
+    coordinator, _service_dir = _legacy_home(tmp_path)
+    session = _execute_completed(coordinator)
+    target = coordinator.backup_root / session["migration_id"]
+    displaced = coordinator.backup_root / "displaced"
+    original_identity = coordinator._directory_identity
+    replaced = False
+
+    def replace_after_first_target_check(path):
+        nonlocal replaced
+        identity = original_identity(path)
+        if path == target and not replaced:
+            replaced = True
+            target.rename(displaced)
+            target.mkdir()
+        return identity
+
+    monkeypatch.setattr(coordinator, "_directory_identity", replace_after_first_target_check)
+    with pytest.raises(MigrationError) as rejected:
+        coordinator.backup_grant(session["migration_id"], auth_context="bearer")
+    assert (rejected.value.status, rejected.value.code) == (409, "diagnostic_required")
+
+
 def test_inspect_validate_are_zero_write_and_secret_free(tmp_path):
     coordinator, service = _legacy_home(tmp_path)
     before = {str(path.relative_to(tmp_path)): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}

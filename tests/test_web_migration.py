@@ -4,11 +4,10 @@ import json
 import time
 from http.server import ThreadingHTTPServer
 from threading import Thread
-from types import SimpleNamespace
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from live_clipper import migration_coordinator, service
+from live_clipper import service
 from live_clipper.web import LiveClipperRequestHandler, WebPaths, handle_api_request
 
 
@@ -37,7 +36,7 @@ api_key = "secret-ai"
     return WebPaths(service_dir=service, config_path=config, input_dir=tmp_path / "input", output_root=output)
 
 
-def test_migration_http_contract_and_backup_action_auth(tmp_path):
+def test_migration_http_contract_and_backup_grant_auth(tmp_path):
     paths = _paths(tmp_path)
     status, _headers, current = handle_api_request("GET", "/api/migration", paths)
     assert status == 200 and current["entry"] == "review"
@@ -56,13 +55,17 @@ def test_migration_http_contract_and_backup_action_auth(tmp_path):
     )
     assert status == 200 and validated["plan"]["choices"]["trigger_mode"] == "manual"
     status, _headers, denied = handle_api_request(
-        "GET", "/api/migration/not-real/backup-action", paths, auth_context="browser"
+        "GET", "/api/migration/not-real/backup-grant", paths, auth_context="browser"
     )
     assert status == 403 and denied["error_code"] == "bearer_required"
     status, _headers, invalid = handle_api_request(
-        "GET", "/api/migration/%2Funsafe/backup-action", paths, auth_context="bearer"
+        "GET", "/api/migration/%2Funsafe/backup-grant", paths, auth_context="bearer"
     )
     assert status == 404 and invalid["error_code"] == "backup_not_available"
+    status, _headers, retired = handle_api_request(
+        "GET", "/api/migration/not-real/backup-action", paths, auth_context="bearer"
+    )
+    assert status == 404 and retired["error_code"] == "route_not_found"
 
 
 def test_migration_rejects_unknown_body_fields(tmp_path):
@@ -101,12 +104,6 @@ def test_api_response_header_disconnect_is_silent_transport_completion():
 def test_restricted_real_http_executes_then_switches_to_project_api(tmp_path, monkeypatch):
     paths = _paths(tmp_path)
     monkeypatch.setattr(service, "ensure_service_ready", lambda *args, **kwargs: {"ok": True})
-    monkeypatch.setattr(migration_coordinator.shutil, "which", lambda name: "/usr/bin/open" if name == "open" else None)
-    monkeypatch.setattr(
-        migration_coordinator.subprocess,
-        "run",
-        lambda *args, **kwargs: SimpleNamespace(returncode=0),
-    )
 
     class Handler(LiveClipperRequestHandler):
         access_token = "migration-token"
@@ -164,15 +161,23 @@ def test_restricted_real_http_executes_then_switches_to_project_api(tmp_path, mo
         with HTTPErrorContext(403):
             request(
                 "GET",
-                f"/api/migration/{migration_id}/backup-action",
+                f"/api/migration/{migration_id}/backup-grant",
                 headers={"Cookie": "lc_token=migration-token"},
             )
-        action_status, action = request("GET", f"/api/migration/{migration_id}/backup-action")
-        assert action_status == 200 and action == {
+        grant_status, grant = request("GET", f"/api/migration/{migration_id}/backup-grant")
+        assert grant_status == 200 and grant == {
             "ok": True,
-            "action": "reveal_backup",
-            "migration_id": migration_id,
+            "grant": {
+                "grant_version": 1,
+                "kind": "migration_backup_reveal",
+                "migration_id": migration_id,
+                "backup_path": str(paths.service_dir.parent / "migration-backups" / migration_id),
+            },
         }
+        with HTTPErrorContext(404):
+            request("GET", f"/api/migration/{migration_id}/backup-action")
+        assert "backup_path" not in json.dumps(current)
+        assert "backup_path" not in json.dumps(startup)
         _, acknowledged = request(
             "POST",
             "/api/migration/acknowledge",

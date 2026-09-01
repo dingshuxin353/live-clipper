@@ -5,7 +5,7 @@ import json
 import os
 import re
 import shutil
-import subprocess
+import stat
 import threading
 from collections.abc import Callable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -443,37 +443,67 @@ class MigrationCoordinator:
                 raise MigrationError("revision_conflict", "迁移状态已变化或不可确认", status=409) from exc
         return 200, {"ok": True, "session": self._session_payload(session), "project_id": session.project_id}
 
-    def backup_action(self, migration_id: str, *, auth_context: str) -> tuple[int, dict[str, Any]]:
+    @staticmethod
+    def _directory_identity(path: Path) -> tuple[int, int]:
+        details = path.lstat()
+        if stat.S_ISLNK(details.st_mode):
+            raise MigrationError("diagnostic_required", "迁移备份记录不安全", status=409)
+        if not stat.S_ISDIR(details.st_mode):
+            raise MigrationError("backup_not_available", "迁移备份不可用", status=404)
+        return details.st_dev, details.st_ino
+
+    def _authorized_backup_path(self, migration_id: str, recorded_path: str) -> Path:
+        approved_root = self.backup_root
+        expected = approved_root / migration_id
+        recorded = Path(recorded_path)
+        if not recorded.is_absolute() or recorded != expected:
+            raise MigrationError("diagnostic_required", "迁移备份记录不安全", status=409)
+        try:
+            root_identity = self._directory_identity(approved_root)
+            target_identity = self._directory_identity(expected)
+            real_root = approved_root.resolve(strict=True)
+            real_target = expected.resolve(strict=True)
+        except FileNotFoundError as exc:
+            raise MigrationError("backup_not_available", "迁移备份不可用", status=404) from exc
+        except OSError as exc:
+            raise MigrationError("diagnostic_required", "迁移备份记录不安全", status=409) from exc
+        if real_target != real_root / migration_id or real_target.parent != real_root:
+            raise MigrationError("diagnostic_required", "迁移备份记录不安全", status=409)
+        try:
+            if self._directory_identity(approved_root) != root_identity:
+                raise MigrationError("diagnostic_required", "迁移备份记录不安全", status=409)
+            if self._directory_identity(expected) != target_identity:
+                raise MigrationError("diagnostic_required", "迁移备份记录不安全", status=409)
+        except FileNotFoundError as exc:
+            raise MigrationError("backup_not_available", "迁移备份不可用", status=404) from exc
+        except OSError as exc:
+            raise MigrationError("diagnostic_required", "迁移备份记录不安全", status=409) from exc
+        return real_target
+
+    def backup_grant(self, migration_id: str, *, auth_context: str) -> tuple[int, dict[str, Any]]:
         if auth_context != "bearer":
             raise MigrationError("bearer_required", "备份动作仅允许桌面主进程访问", status=403)
         if not _PUBLIC_ID.fullmatch(migration_id):
             raise MigrationError("backup_not_available", "迁移备份不可用", status=404)
         with ProjectRepository(self.service_dir) as repository:
             session = repository.get_migration_session(migration_id)
-        if session is None or not session.state.startswith("completed_") or not session.backup_path:
+        if (
+            session is None
+            or session.state not in {"completed_ready", "completed_attention"}
+            or session.backup_status != "completed"
+            or not session.backup_path
+        ):
             raise MigrationError("backup_not_available", "迁移备份不可用", status=404)
-        target = Path(session.backup_path).resolve(strict=False)
-        try:
-            target.relative_to(self.backup_root.resolve(strict=False))
-        except ValueError as exc:
-            raise MigrationError("diagnostic_required", "迁移备份记录不安全", status=409) from exc
-        if target != self.backup_root / migration_id or not target.is_dir():
-            raise MigrationError("backup_not_available", "迁移备份不可用", status=404)
-        opener = shutil.which("open")
-        if opener is None:
-            raise MigrationError("backup_action_unavailable", "当前系统无法显示迁移备份", status=409)
-        try:
-            result = subprocess.run(
-                [opener, "-R", str(target)],
-                capture_output=True,
-                timeout=5,
-                check=False,
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise MigrationError("backup_action_failed", "迁移备份显示失败", status=500) from exc
-        if result.returncode != 0:
-            raise MigrationError("backup_action_failed", "迁移备份显示失败", status=500)
-        return 200, {"ok": True, "action": "reveal_backup", "migration_id": migration_id}
+        target = self._authorized_backup_path(migration_id, session.backup_path)
+        return 200, {
+            "ok": True,
+            "grant": {
+                "grant_version": 1,
+                "kind": "migration_backup_reveal",
+                "migration_id": migration_id,
+                "backup_path": str(target),
+            },
+        }
 
     def _config(self, plan: MigrationPlan) -> dict[str, Any]:
         config = default_project_config(
@@ -696,8 +726,8 @@ class MigrationCoordinator:
         payload = dict(body or {})
         if method == "GET" and parts == ["api", "migration"]:
             return 200, self.snapshot()
-        if method == "GET" and len(parts) == 4 and parts[3] == "backup-action":
-            return self.backup_action(parts[2], auth_context=auth_context)
+        if method == "GET" and len(parts) == 4 and parts[3] == "backup-grant":
+            return self.backup_grant(parts[2], auth_context=auth_context)
         routes = {
             ("POST", "inspect"): self.inspect,
             ("POST", "validate"): self.validate,
