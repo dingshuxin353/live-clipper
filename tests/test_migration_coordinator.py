@@ -214,7 +214,12 @@ def test_trigger_choices_become_real_project_config(tmp_path, choices, expected)
             "choices": plan["choices"],
         }
     )[1]
-    _wait_completed(coordinator, accepted["session"]["migration_id"])
+    completed = _wait_completed(coordinator, accepted["session"]["migration_id"])
+    report_discovery = completed["report"]["discovery"]
+    assert report_discovery["trigger_mode"] == choices["trigger_mode"]
+    assert report_discovery["schedule_mode"] == choices.get("schedule_mode")
+    assert report_discovery["daily_time"] == choices.get("daily_time")
+    assert report_discovery["interval_minutes"] == choices.get("interval_minutes")
     with ProjectRepository(service) as repository:
         project = repository.list_projects()[0]
         config = repository.get_config_revision(project.project_id).config
@@ -266,6 +271,8 @@ def test_service_start_failure_becomes_completed_attention_on_same_project(tmp_p
     )[1]
     completed = _wait_completed(coordinator, accepted["session"]["migration_id"])
     assert completed["session"]["state"] == "completed_attention"
+    assert completed["report"]["blocker_count"] == 1
+    assert completed["report"]["blocker_codes"] == ["service_not_ready"]
     with ProjectRepository(service_dir) as repository:
         project = repository.list_projects()[0]
         runtime = repository.get_runtime(project.project_id)

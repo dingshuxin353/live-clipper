@@ -62,3 +62,11 @@ test("preload and main expose only the migration-id backup capability", () => {
   assert.equal(preload.includes("backupPath"), false);
   assert.equal(preload.includes("backendToken"), false);
 });
+
+test("preload exposes a parameter-free quit capability through the trusted main process", () => {
+  const preload = readFileSync(join(__dirname, "..", "preload.js"), "utf8");
+  const main = readFileSync(join(__dirname, "..", "main.js"), "utf8");
+  assert.match(preload, /quitApp: \(\) => ipcRenderer\.invoke\("lc:quit-app"\)/);
+  assert.match(main, /ipcMain\.handle\("lc:quit-app", \(event\) => \{\s*assertTrustedRenderer\(event\);\s*app\.quit\(\)/);
+  assert.equal(preload.includes("quitCommand"), false);
+});
