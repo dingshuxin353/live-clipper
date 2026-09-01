@@ -1659,6 +1659,137 @@ class ProjectRepository:
             )
         return [self._run_from_row(row) for row in _dicts(cursor)]
 
+    def find_active_run(
+        self,
+        project_id: str,
+        content_id: str,
+        *,
+        exclude_run_id: str | None = None,
+    ) -> Run | None:
+        row = _one(
+            self.connection.execute(
+                """SELECT * FROM runs
+                   WHERE project_id = ? AND content_id = ?
+                     AND status IN ('queued', 'processing') AND run_id <> ifnull(?, '')
+                   ORDER BY queued_at, run_id LIMIT 1""",
+                (project_id, content_id, exclude_run_id),
+            )
+        )
+        return self._run_from_row(row) if row else None
+
+    def list_content_runs(self, project_id: str, content_id: str) -> list[Run]:
+        rows = _dicts(
+            self.connection.execute(
+                """SELECT * FROM runs WHERE project_id = ? AND content_id = ?
+                   ORDER BY processing_sequence DESC, run_id""",
+                (project_id, content_id),
+            )
+        )
+        return [self._run_from_row(row) for row in rows]
+
+    def create_reprocess_run(
+        self,
+        origin_run_id: str,
+        *,
+        request_id: str,
+        request_hash: str,
+        config_revision: int,
+        parameter_snapshot: Mapping[str, Any],
+        source_path: str,
+        queued_at: str | None = None,
+    ) -> tuple[Run, str]:
+        """Create or reuse the single active derived Run in one write transaction."""
+        scope = f"run_reprocess:{origin_run_id}"
+        snapshot_json = stable_json(parameter_snapshot)
+        timestamp = normalize_utc(queued_at)
+        with self.transaction():
+            existing = _one(
+                self.connection.execute(
+                    "SELECT * FROM idempotency_keys WHERE scope = ? AND request_id = ?",
+                    (scope, request_id),
+                )
+            )
+            if existing is not None:
+                if existing["request_hash"] != request_hash:
+                    raise RequestConflictError("reprocess_request_conflict")
+                run = self.get_run(str(existing["object_id"]))
+                if run is None:
+                    raise RuntimeError("reprocess idempotency points to a missing run")
+                return run, "idempotent_request"
+            origin = self.get_run(origin_run_id)
+            if origin is None:
+                raise KeyError(origin_run_id)
+            if origin.status not in {"completed", "failed"}:
+                raise RevisionConflictError("origin_run_state_changed")
+            project = self.get_project(origin.project_id)
+            runtime = self.get_runtime(origin.project_id)
+            if (
+                project is None
+                or project.activation_state == "inactive"
+                or project.current_config_revision != config_revision
+                or runtime is None
+                or runtime.readiness_state != "ready"
+                or runtime.failure_code
+            ):
+                raise RevisionConflictError("project_runtime_changed")
+            if self.get_config_revision(origin.project_id, config_revision) is None:
+                raise RevisionConflictError("project_config_revision_conflict")
+            active = self.find_active_run(origin.project_id, origin.content_id)
+            if active is not None:
+                self.connection.execute(
+                    """INSERT INTO idempotency_keys(
+                         scope, request_id, request_hash, object_type, object_id, created_at
+                       ) VALUES (?, ?, ?, 'run', ?, ?)""",
+                    (scope, request_id, request_hash, active.run_id, timestamp),
+                )
+                return active, "active_run"
+            row = self.connection.execute(
+                "SELECT COALESCE(MAX(processing_sequence), 0) FROM runs WHERE project_id = ? AND content_id = ?",
+                (origin.project_id, origin.content_id),
+            ).fetchone()
+            sequence = int(row[0]) + 1
+            run_id = new_id()
+            self.connection.execute(
+                """INSERT INTO runs(
+                     run_id, project_id, content_id, processing_sequence, origin_run_id,
+                     source_scan_id, trigger_source, first_seen_path, latest_seen_path,
+                     status, current_stage, config_revision, parameter_snapshot_json,
+                     queued_at, updated_at
+                   ) VALUES (?, ?, ?, ?, ?, NULL, 'manual', ?, ?, 'queued', NULL, ?, ?, ?, ?)""",
+                (
+                    run_id,
+                    origin.project_id,
+                    origin.content_id,
+                    sequence,
+                    origin_run_id,
+                    source_path,
+                    source_path,
+                    config_revision,
+                    snapshot_json,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            self.connection.execute(
+                """INSERT INTO workspace_events(event_type, project_id, run_id, occurred_at, payload_json)
+                   VALUES ('run_queued', ?, ?, ?, ?)""",
+                (
+                    origin.project_id,
+                    run_id,
+                    timestamp,
+                    stable_json({"content_id": origin.content_id, "origin_run_id": origin_run_id, "processing_sequence": sequence}),
+                ),
+            )
+            self.connection.execute(
+                """INSERT INTO idempotency_keys(
+                     scope, request_id, request_hash, object_type, object_id, created_at
+                   ) VALUES (?, ?, ?, 'run', ?, ?)""",
+                (scope, request_id, request_hash, run_id, timestamp),
+            )
+        run = self.get_run(run_id)
+        assert run is not None
+        return run, "created"
+
     @staticmethod
     def _run_from_row(row: dict[str, Any]) -> Run:
         row["parameter_snapshot"] = parse_json(row.pop("parameter_snapshot_json"))
@@ -2935,6 +3066,46 @@ class ProjectRepository:
         result = self.get_issue(issue_id)
         assert result is not None
         return result
+
+    def resolve_run_source_issue(
+        self,
+        issue_id: str,
+        *,
+        expected_issue_revision: int,
+        source_path: str,
+        occurred_at: str | None = None,
+    ) -> Issue:
+        timestamp = normalize_utc(occurred_at)
+        with self.transaction():
+            current = _one(self.connection.execute("SELECT * FROM issues WHERE issue_id = ?", (issue_id,)))
+            if current is None:
+                raise KeyError(issue_id)
+            if current["status"] != "checking" or int(current["issue_revision"]) != expected_issue_revision:
+                raise RevisionConflictError("issue_revision_conflict")
+            run_id = str(current["run_id"] or "")
+            cursor = self.connection.execute(
+                "UPDATE runs SET latest_seen_path = ?, updated_at = ? WHERE run_id = ?",
+                (source_path, timestamp, run_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(run_id)
+            self.connection.execute(
+                """UPDATE issues SET status = 'resolved', issue_revision = issue_revision + 1,
+                     updated_at = ?, resolved_at = ? WHERE issue_id = ?""",
+                (timestamp, timestamp, issue_id),
+            )
+            self.connection.execute(
+                "INSERT INTO issue_events(issue_id, event_type, occurred_at, detail_json) VALUES (?, 'source_repaired', ?, '{}')",
+                (issue_id, timestamp),
+            )
+            self.connection.execute(
+                """INSERT INTO workspace_events(event_type, project_id, run_id, occurred_at, payload_json)
+                   VALUES ('source_repaired', ?, ?, ?, ?)""",
+                (current["project_id"], run_id, timestamp, stable_json({"issue_id": issue_id})),
+            )
+        issue = self.get_issue(issue_id)
+        assert issue is not None
+        return issue
 
     def register_recovery_attempt(
         self,

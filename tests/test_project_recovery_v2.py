@@ -89,6 +89,46 @@ def test_continue_run_requeues_same_run_id_and_is_idempotent(tmp_path):
     assert len(repository.list_runs(project_id=run.project_id)) == 1
 
 
+def test_continue_run_reuses_active_same_content_without_recovery_attempt(tmp_path):
+    repository, project, run, _output_issue = _failed_output_issue(tmp_path)
+    active, reason = repository.create_reprocess_run(
+        run.run_id,
+        request_id="m9-winner",
+        request_hash="winner-hash",
+        config_revision=run.config_revision,
+        parameter_snapshot=run.parameter_snapshot,
+        source_path=run.latest_seen_path,
+    )
+    issue = repository.discover_issue(
+        issue_code="processing_interrupted",
+        category="process",
+        scope_type="run",
+        project_id=project.project_id,
+        run_id=run.run_id,
+        issue_group_key=f"processing-race:{run.run_id}",
+        status="ready_to_recover",
+        recovery_capability="continue_run",
+        redo_stages=("render",),
+    )
+
+    winner = continue_run(
+        repository,
+        issue.issue_id,
+        expected_issue_revision=issue.issue_revision,
+        request_id="m8-loser",
+        requested_by="test",
+    )
+
+    assert reason == "created" and winner.run_id == active.run_id
+    assert not repository.list_recovery_attempts(issue.issue_id)
+    assert repository.get_issue(issue.issue_id).status == "ready_to_recover"
+    assert len([
+        item
+        for item in repository.list_runs(project.project_id)
+        if item.status in {"queued", "processing"}
+    ]) == 1
+
+
 def test_retry_output_only_resets_target_and_preserves_other_ready_output(tmp_path):
     repository, _project, run, run_dir, _output = _project_run(
         tmp_path,

@@ -49,6 +49,28 @@ def dispatch_queued(
     ):
         if len(started) >= available:
             break
+        expected_source = run.parameter_snapshot.get("source")
+        if isinstance(expected_source, dict):
+            try:
+                source_stat = Path(run.latest_seen_path).stat()
+                source_error = None if (
+                    source_stat.st_size == expected_source.get("bytes")
+                    and source_stat.st_mtime_ns == expected_source.get("mtime_ns")
+                ) else "source_identity_mismatch"
+            except OSError:
+                source_error = "source_missing"
+            if source_error:
+                repository.transition_run(
+                    run.run_id,
+                    status="failed",
+                    stage="read_source",
+                    event_type="failed",
+                    detail={"reason": source_error},
+                    error_code=source_error,
+                    error_summary="原始录像已变化，重新处理已安全停止",
+                )
+                failed.append(run.run_id)
+                continue
         target = run_work_dir(work_dir, run)
         target.mkdir(parents=True, exist_ok=True)
         repository.transition_run(
