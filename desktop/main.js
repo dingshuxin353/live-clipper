@@ -1,5 +1,6 @@
 const { app, BrowserWindow, Tray, Menu, clipboard, dialog, ipcMain, session, shell, nativeImage } = require("electron");
 const { spawn } = require("child_process");
+const fs = require("fs");
 const https = require("https");
 const net = require("net");
 const path = require("path");
@@ -12,7 +13,9 @@ const {
   createMigrationActions,
   createOutputActions,
   createRuntimeState,
+  electronRuntimeHome,
   isInternalAppUrl,
+  resolveTrustedAppHome,
   writeClipboardText,
 } = require("./runtime-state");
 
@@ -26,9 +29,19 @@ let outputActions = null;
 let fileSelections = null;
 let folderSelection = null;
 let migrationActions = null;
+let appHome = null;
+let startupRefresh = null;
+let updateCheckTimer = null;
 let exitingNow = false;
 const runtime = createRuntimeState();
 const backendToken = require("crypto").randomBytes(16).toString("hex");
+
+const configuredHome = String(process.env.LIVE_CLIPPER_HOME || "").trim();
+const homeCandidate = configuredHome || path.join(app.getPath("appData"), "Venus");
+appHome = resolveTrustedAppHome(homeCandidate);
+const electronHome = electronRuntimeHome(appHome);
+fs.mkdirSync(electronHome, { recursive: true, mode: 0o700 });
+app.setPath("userData", electronHome);
 
 function findFreePort() {
   return new Promise((resolve, reject) => {
@@ -59,7 +72,11 @@ function backendCommand(port) {
 function startBackend(port) {
   if (!runtime.canStart()) return false;
   const { executable, args } = backendCommand(port);
-  const env = { ...process.env, LIVE_CLIPPER_WEB_TOKEN: backendToken };
+  const env = {
+    ...process.env,
+    LIVE_CLIPPER_HOME: appHome,
+    LIVE_CLIPPER_WEB_TOKEN: backendToken,
+  };
   if (app.isPackaged) {
     env.PATH = `${path.join(process.resourcesPath, "bin")}:${env.PATH || ""}`;
   }
@@ -180,6 +197,7 @@ function setupAutoUpdater() {
   updater.autoDownload = true;
   updater.autoInstallOnAppQuit = false;
   updater.on("update-downloaded", async (info) => {
+    if (runtime.isRestricted()) return;
     updateDownloaded = true;
     const { response } = await dialog.showMessageBox({
       type: "info",
@@ -196,6 +214,7 @@ function setupAutoUpdater() {
 }
 
 async function installDownloadedUpdate() {
+  if (runtime.isRestricted()) return false;
   if (!(await prepareForQuit())) return;
   exitingNow = true;
   updater.quitAndInstall();
@@ -250,6 +269,7 @@ function isNewerVersion(latest, current) {
 }
 
 async function checkForUpdates(interactive) {
+  if (!runtime.canUseProjectFeatures()) return false;
   if (app.isPackaged) {
     if (!updater) setupAutoUpdater();
     if (updateDownloaded) {
@@ -298,7 +318,7 @@ function showWindow(route = null) {
     }
     mainWindow.show();
     mainWindow.focus();
-    void badgePoller?.activate();
+    if (runtime.canUseProjectFeatures()) void badgePoller?.activate();
     return;
   }
   mainWindow = new BrowserWindow({
@@ -316,6 +336,9 @@ function showWindow(route = null) {
     },
   });
   mainWindow.loadURL(appUrl(backendPort, route || "/studio"));
+  mainWindow.webContents.on("did-navigate", () => {
+    void refreshStartupState();
+  });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (isInternalAppUrl(url, backendPort)) {
       void mainWindow.loadURL(url);
@@ -341,19 +364,70 @@ function showWindow(route = null) {
 }
 
 function createTray() {
-  const icon = nativeImage.createFromPath(path.join(__dirname, "assets", "trayTemplate.png"));
-  icon.setTemplateImage(true);
-  tray = new Tray(icon);
-  tray.setToolTip("Venus");
-  tray.setContextMenu(
-    Menu.buildFromTemplate([
+  if (!tray) {
+    const icon = nativeImage.createFromPath(path.join(__dirname, "assets", "trayTemplate.png"));
+    icon.setTemplateImage(true);
+    tray = new Tray(icon);
+    tray.setToolTip("Venus");
+  }
+  const items = runtime.isRestricted()
+    ? [
+      { label: "查看升级", click: () => showWindow("/studio") },
+      { type: "separator" },
+      { label: "退出 Venus", click: () => app.quit() },
+    ]
+    : [
       { label: "打开工作室", click: () => showWindow("/studio") },
       { label: "查看项目", click: () => showWindow("/projects") },
       { label: "检查更新", click: () => checkForUpdates(true) },
       { type: "separator" },
       { label: "退出 Venus", click: () => app.quit() },
-    ])
-  );
+    ];
+  tray.setContextMenu(Menu.buildFromTemplate(items));
+}
+
+async function refreshDesktopCapabilities() {
+  createTray();
+  if (!runtime.canUseProjectFeatures()) {
+    badgePoller?.stop();
+    badgePoller = null;
+    if (app.dock && typeof app.dock.setBadge === "function") app.dock.setBadge("");
+    if (updateCheckTimer !== null) clearTimeout(updateCheckTimer);
+    updateCheckTimer = null;
+    return false;
+  }
+  if (!badgePoller) {
+    badgePoller = createBadgePoller({
+      client: backendClient,
+      dock: app.dock,
+      platform: process.platform,
+      isAllowed: () => runtime.canUseProjectFeatures(),
+    });
+  }
+  await badgePoller.start();
+  if (updateCheckTimer === null) {
+    updateCheckTimer = setTimeout(() => {
+      updateCheckTimer = null;
+      void checkForUpdates(false);
+    }, 5000);
+  }
+  return true;
+}
+
+function refreshStartupState() {
+  if (!backendClient || !runtime.canStart()) return Promise.resolve(false);
+  if (startupRefresh) return startupRefresh;
+  startupRefresh = backendClient.checkReady()
+    .then(async (snapshot) => {
+      runtime.setStartup(snapshot);
+      await refreshDesktopCapabilities();
+      return true;
+    })
+    .catch(() => false)
+    .finally(() => {
+      startupRefresh = null;
+    });
+  return startupRefresh;
 }
 
 async function shutdownBackend() {
@@ -398,6 +472,8 @@ async function prepareForQuit() {
   if (!runtime.beginQuit()) return false;
   badgePoller?.stop();
   badgePoller = null;
+  if (updateCheckTimer !== null) clearTimeout(updateCheckTimer);
+  updateCheckTimer = null;
   tray?.destroy();
   tray = null;
   await shutdownBackend();
@@ -423,10 +499,11 @@ if (!app.requestSingleInstanceLock()) {
         getWindow: () => mainWindow,
       });
       folderSelection = createFolderSelection({ dialog, runtime, getWindow: () => mainWindow });
-      migrationActions = createMigrationActions({ client: backendClient, runtime });
+      migrationActions = createMigrationActions({ client: backendClient, shell, runtime, appHome });
       startBackend(backendPort);
       const startup = await backendClient.waitUntilReady({ isAlive: () => Boolean(backendProcess) });
       if (!startup?.entry?.mode) throw new Error("后台启动状态无效");
+      runtime.setStartup(startup);
       await session.defaultSession.cookies.set({
         url: `http://127.0.0.1:${backendPort}`,
         name: "lc_token",
@@ -435,11 +512,8 @@ if (!app.requestSingleInstanceLock()) {
         httpOnly: true,
       });
       createApplicationMenu();
-      createTray();
-      badgePoller = createBadgePoller({ client: backendClient, dock: app.dock, platform: process.platform });
-      await badgePoller.start();
+      await refreshDesktopCapabilities();
       showWindow("/studio");
-      setTimeout(() => checkForUpdates(false), 5000);
     } catch (error) {
       dialog.showErrorBox("Venus", `启动失败：${error.message}`);
       runtime.beginQuit();
@@ -457,7 +531,7 @@ if (!app.requestSingleInstanceLock()) {
   app.on("activate", () => {
     if (backendPort && runtime.canStart()) {
       showWindow();
-      void badgePoller?.activate();
+      void refreshStartupState();
     }
   });
 

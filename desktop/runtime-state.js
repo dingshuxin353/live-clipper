@@ -1,3 +1,4 @@
+const nodeFs = require("fs");
 const path = require("path");
 
 function formatBadgeCount(value) {
@@ -12,6 +13,7 @@ function createBadgePoller({
   intervalMs = 15000,
   setIntervalFn = setInterval,
   clearIntervalFn = clearInterval,
+  isAllowed = () => true,
 }) {
   let timer = null;
   let stopped = true;
@@ -19,7 +21,7 @@ function createBadgePoller({
   const supported = platform === "darwin" && dock && typeof dock.setBadge === "function";
 
   const refresh = async () => {
-    if (!supported || stopped) return false;
+    if (!supported || stopped || !isAllowed()) return false;
     if (inFlight) return inFlight;
     inFlight = (async () => {
       try {
@@ -62,6 +64,29 @@ function requireDesktopId(value, label) {
     throw new Error(`${label}无效`);
   }
   return value;
+}
+
+function resolveTrustedAppHome(value, fs = nodeFs) {
+  if (typeof value !== "string" || !value.trim() || !path.isAbsolute(value)) {
+    throw new Error("应用数据目录必须是绝对路径");
+  }
+  let existing = path.resolve(value);
+  const missing = [];
+  while (!fs.existsSync(existing)) {
+    const parent = path.dirname(existing);
+    if (parent === existing) throw new Error("应用数据目录无法解析");
+    missing.unshift(path.basename(existing));
+    existing = parent;
+  }
+  const canonical = fs.realpathSync(existing);
+  return path.join(canonical, ...missing);
+}
+
+function electronRuntimeHome(appHome) {
+  if (typeof appHome !== "string" || !path.isAbsolute(appHome)) {
+    throw new Error("应用数据目录必须是绝对路径");
+  }
+  return path.join(path.dirname(appHome), `${path.basename(appHome)}-electron-runtime`);
 }
 
 function requireResolvedPath(response) {
@@ -118,7 +143,59 @@ function createOutputActions({ client, shell, runtime }) {
   };
 }
 
-function createMigrationActions({ client, runtime }) {
+function sameDirectoryIdentity(first, second) {
+  return first.dev === second.dev
+    && first.ino === second.ino
+    && first.mode === second.mode
+    && first.isDirectory()
+    && second.isDirectory();
+}
+
+function requireStableDirectory(fs, target) {
+  const value = fs.lstatSync(target);
+  if (value.isSymbolicLink() || !value.isDirectory()) {
+    throw new Error("invalid directory");
+  }
+  return value;
+}
+
+function validateMigrationBackupGrant({ response, migrationId, appHome, fs = nodeFs }) {
+  const value = response?.grant;
+  if (
+    response?.ok !== true
+    || value?.grant_version !== 1
+    || value?.kind !== "migration_backup_reveal"
+    || value?.migration_id !== migrationId
+    || typeof value?.backup_path !== "string"
+    || !path.isAbsolute(value.backup_path)
+    || typeof appHome !== "string"
+    || !path.isAbsolute(appHome)
+  ) {
+    throw new Error("invalid grant");
+  }
+  const trustedHome = path.resolve(appHome);
+  const approvedRoot = path.join(trustedHome, "work", "migration-backups");
+  const expectedTarget = path.join(approvedRoot, migrationId);
+  if (value.backup_path !== expectedTarget || path.resolve(value.backup_path) !== expectedTarget) {
+    throw new Error("invalid target");
+  }
+
+  const rootBefore = requireStableDirectory(fs, approvedRoot);
+  const targetBefore = requireStableDirectory(fs, expectedTarget);
+  const realRoot = fs.realpathSync(approvedRoot);
+  const realTarget = fs.realpathSync(expectedTarget);
+  if (realTarget !== path.join(realRoot, migrationId)) {
+    throw new Error("invalid real target");
+  }
+  const rootAfter = requireStableDirectory(fs, approvedRoot);
+  const targetAfter = requireStableDirectory(fs, expectedTarget);
+  if (!sameDirectoryIdentity(rootBefore, rootAfter) || !sameDirectoryIdentity(targetBefore, targetAfter)) {
+    throw new Error("directory changed");
+  }
+  return realTarget;
+}
+
+function createMigrationActions({ client, shell, runtime, appHome, fs = nodeFs }) {
   const inFlight = new Map();
   return {
     showBackup(migrationId) {
@@ -130,16 +207,20 @@ function createMigrationActions({ client, runtime }) {
       return reuseInFlight(inFlight, id, async () => {
         let result;
         try {
-          result = await client.showMigrationBackup(id);
+          result = await client.getMigrationBackupGrant(id);
         } catch (_error) {
           throw new Error("无法在 Finder 中显示迁移备份，请稍后重试");
         }
-        if (
-          result?.ok !== true
-          || result?.action !== "reveal_backup"
-          || result?.migration_id !== id
-        ) {
+        let target;
+        try {
+          target = validateMigrationBackupGrant({ response: result, migrationId: id, appHome, fs });
+        } catch (_error) {
           throw new Error("迁移备份定位结果无效");
+        }
+        try {
+          shell.showItemInFolder(target);
+        } catch (_error) {
+          throw new Error("无法在 Finder 中显示迁移备份，请稍后重试");
         }
         return { ok: true };
       });
@@ -239,6 +320,7 @@ function writeClipboardText(clipboard, runtime, value) {
 
 function createRuntimeState() {
   let quitting = false;
+  let restricted = true;
   return {
     beginQuit() {
       if (quitting) return false;
@@ -246,7 +328,15 @@ function createRuntimeState() {
       return true;
     },
     canStart: () => !quitting,
+    canUseProjectFeatures: () => !quitting && !restricted,
     isQuitting: () => quitting,
+    isRestricted: () => restricted,
+    setStartup(snapshot) {
+      const entry = snapshot?.entry;
+      restricted = entry?.mode !== "workbench"
+        || entry?.reason_code === "migration_completed_unacknowledged";
+      return restricted;
+    },
   };
 }
 
@@ -275,8 +365,11 @@ module.exports = {
   createMigrationActions,
   createOutputActions,
   createRuntimeState,
+  electronRuntimeHome,
   formatBadgeCount,
   isInternalAppUrl,
   requireDesktopId,
+  resolveTrustedAppHome,
+  validateMigrationBackupGrant,
   writeClipboardText,
 };
