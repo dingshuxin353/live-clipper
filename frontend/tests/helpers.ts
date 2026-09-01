@@ -105,6 +105,48 @@ export const WORKBENCH_ONBOARDING = {
     project_name: "直播录像精选",
     output_directory: "/output",
   },
+  migration: null,
+};
+
+export const MIGRATION_PLAN = {
+  plan_version: 3,
+  source_fingerprint: "f".repeat(64),
+  plan_hash: "a".repeat(64),
+  project: { name: "默认项目", source_directory: "/recordings", output_directory: "/outputs", trigger_mode: "manual", schedule_mode: null, daily_time: null, interval_minutes: null, timezone: "Asia/Tokyo" },
+  resources: {
+    asr: { label: "语音识别", model: "whisper-small", credential_present: true, status: "ready" },
+    ai: { label: "AI 服务", model: "deepseek", credential_present: true, status: "ready" },
+  },
+  discovery: { legacy_weekly_detected: false, default_trigger_mode: "manual", existing_recordings_scanned: false },
+  history: {
+    counts: { importable: 2, compatibility: 1, quarantined: 1, safe_result: 1 },
+    entries: [
+      { display_identity: "历史记录 1", category: "importable", reason_code: null, reason_label: "可安全导入", safe_result: true },
+      { display_identity: "历史记录 2", category: "compatibility", reason_code: null, reason_label: "需要在新版本中继续处理", safe_result: false },
+      { display_identity: "历史记录 3", category: "quarantined", reason_code: "state_unrecognized", reason_label: "旧状态无法识别，已隔离", safe_result: false },
+      { display_identity: "历史记录 4", category: "importable", reason_code: null, reason_label: "可安全导入", safe_result: false },
+    ],
+    quarantine_reason_codes: ["state_unrecognized"],
+  },
+  backup: { target_display: "migration-backups", source_bytes: 1024, required_bytes: 67109888, available_bytes: 536870912, space_status: "ready" },
+  readiness: { source_status: "ready", output_status: "ready", resource_problems: [], can_start: true },
+  required_choices: [], warnings: [],
+  choices: { project_name: "默认项目", source_directory: "/recordings", output_directory: "/outputs", trigger_mode: "manual", schedule_mode: null, daily_time: null, interval_minutes: null },
+};
+
+export const MIGRATION_SNAPSHOT = {
+  ok: true,
+  entry: "review",
+  source: { detected: true, checked_at: "2026-09-01T00:00:00Z", display_summary: { metadata_file_count: 3, history_count: 4 } },
+  plan: MIGRATION_PLAN,
+  session: null,
+  report: null,
+};
+
+export const MIGRATION_STARTUP = {
+  ...WORKBENCH_ONBOARDING,
+  entry: { mode: "migration_required", onboarding: null, reason_code: "legacy_data_detected", evidence_codes: ["legacy_metadata"] },
+  migration: { entry: "review", session: null, report: null },
 };
 
 export function jsonResponse(body: unknown, status = 200) {
@@ -118,6 +160,9 @@ export function installFetchMock(overrides: Record<string, unknown> = {}) {
   const calls: Array<[string, RequestInit | undefined]> = [];
   const base: Record<string, unknown> = {
     "/api/onboarding": WORKBENCH_ONBOARDING,
+    "/api/migration": MIGRATION_SNAPSHOT,
+    "/api/migration/inspect": { ok: true, source: MIGRATION_SNAPSHOT.source, plan: MIGRATION_PLAN },
+    "/api/migration/validate": { ok: true, plan: MIGRATION_PLAN },
     "/api/service": {
       ok: true,
       running: false,

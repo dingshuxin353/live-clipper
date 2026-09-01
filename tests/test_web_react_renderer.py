@@ -124,8 +124,22 @@ def test_production_build_is_flat_nonempty_and_secret_free():
         b"/api/onboarding/skip",
         b"onboardingSkipDialog",
         b"showEnter",
+        "Venus 没有初始化或修改这些数据。请等待迁移工具准备完成后再继续。".encode(),
     ]:
         assert forbidden not in combined
+
+    for required in [
+        "检查现有内容，准备安全升级".encode(),
+        "确认升级方案".encode(),
+        "请保持 Venus 运行".encode(),
+        "在 Finder 中显示备份".encode(),
+        b"/api/migration/inspect",
+        b"/api/migration/validate",
+        b"/api/migration/execute",
+        b"/api/migration/retry",
+        b"/api/migration/acknowledge",
+    ]:
+        assert required in combined
 
 
 def test_legacy_renderer_runtime_is_absent():

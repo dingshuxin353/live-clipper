@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import { App } from "../src/App";
-import { PROJECT, RUN, WORKBENCH_ONBOARDING, installFetchMock, jsonResponse } from "./helpers";
+import { MIGRATION_STARTUP, PROJECT, RUN, WORKBENCH_ONBOARDING, installFetchMock, jsonResponse } from "./helpers";
 
 function route(path: string) { window.history.replaceState({}, "", path); }
 
@@ -41,12 +41,16 @@ describe("Venus 1.0 core workbench", () => {
     expect(await screen.findByText("暂时无法确认数据状态")).toBeVisible(); expect(screen.queryByRole("navigation", { name: "主导航" })).not.toBeInTheDocument();
   });
 
-  it.each([
-    ["migration_required", "检测到现有数据"],
-    ["diagnostic_required", "数据状态需要检查"],
-  ])("renders the %s safety boundary without onboarding or project creation", async (mode, title) => {
-    installFetchMock({ "/api/onboarding": { ...WORKBENCH_ONBOARDING, entry: { mode, onboarding: null, reason_code: "safe-123", evidence_codes: ["existing"] } } }); render(<App />);
-    expect(await screen.findByText(title)).toBeVisible(); expect(screen.getByText("问题编号：safe-123")).toBeVisible();
+  it("opens the migration flow without rendering the workbench", async () => {
+    installFetchMock({ "/api/onboarding": MIGRATION_STARTUP }); render(<App />);
+    expect(await screen.findByRole("dialog", { name: "检查现有内容，准备安全升级" })).toBeVisible();
+    expect(screen.queryByRole("navigation", { name: "主导航" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /新建项目/ })).not.toBeInTheDocument();
+  });
+
+  it("renders the diagnostic safety boundary without onboarding or project creation", async () => {
+    installFetchMock({ "/api/onboarding": { ...WORKBENCH_ONBOARDING, entry: { mode: "diagnostic_required", onboarding: null, reason_code: "safe-123", evidence_codes: ["existing"] } } }); render(<App />);
+    expect(await screen.findByText("数据状态需要检查")).toBeVisible(); expect(screen.getByText("问题编号：safe-123")).toBeVisible();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument(); expect(screen.queryByRole("button", { name: /新建项目/ })).not.toBeInTheDocument();
   });
 
