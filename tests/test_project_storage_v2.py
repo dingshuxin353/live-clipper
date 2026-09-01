@@ -115,6 +115,7 @@ def test_fresh_database_includes_schema_v2_result_tables_and_indexes(tmp_path):
         (1,),
         (2,),
         (3,),
+        (4,),
     ]
     tables = {
         row[0]
@@ -197,13 +198,13 @@ def test_v1_upgrade_fault_rolls_back_every_schema_change(tmp_path):
 def test_newer_database_is_rejected_without_creating_business_tables(tmp_path):
     connection = sqlite3.connect(tmp_path / "venus.sqlite3")
     connection.execute("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, name TEXT, applied_at TEXT)")
-    connection.execute("INSERT INTO schema_migrations VALUES (4, 'future', '2026-08-26T00:00:00Z')")
+    connection.execute("INSERT INTO schema_migrations VALUES (5, 'future', '2026-08-26T00:00:00Z')")
     connection.commit()
     connection.close()
     with pytest.raises(RuntimeError, match="newer"):
         connect_database(tmp_path)
     check = sqlite3.connect(tmp_path / "venus.sqlite3")
-    assert check.execute("SELECT version FROM schema_migrations").fetchall() == [(4,)]
+    assert check.execute("SELECT version FROM schema_migrations").fetchall() == [(5,)]
     assert check.execute("SELECT 1 FROM sqlite_master WHERE name = 'projects'").fetchone() is None
 
 

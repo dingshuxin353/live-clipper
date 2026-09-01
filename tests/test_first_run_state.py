@@ -4,7 +4,13 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from live_clipper.first_run_state import FirstRunSession, FirstRunStateError, StartupDetection, decide_startup
+from live_clipper.first_run_state import (
+    FirstRunSession,
+    FirstRunStateError,
+    MigrationStartupSession,
+    StartupDetection,
+    decide_startup,
+)
 from live_clipper.project_domain import default_project_config
 from live_clipper.project_result_domain import RequestConflictError, RevisionConflictError
 from live_clipper.project_service import open_project_repository
@@ -192,3 +198,110 @@ def test_startup_decision_table(detection, session_state, first_project_id, exis
     decision = decide_startup(detection, session=session, existing_project_ids=existing_ids)
     assert decision.entry == entry
     assert decision.onboarding == onboarding
+
+
+def _migration_startup(
+    state: str,
+    *,
+    project_id: str | None = None,
+    backup_status: str = "pending",
+    has_report: bool = False,
+    completed_at: str | None = None,
+    acknowledged_at: str | None = None,
+) -> MigrationStartupSession:
+    return MigrationStartupSession(
+        migration_id="migration-1",
+        state=state,
+        revision=2,
+        project_id=project_id,
+        backup_status=backup_status,
+        has_report=has_report,
+        completed_at=completed_at,
+        acknowledged_at=acknowledged_at,
+    )
+
+
+@pytest.mark.parametrize("state", ["backing_up", "migrating", "validating"])
+def test_active_migration_routes_to_resume(state):
+    detection = StartupDetection(True, ("legacy_metadata",), True, "legacy", 0, False, 1)
+    decision = decide_startup(
+        detection,
+        session=None,
+        existing_project_ids=(),
+        migration_sessions=(_migration_startup(state, backup_status="completed"),),
+    )
+    assert decision == decision.__class__("migration_required", reason_code="migration_resume")
+
+
+def test_failed_migration_routes_to_retry():
+    detection = StartupDetection(True, ("legacy_metadata",), True, "legacy", 0, False, 1)
+    decision = decide_startup(
+        detection,
+        session=None,
+        existing_project_ids=(),
+        migration_sessions=(_migration_startup("failed_rolled_back", backup_status="failed"),),
+    )
+    assert decision == decision.__class__("migration_required", reason_code="migration_retry")
+
+
+def test_completed_migration_routes_to_completion_gate_until_acknowledged():
+    detection = StartupDetection(False, (), True, "projects", 1, False, 1)
+    migration = _migration_startup(
+        "completed_attention",
+        project_id="project-1",
+        backup_status="completed",
+        has_report=True,
+        completed_at="2026-09-01T00:00:00Z",
+    )
+    decision = decide_startup(
+        detection, session=None, existing_project_ids=("project-1",), migration_sessions=(migration,)
+    )
+    assert decision.entry == "workbench" and decision.reason_code == "migration_completed_unacknowledged"
+    acknowledged = MigrationStartupSession(
+        **{**migration.__dict__, "acknowledged_at": "2026-09-01T00:01:00Z"}
+    )
+    assert decide_startup(
+        detection, session=None, existing_project_ids=("project-1",), migration_sessions=(acknowledged,)
+    ).reason_code is None
+
+
+@pytest.mark.parametrize(
+    ("detection", "migrations", "existing_ids", "reason"),
+    [
+        (
+            StartupDetection(True, ("legacy_metadata",), True, "projects", 1, False, 1),
+            (_migration_startup("migrating", backup_status="completed"),),
+            ("project-1",),
+            "migration_state_conflict",
+        ),
+        (
+            StartupDetection(True, ("legacy_metadata",), True, "legacy", 0, False, 1),
+            (_migration_startup("validating", backup_status="pending"),),
+            (),
+            "migration_state_conflict",
+        ),
+        (
+            StartupDetection(False, (), True, "projects", 1, False, 1),
+            (_migration_startup("completed_ready", project_id="project-1", backup_status="completed"),),
+            ("project-1",),
+            "migration_completion_conflict",
+        ),
+        (
+            StartupDetection(True, ("legacy_metadata",), True, "legacy", 0, False, 2),
+            (_migration_startup("backing_up"), _migration_startup("backing_up")),
+            (),
+            "multiple_migration_sessions",
+        ),
+        (
+            StartupDetection(True, ("legacy_metadata",), True, "legacy", 0, False, 1),
+            (_migration_startup("unknown"),),
+            (),
+            "unknown_migration_state",
+        ),
+    ],
+)
+def test_migration_startup_conflicts_fail_closed(detection, migrations, existing_ids, reason):
+    decision = decide_startup(
+        detection, session=None, existing_project_ids=existing_ids, migration_sessions=migrations
+    )
+    assert decision.entry == "diagnostic_required" and decision.reason_code == reason
