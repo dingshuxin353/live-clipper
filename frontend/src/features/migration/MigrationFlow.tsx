@@ -46,7 +46,7 @@ export function MigrationFlow({ startup, onEnter }: Props) {
   const [loading, setLoading] = useState(startup.entry !== "completed"); const [busy, setBusy] = useState(""); const [error, setError] = useState("");
   const [errorId, setErrorId] = useState<string | null>(null); const [fields, setFields] = useState<Record<string, string>>({}); const [connection, setConnection] = useState("");
   const [historyLimit, setHistoryLimit] = useState(20); const dialogRef = useRef<HTMLElement>(null); const titleRef = useRef<HTMLHeadingElement>(null);
-  const executeId = useRef(""); const retryId = useRef(""); const acknowledgeId = useRef(""); const loadRevision = useRef(0);
+  const executeId = useRef(""); const retryId = useRef(""); const acknowledgeId = useRef(""); const loadRevision = useRef(0); const entered = useRef(false);
 
   const adopt = useCallback((next: MigrationSnapshot | MigrationStartupSummary) => {
     setSummary({ entry: next.entry, session: next.session, report: next.report });
@@ -56,6 +56,10 @@ export function MigrationFlow({ startup, onEnter }: Props) {
     const revision = ++loadRevision.current; const next = await projectApi.migration(signal);
     if (revision !== loadRevision.current) return next; adopt(next); return next;
   }, [adopt]);
+  const enterProject = useCallback((projectId: string | null | undefined) => {
+    if (!projectId?.trim() || entered.current) return;
+    entered.current = true; loadRevision.current += 1; onEnter(projectId);
+  }, [onEnter]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -65,20 +69,24 @@ export function MigrationFlow({ startup, onEnter }: Props) {
     return () => { loadRevision.current += 1; controller.abort(); };
   }, [refresh]);
 
-  const active = Boolean(summary.session && ACTIVE_STATES.has(summary.session.state));
+  const active = Boolean(summary.session && ACTIVE_STATES.has(summary.session.state)); const confirming = busy === "acknowledge";
   useEffect(() => {
-    if (!active) return;
+    if (!active && !confirming) return;
     let stopped = false; let timer = 0; let inFlight = false; let controller: AbortController | null = null;
     const poll = async () => {
       if (stopped || inFlight) return; inFlight = true; controller = new AbortController();
-      try { await refresh(controller.signal); if (!stopped) setConnection(""); }
+      try {
+        const next = await refresh(controller.signal); const projectId = confirming && next.report?.acknowledged_at ? next.report.project.project_id : null;
+        if (projectId) { stopped = true; enterProject(projectId); return; }
+        if (!stopped) setConnection("");
+      }
       catch (caught) { if (!stopped && !(caught instanceof DOMException && caught.name === "AbortError")) setConnection("暂时无法刷新，正在保留上一次进度"); }
       finally { inFlight = false; controller = null; if (!stopped) timer = window.setTimeout(() => void poll(), document.hidden ? 4000 : 1000); }
     };
     const visible = () => { if (!document.hidden) { if (timer) window.clearTimeout(timer); void poll(); } };
     void poll(); document.addEventListener("visibilitychange", visible);
     return () => { stopped = true; if (timer) window.clearTimeout(timer); controller?.abort(); document.removeEventListener("visibilitychange", visible); };
-  }, [active, refresh]);
+  }, [active, confirming, enterProject, refresh]);
 
   const screen: Screen = summary.entry === "completed" ? "complete" : summary.entry === "failed" ? "failed" : summary.entry === "diagnostic" ? "diagnostic" : summary.entry === "executing" ? "executing" : localScreen;
   const step = screen === "check" ? 0 : screen === "differences" ? 1 : ["confirm", "executing", "failed", "diagnostic"].includes(screen) ? 2 : 3;
@@ -151,9 +159,9 @@ export function MigrationFlow({ startup, onEnter }: Props) {
   async function acknowledge() {
     const session = summary.session; const projectId = summary.report?.project.project_id ?? session?.project_id; if (!session || !projectId || busy) return;
     setBusy("acknowledge"); clearError(); if (!acknowledgeId.current) acknowledgeId.current = requestId("migration-acknowledge");
-    try { const result = await projectApi.migrationAcknowledge(acknowledgeId.current, session.migration_id, session.revision); onEnter(result.project_id); }
+    try { const result = await projectApi.migrationAcknowledge(acknowledgeId.current, session.migration_id, session.revision); enterProject(result.project_id); }
     catch (caught) {
-      if (caught instanceof ApiError && caught.code === "network_error") { const current = await recoverUncertain(); if (current?.report?.acknowledged_at) { onEnter(current.report.project.project_id); return; } setError("确认结果暂时无法读取，请保持当前窗口后重试"); }
+      if (caught instanceof ApiError && caught.code === "network_error") { const current = await recoverUncertain(); if (current?.report?.acknowledged_at) { enterProject(current.report.project.project_id); return; } setError("确认结果暂时无法读取，请保持当前窗口后重试"); }
       else { setError(message(caught, "暂时无法进入项目")); setErrorId(diagnosticId(caught)); }
     } finally { setBusy(""); }
   }
