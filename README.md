@@ -132,7 +132,7 @@ Venus 支持应用内自动更新。你也可以随时到 [GitHub Releases](http
 3. 打开 DMG，把 Venus 拖入“应用程序”。
 4. 启动 Venus，按首次向导完成设置。
 
-正式安装包经过 Apple Developer ID 筗名与公证，并支持应用内自动更新。系统要求是 Apple Silicon Mac 与 macOS 14 或更高版本；当前不承诺 Intel Mac、Windows 或 Linux 客户端。
+正式安装包经过 Apple Developer ID 签名与公证，并支持应用内自动更新。系统要求是 Apple Silicon Mac 与 macOS 14 或更高版本；当前不承诺 Intel Mac、Windows 或 Linux 客户端。
 
 版本变化与历史安装包统一见 [GitHub Releases](https://github.com/dingshuxin353/live-clipper/releases)。
 
