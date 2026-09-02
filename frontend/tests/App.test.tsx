@@ -43,7 +43,7 @@ describe("Venus 1.0 core workbench", () => {
 
   it("opens the migration flow without rendering the workbench", async () => {
     installFetchMock({ "/api/onboarding": MIGRATION_STARTUP }); render(<App />);
-    expect(await screen.findByRole("dialog", { name: "检查现有内容，准备安全升级" })).toBeVisible();
+    expect(await screen.findByRole("dialog", { name: "检查现有内容，准备升级" })).toBeVisible();
     expect(screen.queryByRole("navigation", { name: "主导航" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /新建项目/ })).not.toBeInTheDocument();
   });
@@ -194,7 +194,7 @@ describe("Venus 1.0 core workbench", () => {
     installFetchMock(); route("/settings"); const view = render(<App />);
     expect(await screen.findByRole("heading", { name: "设置" })).toBeVisible();
     expect(screen.getByRole("button", { name: "保存配置" })).toBeVisible();
-    expect(screen.getByLabelText("录播文件夹")).toBeVisible();
+    expect(screen.getByLabelText("录像目录")).toBeVisible();
     view.unmount();
     route("/resources"); render(<App />);
     expect(await screen.findByRole("heading", { name: "资源" })).toBeVisible();

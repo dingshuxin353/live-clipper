@@ -102,9 +102,9 @@ def test_web_static_exposes_v3_console_sections():
         assert f'<Route path="{path}"' in app
     assert '<NavLink to="/clips"' in app
     assert '<NavLink to="/review"' not in app
-    for label in ["资源", "待审", "需要修复资源？"]:
+    for label in ["资源", "待审", "修改处理资源"]:
         assert label in compatibility
-    for label in ["配置体检", "基础设置", "自动化", "高级设置"]:
+    for label in ["配置状态", "基础设置", "自动化", "高级设置"]:
         assert label in settings
     for endpoint in ["/api/config", "/api/service", "/api/asr/models"]:
         assert endpoint in compatibility
@@ -113,7 +113,7 @@ def test_web_static_exposes_v3_console_sections():
 def test_web_static_exposes_v4_config_editor():
     settings = _frontend_source("Settings.tsx")
 
-    for label in ["基础设置", "录播文件夹", "AI 服务地址", "语音识别方式", "启用自动处理引擎", "检查配置", "保存配置", "重启服务"]:
+    for label in ["基础设置", "录像目录", "AI 服务地址", "语音识别方式", "AI 判断完成后自动生成成片", "检查配置", "保存配置", "重启服务"]:
         assert label in settings
     assert "/api/config" in settings
     assert "/api/config/validate" in settings
@@ -131,7 +131,7 @@ def test_web_static_exposes_v5_scheduler_config_section():
     assert "/api/scheduler" in compatibility
     assert "/api/scheduler/jobs" in settings
     assert "编辑高级定时任务" in settings
-    assert "自动化引擎随 App 运行" in settings
+    assert "自动处理随 Venus 运行" in settings
 
 
 def test_advanced_usage_documents_v3_web_console_confirmation_flow():
@@ -175,7 +175,7 @@ def test_web_static_exposes_v6_ai_review_automation_controls():
 
     assert '<Route path="/review"' in app
     assert "待审" in compatibility
-    for label in ["AI 审阅", "让 AI 自动选片（不用人工挑）", "测试 AI 审阅环境", "全自动出片"]:
+    for label in ["AI 审阅", "让 AI 自动选片（不用人工挑）", "启用 AI 自动判断前", "AI 判断完成后自动生成成片"]:
         assert label in settings
     assert "/api/review-automation" in compatibility
     assert 'review_automation.enabled' in settings
@@ -185,7 +185,7 @@ def test_web_static_exposes_v6_ai_review_automation_controls():
 def test_web_static_exposes_v7_layered_config_page():
     html = _frontend_source("Settings.tsx")
 
-    for label in ["配置体检", "基础设置", "自动化", "高级设置"]:
+    for label in ["配置状态", "基础设置", "自动化", "高级设置"]:
         assert label in html
 
     quick_start = html.split('data-config-layer="quick-start"', 1)[1].split('data-config-layer="automation"', 1)[0]
@@ -193,7 +193,7 @@ def test_web_static_exposes_v7_layered_config_page():
         assert advanced_label not in quick_start
 
     automation = html.split('data-config-layer="automation"', 1)[1].split('data-config-layer="advanced"', 1)[0]
-    for label in ["按时间表自动扫描和检查（默认每周日）", "每周录播扫描", "让 AI 自动选片（不用人工挑）", "测试 AI 审阅环境", "全自动出片"]:
+    for label in ["按时间表自动扫描和检查（默认每周日）", "每周录播扫描", "让 AI 自动选片（不用人工挑）", "启用 AI 自动判断前", "使用下方开关和定时任务管理自动处理"]:
         assert label in automation
 
     advanced = html.split('data-config-layer="advanced"', 1)[1]

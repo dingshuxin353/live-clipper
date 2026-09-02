@@ -85,7 +85,7 @@ describe("Venus 1.0 result workbench", () => {
     const description = await screen.findByLabelText("描述"); fireEvent.change(description, { target: { value: "我的草稿" } });
     expect(await screen.findByText(/你的草稿仍保留/)).toBeVisible();
     expect(description).toHaveValue("我的草稿");
-    fireEvent.click(screen.getByRole("button", { name: "查看服务器版本" }));
+    fireEvent.click(screen.getByRole("button", { name: "查看已保存版本" }));
     expect(screen.getByText("服务器新描述")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "立即保存" }));
     await waitFor(() => expect(writes).toBe(2));

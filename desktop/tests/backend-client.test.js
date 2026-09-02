@@ -90,7 +90,7 @@ test("readiness rejects retired, unknown, and internally inconsistent startup DT
       token: "token",
       transport: async () => ({ statusCode: 200, body: JSON.stringify(payload) }),
     });
-    await assert.rejects(client.checkReady(), /启动状态无效/);
+    await assert.rejects(client.checkReady(), /无法读取 Venus 启动状态/);
   }
 });
 
@@ -110,7 +110,7 @@ test("readiness retries transient failures and stops if the backend exits", asyn
 
   await assert.rejects(
     client.waitUntilReady({ isAlive: () => false }),
-    /后台服务在启动期间退出/,
+    /Venus 服务在启动期间停止/,
   );
 });
 

@@ -912,7 +912,7 @@ def render_project_outputs(
                 output.output_id,
                 status="failed",
                 error_code="render_failed",
-                error_summary="目标文件已存在且无法证明属于当前成片",
+                error_summary="目标位置已有同名文件，无法确认是否为当前成片",
             )
             _functional_issue(repository, run, "render_failed", output_id=output.output_id)
             failed.append(output.output_id)

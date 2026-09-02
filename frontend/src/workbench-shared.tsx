@@ -67,12 +67,12 @@ export function StatusPill({ status, label }: { status: ProjectMainStatus | Run[
 export function basename(path: string) { return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path; }
 export function time(value?: string | null) { return value ? formatLocalTime(value) : "—"; }
 export function formatBytes(bytes: number) { return bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`; }
-export function scanMessage(scan: ScanEvent) { if (scan.status === "running") return "正在扫描录像目录"; if (scan.status === "failed") return scan.error_summary ?? "扫描失败"; return `新增 ${scan.created_count ?? 0} · 已存在 ${scan.duplicate_count ?? 0} · 写入中 ${scan.unstable_count ?? 0}`; }
+export function scanMessage(scan: ScanEvent) { if (scan.status === "running") return "正在扫描录像目录"; if (scan.status === "failed") return scan.error_summary ?? "扫描失败"; return `新增 ${scan.created_count ?? 0} · 已处理过 ${scan.duplicate_count ?? 0} · 等待稳定 ${scan.unstable_count ?? 0}`; }
 
 export function PageHeading({ eyebrow, title, description, actions }: { eyebrow?: string; title: string; description: string; actions?: React.ReactNode }) { return <header className="page-heading"><div>{eyebrow && <span className="eyebrow">{eyebrow}</span>}<h1>{title}</h1><p>{description}</p></div>{actions && <div className="actions">{actions}</div>}</header>; }
 export function SectionHeading({ title, subtitle, action }: { title: string; subtitle: string; action?: React.ReactNode }) { return <div className="section-heading"><div><h2>{title}</h2><p>{subtitle}</p></div>{action}</div>; }
 export function Metric({ label, value, tone = "default" }: { label: string; value: number; tone?: string }) { return <div className={`metric tone-${tone}`}><span>{label}</span><strong>{value}</strong></div>; }
-export function LoadingState() { return <div className="empty-state" role="status">正在读取本机工作台数据…</div>; }
+export function LoadingState() { return <div className="empty-state" role="status">正在加载…</div>; }
 export function ErrorState({ message, retry }: { message: string; retry(): void }) { return <div className="error-state" role="alert"><strong>暂时无法读取数据</strong><p>{message}</p><button className="button" onClick={retry}>重试</button></div>; }
 export function RunCard({ run, project }: { run: Run; project?: ProjectSummary }) { return <Link className="run-card" to={`/projects/${run.project_id}/runs/${run.run_id}`}><div><span className="overline">{project?.name ?? "项目"}</span><strong>{run.source_name}</strong><small>{time(run.updated_at)}</small></div><StatusPill status={run.status} label={run.status === "queued" && run.queue_position ? `队列第 ${run.queue_position} 位` : undefined} /></Link>; }
 

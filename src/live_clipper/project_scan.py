@@ -92,7 +92,7 @@ def _candidate_paths(
     if scope == "selected":
         return _selected_paths(root, selected_relative_paths)
     if scope != "new":
-        raise ProjectScanError("validation_failed", "扫描范围只能是 new 或 selected", status=422)
+        raise ProjectScanError("validation_failed", "扫描方式无效，请重新选择", status=422)
     return [path for path in root.rglob("*") if path.is_file() and _contained(path, root)]
 
 
@@ -146,7 +146,7 @@ def scan_project(
     try:
         snapshot = resolve_parameter_snapshot(config, settings)
     except ResourceUnavailableError as exc:
-        raise ProjectScanError("resource_unavailable", f"项目资源不可用：{exc.resource_id}") from exc
+        raise ProjectScanError("resource_unavailable", "项目使用的处理资源不可用，请检查项目设置") from exc
     candidates = _candidate_paths(source_root, scope=scope, selected_relative_paths=selected_relative_paths)
     try:
         scan = repository.create_scan_event(
@@ -332,7 +332,7 @@ def scan_preview(
     if not root.is_dir():
         raise ProjectScanError("source_unavailable", "录像目录不可用", status=422)
     if first_scan_mode not in {"new_only", "recent", "choose_existing"}:
-        raise ProjectScanError("validation_failed", "首次扫描模式无效", status=422)
+        raise ProjectScanError("validation_failed", "首次扫描方式无效，请重新选择", status=422)
     if first_scan_mode == "recent" and lookback_days not in {3, 7, 30}:
         raise ProjectScanError("validation_failed", "最近扫描天数只能是 3、7 或 30", status=422)
     if first_scan_mode != "recent" and lookback_days is not None:

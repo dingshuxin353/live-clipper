@@ -10,7 +10,7 @@ function nodeTransport(options, body) {
     });
     request.on("error", reject);
     request.on("timeout", () => {
-      request.destroy(new Error("后台请求超时"));
+      request.destroy(new Error("Venus 服务响应超时，请稍后重试"));
     });
     if (body) request.write(body);
     request.end();
@@ -33,7 +33,7 @@ function requireOnboardingSnapshot(payload) {
     ? ONBOARDING_MODES.has(onboarding)
     : onboarding === null;
   if (!validMode || !validOnboarding) {
-    throw new Error("后台启动状态无效");
+    throw new Error("无法读取 Venus 启动状态，请重新打开应用");
   }
   return payload;
 }
@@ -57,15 +57,15 @@ class BackendClient {
     try {
       response = await this.transport({ host: this.host, port: this.port, path: apiPath, method, timeout: timeoutMs, headers }, serialized);
     } catch (_error) {
-      throw new Error(`后台请求失败（${apiPath}）`);
+      throw new Error(`Venus 服务请求失败（${apiPath}）`);
     }
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw new Error(`后台请求失败（${apiPath}，HTTP ${response.statusCode}）`);
+      throw new Error(`Venus 服务请求失败（${apiPath}，HTTP ${response.statusCode}）`);
     }
     try {
       return response.body ? JSON.parse(response.body) : {};
     } catch (_error) {
-      throw new Error(`后台响应无法读取（${apiPath}）`);
+      throw new Error(`无法读取 Venus 服务响应（${apiPath}）`);
     }
   }
 
@@ -107,7 +107,7 @@ class BackendClient {
     const started = now();
     let lastError = null;
     while (now() - started <= timeoutMs) {
-      if (!isAlive()) throw new Error("后台服务在启动期间退出");
+      if (!isAlive()) throw new Error("Venus 服务在启动期间停止，请重新打开应用");
       try {
         return await this.checkReady();
       } catch (error) {
@@ -115,7 +115,7 @@ class BackendClient {
       }
       await sleep(pollMs);
     }
-    throw new Error(lastError ? "后台服务启动超时" : "后台服务未就绪");
+    throw new Error(lastError ? "Venus 服务启动超时，请重新打开应用" : "Venus 服务尚未启动，请稍后重试");
   }
 }
 

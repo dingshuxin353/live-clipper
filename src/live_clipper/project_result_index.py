@@ -359,8 +359,8 @@ def build_project_result_index_plan(
                 "output_id": None,
                 "issue_group_key": "legacy-review-evidence",
                 "impact_level": "informational",
-                "title": "历史判断记录不完整",
-                "summary": "已保留入选结果，但无法证明全部未入选判断",
+                "title": "历史 AI 判断记录不完整",
+                "summary": "已保留入选结果，但缺少部分未入选记录",
                 "recovery_capability": "none",
             }
         )
@@ -591,7 +591,7 @@ def apply_project_result_index_plan(
                 summary=item["summary"],
                 impact="历史结果信息不完整",
                 preserved_content="已验证的历史对象保持不变",
-                next_step="后续可显式检查或恢复",
+                next_step="打开问题详情，检查或恢复历史结果",
                 recovery_capability=item["recovery_capability"],
                 occurred_at=timestamp,
                 issue_id=legacy_id(

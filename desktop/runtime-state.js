@@ -199,28 +199,28 @@ function createMigrationActions({ client, shell, runtime, appHome, fs = nodeFs }
   const inFlight = new Map();
   return {
     showBackup(migrationId) {
-      const id = requireDesktopId(migrationId, "migration_id");
+      const id = requireDesktopId(migrationId, "升级记录");
       if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(id)) {
-        throw new Error("migration_id无效");
+        throw new Error("升级记录无效，请重新打开升级页面");
       }
-      if (!runtime.canStart()) throw new Error("应用正在退出，暂时无法显示迁移备份");
+      if (!runtime.canStart()) throw new Error("Venus 正在退出，暂时无法显示备份");
       return reuseInFlight(inFlight, id, async () => {
         let result;
         try {
           result = await client.getMigrationBackupGrant(id);
         } catch (_error) {
-          throw new Error("无法在 Finder 中显示迁移备份，请稍后重试");
+          throw new Error("无法在 Finder 中显示备份，请稍后重试");
         }
         let target;
         try {
           target = validateMigrationBackupGrant({ response: result, migrationId: id, appHome, fs });
         } catch (_error) {
-          throw new Error("迁移备份定位结果无效");
+          throw new Error("无法确认备份位置，请重新打开升级页面");
         }
         try {
           shell.showItemInFolder(target);
         } catch (_error) {
-          throw new Error("无法在 Finder 中显示迁移备份，请稍后重试");
+          throw new Error("无法在 Finder 中显示备份，请稍后重试");
         }
         return { ok: true };
       });
@@ -291,13 +291,13 @@ function createFileSelections({ client, dialog, runtime, getWindow = () => null,
       try {
         grant = await client.registerFileSelection(id, kind, result.filePaths[0]);
       } catch (_error) {
-        throw new Error("文件选择授权失败，请稍后重试");
+        throw new Error("文件选择已失效，请重新选择");
       }
       if (typeof grant?.selection_token !== "string" || !grant.selection_token) {
-        throw new Error("文件选择授权无法创建");
+        throw new Error("无法保存所选文件，请重新选择");
       }
       const ttl = Number(grant.expires_in_seconds);
-      if (!Number.isFinite(ttl) || ttl <= 0) throw new Error("文件选择授权无效");
+      if (!Number.isFinite(ttl) || ttl <= 0) throw new Error("文件选择已失效，请重新选择");
       return {
         selectionToken: grant.selection_token,
         expiresAt: new Date(now() + ttl * 1000).toISOString(),

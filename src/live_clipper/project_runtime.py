@@ -67,7 +67,7 @@ def dispatch_queued(
                     event_type="failed",
                     detail={"reason": source_error},
                     error_code=source_error,
-                    error_summary="原始录像已变化，重新处理已安全停止",
+                    error_summary="原始录像已变化，重新处理已停止",
                 )
                 failed.append(run.run_id)
                 continue
@@ -140,7 +140,7 @@ def recover_processing(
                 event_type="recovery_failed",
                 detail={"reason": "stage_not_recoverable"},
                 error_code="recovery_failed",
-                error_summary="重启后无法安全恢复当前处理阶段",
+                error_summary="重启后无法恢复当前处理阶段",
             )
             failed.append(run.run_id)
     return RuntimeReport(recovered_run_ids=tuple(recovered), failed_run_ids=tuple(failed))
