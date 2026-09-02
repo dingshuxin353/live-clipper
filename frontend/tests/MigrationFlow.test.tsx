@@ -99,6 +99,31 @@ describe("M2 migration flow", () => {
     } finally { Object.defineProperty(document, "hidden", { configurable: true, value: originalHidden }); }
   });
 
+  it("enters the persisted project when the acknowledge response stays pending", async () => {
+    const session = { ...SESSION, state: "completed_attention", stage: null, revision: 8, backup_status: "completed", project_id: "project-1" };
+    let acknowledged = false; let migrationLoads = 0; const originalHidden = document.hidden;
+    Object.defineProperty(document, "hidden", { configurable: true, value: false });
+    try {
+      const calls = installFetchMock({
+        "/api/onboarding": () => jsonResponse({ ...WORKBENCH_ONBOARDING, migration: { entry: "completed", session, report: { ...REPORT, acknowledged_at: acknowledged ? "2026-09-01T00:02:00Z" : null } } }),
+        "/api/migration": () => { migrationLoads += 1; return jsonResponse({ ...MIGRATION_SNAPSHOT, entry: "completed", plan: null, session, report: { ...REPORT, acknowledged_at: acknowledged ? "2026-09-01T00:02:00Z" : null } }); },
+        "/api/migration/acknowledge": () => new Promise<Response>(() => {}),
+      });
+      render(<App />); const dialog = await screen.findByRole("dialog");
+      fireEvent.click(within(dialog).getByRole("button", { name: "查看并修复" }));
+      await waitFor(() => expect(migrationLoads).toBeGreaterThanOrEqual(2));
+      expect(window.location.pathname).toBe("/studio");
+      expect(calls.filter(([path]) => path === "/api/migration/acknowledge")).toHaveLength(1);
+
+      acknowledged = true;
+      await waitFor(() => { fireEvent(document, new Event("visibilitychange")); expect(migrationLoads).toBeGreaterThanOrEqual(3); });
+      await screen.findByRole("heading", { name: PROJECT.name });
+      const loadsAfterEnter = migrationLoads; fireEvent(document, new Event("visibilitychange")); await Promise.resolve();
+      expect(window.location.pathname).toBe("/projects/project-1");
+      expect(migrationLoads).toBe(loadsAfterEnter);
+    } finally { Object.defineProperty(document, "hidden", { configurable: true, value: originalHidden }); }
+  });
+
   it.each([
     ["completed_ready", "进入项目", 0],
     ["completed_attention", "查看并修复", 2],
