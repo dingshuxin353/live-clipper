@@ -48,11 +48,11 @@ export function ResourcesPage() {
   if (state.loading && !state.data) return <LoadingState />;
   if (!state.data) return <ErrorState message={state.error} retry={() => void state.refresh()} />;
   return <section className="page resources-page">
-    <PageHeading eyebrow="项目处理依赖" title="资源" description="只读查看项目可引用的 ASR、内容分析与 AI 审阅资源；资源配置仍在全局设置中维护。" actions={<button className="button" onClick={() => void state.refresh()}>刷新</button>} />
+    <PageHeading eyebrow="处理资源" title="资源" description="查看项目使用的语音识别和 AI 服务。修改配置请前往设置。" actions={<button className="button" onClick={() => void state.refresh()}>刷新</button>} />
     {state.error && <p className="stale-warning" role="alert">刷新失败：{state.error}。正在保留上次成功数据。</p>}
     <div className="resource-list">{state.data.resources.map((resource) => <article className="resource-row" key={resource.resource_id}><div><span className="overline">{resource.resource_type === "asr" ? "语音识别" : resource.resource_type === "analysis" ? "内容分析与 AI 审阅" : "项目资源"}</span><strong>{resource.display_name}</strong><small>{resource.problem || resource.version || resource.resource_id}</small></div><StatusPill status={resource.ready ? "idle" : "blocked"} label={resource.ready ? "已就绪" : "不可用"} /></article>)}</div>
-    {!state.data.resources.length && <div className="empty-state"><strong>没有可用资源档案</strong><p>请先在全局设置中完成资源配置。</p></div>}
-    <div className="compatibility-action"><div><strong>需要修复资源？</strong><p>资源页不提供新增、编辑或删除；请沿用全局设置中的配置与模型管理能力。</p></div><Link className="button" to="/settings">前往设置</Link></div>
+    {!state.data.resources.length && <div className="empty-state"><strong>还没有处理资源</strong><p>请先在设置中完成资源配置。</p></div>}
+    <div className="compatibility-action"><div><strong>修改处理资源</strong><p>请前往设置修改服务或管理模型。</p></div><Link className="button" to="/settings">前往设置</Link></div>
   </section>;
 }
 
@@ -60,5 +60,5 @@ export function ReviewCompatibilityPage() {
   const state = usePolling((signal) => projectApi.legacyAwaitingReview(signal), 15000, "legacy-review");
   if (state.loading && !state.data) return <LoadingState />;
   if (!state.data) return <ErrorState message={state.error} retry={() => void state.refresh()} />;
-  return <section className="page"><PageHeading eyebrow="旧版兼容入口" title="待审" description="这里只保留升级前已经进入人工待审阶段的记录；新流程由 AI 自动审阅，结果进入成片工作台。" /><div className="attention-list">{state.data.runs.map((item) => <Link className="attention-item warning" to={item.detail_url} key={item.run.run_id}><span>旧</span><div><strong>{item.run.source_name}</strong><p>{item.project.name} · 旧版待审记录</p></div><b>›</b></Link>)}{!state.data.count && <div className="empty-state"><strong>没有旧版待审记录</strong><p>新的生产结果请从“成片”查看。</p><Link className="button" to="/clips">前往成片</Link></div>}</div></section>;
+  return <section className="page"><PageHeading eyebrow="旧版待审记录" title="待审" description="查看升级前已进入人工待审的记录。其他剪辑结果请前往成片页。" /><div className="attention-list">{state.data.runs.map((item) => <Link className="attention-item warning" to={item.detail_url} key={item.run.run_id}><span>旧</span><div><strong>{item.run.source_name}</strong><p>{item.project.name} · 旧版待审记录</p></div><b>›</b></Link>)}{!state.data.count && <div className="empty-state"><strong>没有旧版待审记录</strong><p>其他剪辑结果请从“成片”查看。</p><Link className="button" to="/clips">前往成片</Link></div>}</div></section>;
 }

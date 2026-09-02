@@ -64,9 +64,9 @@ test("migration backup action rejects unsafe ids, invalid grants, backend failur
   });
 
   for (const invalid of ["", "../migration", "migration/child", " migration-1"]) {
-    assert.throws(() => actions.showBackup(invalid), /migration_id/);
+    assert.throws(() => actions.showBackup(invalid), /升级记录无效/);
   }
-  await assert.rejects(actions.showBackup("migration-1"), /结果无效/);
+  await assert.rejects(actions.showBackup("migration-1"), /无法确认备份位置/);
 
   const failed = createMigrationActions({
     client: { getMigrationBackupGrant: async () => { throw new Error("secret backend detail"); } },
@@ -98,14 +98,14 @@ test("migration backup grant rejects outside paths and target or root symlinks w
     appHome,
   });
 
-  await assert.rejects(makeActions(grant(migrationId, outside)).showBackup(migrationId), /结果无效/);
+  await assert.rejects(makeActions(grant(migrationId, outside)).showBackup(migrationId), /无法确认备份位置/);
   fs.rmSync(backupPath, { recursive: true });
   fs.symlinkSync(outside, backupPath, "dir");
-  await assert.rejects(makeActions(grant(migrationId, backupPath)).showBackup(migrationId), /结果无效/);
+  await assert.rejects(makeActions(grant(migrationId, backupPath)).showBackup(migrationId), /无法确认备份位置/);
   fs.rmSync(backupRoot, { recursive: true });
   fs.mkdirSync(path.join(outside, migrationId));
   fs.symlinkSync(outside, backupRoot, "dir");
-  await assert.rejects(makeActions(grant(migrationId, backupPath)).showBackup(migrationId), /结果无效/);
+  await assert.rejects(makeActions(grant(migrationId, backupPath)).showBackup(migrationId), /无法确认备份位置/);
   assert.equal(shellCalls, 0);
 });
 
@@ -150,7 +150,7 @@ test("migration backup grant detects target replacement during validation", asyn
     appHome,
     fs: guardedFs,
   });
-  await assert.rejects(actions.showBackup(migrationId), /结果无效/);
+  await assert.rejects(actions.showBackup(migrationId), /无法确认备份位置/);
 });
 
 test("preload and main expose only the migration-id backup capability", () => {

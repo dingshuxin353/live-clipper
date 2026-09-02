@@ -65,7 +65,7 @@ def _require_fields(body: Mapping[str, Any], allowed: set[str], required: set[st
     missing = required - set(body)
     if unknown or missing:
         fields = {key: "unsupported" for key in sorted(unknown)} | {key: "required" for key in sorted(missing)}
-        raise MigrationError("validation_failed", "迁移请求字段不符合合同", status=422, fields=fields)
+        raise MigrationError("validation_failed", "升级信息不完整，请重新打开升级页面", status=422, fields=fields)
 
 
 def _safe_failure_summary(_error: BaseException) -> str:
@@ -276,11 +276,11 @@ class MigrationCoordinator:
             raise MigrationError("migration_source_changed", "旧版数据已变化，请重新检查", status=409)
         baseline = build_migration_plan(inspection, backup_root=self.backup_root)
         if body["plan_hash"] != baseline.plan_hash:
-            raise MigrationError("migration_plan_changed", "迁移计划已变化，请重新检查", status=409)
+            raise MigrationError("migration_plan_changed", "升级内容已变化，请重新检查", status=409)
         try:
             plan = build_migration_plan(inspection, choices=body["choices"], backup_root=self.backup_root)
         except ValueError as exc:
-            raise MigrationError("validation_failed", "迁移选择不符合合同", status=422) from exc
+            raise MigrationError("validation_failed", "升级选项无效，请重新选择", status=422) from exc
         return 200, {"ok": True, "plan": self._plan_payload(plan)}
 
     def _validated_execution(self, body: Mapping[str, Any]) -> tuple[LegacyInspection, MigrationPlan, str]:
@@ -291,7 +291,7 @@ class MigrationCoordinator:
         )
         request_id = str(body["request_id"])
         if not _PUBLIC_ID.fullmatch(request_id):
-            raise MigrationError("validation_failed", "request_id 不符合合同", status=422)
+            raise MigrationError("validation_failed", "操作信息无效，请重新打开升级页面", status=422)
         if not isinstance(body["choices"], Mapping):
             raise MigrationError("validation_failed", "choices 必须是对象", status=422)
         inspection = self._inspection()
@@ -300,9 +300,9 @@ class MigrationCoordinator:
         try:
             plan = build_migration_plan(inspection, choices=body["choices"], backup_root=self.backup_root)
         except ValueError as exc:
-            raise MigrationError("validation_failed", "迁移选择不符合合同", status=422) from exc
+            raise MigrationError("validation_failed", "升级选项无效，请重新选择", status=422) from exc
         if body["plan_hash"] != plan.plan_hash:
-            raise MigrationError("migration_plan_changed", "迁移计划已变化，请重新校验", status=409)
+            raise MigrationError("migration_plan_changed", "升级内容已变化，请重新检查", status=409)
         if plan.backup_summary["space_status"] != "ready":
             raise MigrationError("migration_space_insufficient", "迁移备份空间不足", status=409)
         if plan.requires_user_choices:
@@ -336,7 +336,7 @@ class MigrationCoordinator:
                 if same:
                     return 202, {"ok": True, "session": self._session_payload(durable)}
                 if existing is not None:
-                    raise MigrationError("request_id_conflict", "同一 request_id 的请求内容不一致", status=409)
+                    raise MigrationError("request_id_conflict", "这次操作与上次提交的内容不一致，请重新检查升级内容", status=409)
                 raise MigrationError("migration_conflict", "已有不同的迁移事实", status=409)
         inspection, plan, request_id = self._validated_execution(body)
         canonical = {
@@ -351,7 +351,7 @@ class MigrationCoordinator:
             try:
                 existing_request = repository.get_migration_session_by_request(request_id)
                 if existing_request is not None and existing_request.request_hash != request_hash:
-                    raise MigrationError("request_id_conflict", "同一 request_id 的请求内容不一致", status=409)
+                    raise MigrationError("request_id_conflict", "这次操作与上次提交的内容不一致，请重新检查升级内容", status=409)
                 try:
                     session = repository.create_migration_session(
                         migration_id=migration_id,
@@ -365,7 +365,7 @@ class MigrationCoordinator:
                         backup_path=str(self.backup_root / migration_id),
                     )
                 except RequestConflictError as exc:
-                    raise MigrationError("request_id_conflict", "同一 request_id 的请求内容不一致", status=409) from exc
+                    raise MigrationError("request_id_conflict", "这次操作与上次提交的内容不一致，请重新检查升级内容", status=409) from exc
                 except MigrationStateError as exc:
                     raise MigrationError("migration_conflict", "已有其他迁移事实", status=409) from exc
             finally:
@@ -381,10 +381,10 @@ class MigrationCoordinator:
         request_id = str(body["request_id"])
         migration_id = str(body["migration_id"])
         if not _PUBLIC_ID.fullmatch(request_id) or not _PUBLIC_ID.fullmatch(migration_id):
-            raise MigrationError("validation_failed", "迁移身份不符合合同", status=422)
+            raise MigrationError("validation_failed", "升级记录无效，请重新打开升级页面", status=422)
         expected_revision = body["expected_revision"]
         if not isinstance(expected_revision, int) or isinstance(expected_revision, bool):
-            raise MigrationError("validation_failed", "expected_revision 不符合合同", status=422)
+            raise MigrationError("validation_failed", "升级状态无效，请重新打开升级页面", status=422)
         with self._lock, ProjectRepository(self.service_dir) as repository:
             current = repository.get_migration_session(migration_id)
             if current is None:
@@ -420,7 +420,7 @@ class MigrationCoordinator:
                     failure_summary="迁移条件已变化，请重新检查",
                     backup_status=current.backup_status,
                 )
-                raise MigrationError("migration_plan_changed", "迁移计划已变化", status=409)
+                raise MigrationError("migration_plan_changed", "升级内容已变化，请重新检查", status=409)
             key = (str(self.service_dir), migration_id)
             self._futures[key] = self._executor.submit(self._run, inspection, plan, migration_id)
         return 202, {"ok": True, "session": self._session_payload(retrying)}
@@ -447,7 +447,7 @@ class MigrationCoordinator:
     def _directory_identity(path: Path) -> tuple[int, int]:
         details = path.lstat()
         if stat.S_ISLNK(details.st_mode):
-            raise MigrationError("diagnostic_required", "迁移备份记录不安全", status=409)
+            raise MigrationError("diagnostic_required", "备份记录无法验证，升级已停止", status=409)
         if not stat.S_ISDIR(details.st_mode):
             raise MigrationError("backup_not_available", "迁移备份不可用", status=404)
         return details.st_dev, details.st_ino
@@ -457,7 +457,7 @@ class MigrationCoordinator:
         expected = approved_root / migration_id
         recorded = Path(recorded_path)
         if not recorded.is_absolute() or recorded != expected:
-            raise MigrationError("diagnostic_required", "迁移备份记录不安全", status=409)
+            raise MigrationError("diagnostic_required", "备份记录无法验证，升级已停止", status=409)
         try:
             root_identity = self._directory_identity(approved_root)
             target_identity = self._directory_identity(expected)
@@ -466,18 +466,18 @@ class MigrationCoordinator:
         except FileNotFoundError as exc:
             raise MigrationError("backup_not_available", "迁移备份不可用", status=404) from exc
         except OSError as exc:
-            raise MigrationError("diagnostic_required", "迁移备份记录不安全", status=409) from exc
+            raise MigrationError("diagnostic_required", "备份记录无法验证，升级已停止", status=409) from exc
         if real_target != real_root / migration_id or real_target.parent != real_root:
-            raise MigrationError("diagnostic_required", "迁移备份记录不安全", status=409)
+            raise MigrationError("diagnostic_required", "备份记录无法验证，升级已停止", status=409)
         try:
             if self._directory_identity(approved_root) != root_identity:
-                raise MigrationError("diagnostic_required", "迁移备份记录不安全", status=409)
+                raise MigrationError("diagnostic_required", "备份记录无法验证，升级已停止", status=409)
             if self._directory_identity(expected) != target_identity:
-                raise MigrationError("diagnostic_required", "迁移备份记录不安全", status=409)
+                raise MigrationError("diagnostic_required", "备份记录无法验证，升级已停止", status=409)
         except FileNotFoundError as exc:
             raise MigrationError("backup_not_available", "迁移备份不可用", status=404) from exc
         except OSError as exc:
-            raise MigrationError("diagnostic_required", "迁移备份记录不安全", status=409) from exc
+            raise MigrationError("diagnostic_required", "备份记录无法验证，升级已停止", status=409) from exc
         return real_target
 
     def backup_grant(self, migration_id: str, *, auth_context: str) -> tuple[int, dict[str, Any]]:

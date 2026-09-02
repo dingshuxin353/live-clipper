@@ -51,8 +51,8 @@ describe("Astryx settings migration", () => {
     renderSettings();
 
     for (const message of [
-      "配好三件事就能用",
-      "自动化引擎随 App 运行",
+      "常用设置",
+      "自动处理随 Venus 运行",
       "高级定时任务",
       "修改 Web host/port 后，需要手动重启 Web 控制台命令本身才会生效。",
       "Web access token：未配置",
@@ -77,8 +77,8 @@ describe("Astryx settings migration", () => {
     expect(cards.map((card) => card.getAttribute("aria-label"))).toEqual([
       "录播源：未配置",
       "本地项目库：正常",
-      "LLM：未配置",
-      "ASR：未配置",
+      "AI 服务：未配置",
+      "语音识别：未配置",
       "服务：未运行",
       "定时任务：已启用",
       "AI 审阅：未启用",

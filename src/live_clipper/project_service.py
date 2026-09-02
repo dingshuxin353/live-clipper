@@ -207,7 +207,7 @@ class ProjectManager:
             "output_profile": "current_renderer",
             "naming_policy": "system_safe",
         }:
-            fatal.append(ValidationIssue("processing", "unsupported_processing_policy", "当前版本只支持固定的 AI 审阅与渲染策略"))
+            fatal.append(ValidationIssue("processing", "unsupported_processing_policy", "处理方式无效，请重新打开项目设置"))
         if normalized["output"]["original_media_policy"] != "never_delete":
             fatal.append(ValidationIssue("output.original_media_policy", "unsafe_media_policy", "原始录像必须永不自动删除"))
         if normalized["output"]["final_media_policy"] != "keep":
@@ -241,7 +241,7 @@ class ProjectManager:
             resource_id = str(refs[field])
             resource = resources.get(resource_id)
             if resource is None or not resource.ready:
-                blockers.append(ValidationIssue(f"resources.{field}", "resource_unavailable", f"资源不可用：{resource_id}"))
+                blockers.append(ValidationIssue(f"resources.{field}", "resource_unavailable", "项目使用的处理资源不可用，请检查项目设置"))
         for project in self.repository.list_projects():
             if project.project_id == exclude_project_id:
                 continue
@@ -282,7 +282,7 @@ class ProjectManager:
         if existing is None:
             return None
         if existing["request_hash"] != _request_hash(payload):
-            raise ProjectError("request_id_conflict", "同一 request_id 的请求内容不一致", status=409)
+            raise ProjectError("request_id_conflict", "这次操作与上次提交的内容不一致，请重新打开页面后再试", status=409)
         project = self.repository.get_project(str(existing["object_id"]))
         if project is None:
             raise ProjectError("data_integrity_error", "幂等记录指向不存在的项目", status=500)
@@ -424,7 +424,7 @@ class ProjectManager:
                 current = self.repository.get_project(project_id)
                 raise ProjectError(
                     "revision_conflict",
-                    "项目配置版本已变化",
+                    "项目设置已在其他位置更新，请重新打开后再保存",
                     status=409,
                     fields={"current_revision": str(current.current_config_revision if current else "")},
                 ) from exc

@@ -34,9 +34,9 @@ def test_v8_console_contract_moved_to_react_dom_tests():
     assert 'params.get("dialog") === "new-project"' in app
     assert "<NewProjectDialog notify={setNotice} />" in app
     assert '<div className="toast" role="status">' in app
-    for label in ["需要你处理", "正在发生", "项目运行状态", "最近结果"]:
+    for label in ["需要你处理", "正在处理", "项目状态", "最近结果"]:
         assert label in studio
-    for label in ["资源", "待审", "需要修复资源？"]:
+    for label in ["资源", "待审", "修改处理资源"]:
         assert label in compatibility
     for label in ["新建项目", "基本信息", "扫描设置", "处理与输出", "确认配置"]:
         assert label in dialogs

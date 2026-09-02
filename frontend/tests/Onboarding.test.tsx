@@ -144,7 +144,7 @@ describe("five-step first-run setup", () => {
     fireEvent.click(screen.getAllByRole("button", { name: "选择…" })[0]);
     expect(await screen.findByDisplayValue("interviews")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "检查配置" }));
-    expect(await screen.findByText("所有必要配置均已就绪。")).toBeVisible();
+    expect(await screen.findByText("项目可以创建并启用。")).toBeVisible();
     expect(screen.getByText("目录可读 · 发现 2 个已有录像，默认不会自动处理")).toBeVisible();
     const sequence = calls.filter(([path]) => ["/api/onboarding/session", "/api/onboarding/project/validate"].includes(path));
     expect(sequence.map(([path]) => path)).toEqual(["/api/onboarding/session", "/api/onboarding/project/validate"]);
@@ -158,9 +158,9 @@ describe("five-step first-run setup", () => {
       "/api/onboarding/project/validate": { ok: true, valid: true, fatal: [], blockers: [], warnings: [], checks: { asr: { ready: true }, ai: { ready: true }, source_directory: { status: "ready" }, output_directory: { status: "ready" } }, summary: { recording_source: "/source", discovery: "new_only", processing: "ai_auto", output: "/output" }, existing_video_count: 0, normalized_config: {} },
       "/api/onboarding/finish": () => { attempts += 1; return attempts === 1 ? Promise.reject(new Error("offline")) : jsonResponse({ ok: true, session: { ...session, state: "completed", current_step: "complete", first_project: { project_id: "p1", name: "项目", activation_state: "active", readiness_state: "ready" } } }, 201); },
     }, session);
-    renderOnboarding(onboardingSnapshot(session)); fireEvent.click(screen.getByRole("button", { name: "检查配置" })); await screen.findByText("所有必要配置均已就绪。");
+    renderOnboarding(onboardingSnapshot(session)); fireEvent.click(screen.getByRole("button", { name: "检查配置" })); await screen.findByText("项目可以创建并启用。");
     fireEvent.click(screen.getByRole("button", { name: "完成设置并创建项目" })); expect(await screen.findByText("创建结果暂时无法确认，请保持当前窗口后重试")).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "完成设置并创建项目" })); await screen.findByText("项目 已经可以工作");
+    fireEvent.click(screen.getByRole("button", { name: "完成设置并创建项目" })); await screen.findByText("项目 已创建并启用");
     const ids = calls.filter(([path]) => path === "/api/onboarding/finish").map(([, options]) => JSON.parse(String(options?.body)).request_id); expect(new Set(ids).size).toBe(1);
     const patches = calls.filter(([path]) => path === "/api/onboarding/session").map(([, options]) => JSON.parse(String(options?.body)));
     expect(patches.every((body) => body.current_step === "project")).toBe(true);
@@ -173,7 +173,7 @@ describe("five-step first-run setup", () => {
       "/api/onboarding/project/validate": { ok: true, valid: true, fatal: [], blockers: [], warnings: [], checks: { asr: { ready: true }, ai: { ready: true }, source_directory: { status: "ready" }, output_directory: { status: "ready" } }, summary: { recording_source: "/source", discovery: "new_only", processing: "ai_auto", output: "/output" }, existing_video_count: 0, normalized_config: {} },
       "/api/onboarding/finish": () => jsonResponse({ ok: true, session: pending }, 202),
     }, session);
-    renderOnboarding(onboardingSnapshot(session)); fireEvent.click(screen.getByRole("button", { name: "检查配置" })); await screen.findByText("所有必要配置均已就绪。");
+    renderOnboarding(onboardingSnapshot(session)); fireEvent.click(screen.getByRole("button", { name: "检查配置" })); await screen.findByText("项目可以创建并启用。");
     fireEvent.click(screen.getByRole("button", { name: "完成设置并创建项目" })); expect(await screen.findByText("项目已保存，本机服务尚未启动")).toBeVisible();
     expect(calls.filter(([path]) => path === "/api/onboarding/session").every(([, options]) => JSON.parse(String(options?.body)).current_step === "project")).toBe(true);
   });

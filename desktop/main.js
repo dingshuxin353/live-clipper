@@ -89,7 +89,7 @@ function startBackend(port) {
   backendProcess.on("exit", (code) => {
     backendProcess = null;
     if (!runtime.isQuitting()) {
-      dialog.showErrorBox("Venus", `后台服务意外退出（代码 ${code ?? "未知"}）。请重新打开应用。`);
+      dialog.showErrorBox("Venus", `Venus 服务已停止（代码 ${code ?? "未知"}）。请重新打开应用。`);
       runtime.beginQuit();
       badgePoller?.stop();
       exitingNow = true;
@@ -125,27 +125,27 @@ ipcMain.handle("lc:write-clipboard-text", (event, value) => {
 });
 ipcMain.handle("lc:open-output", (event, outputId) => {
   assertTrustedRenderer(event);
-  if (!outputActions) throw new Error("后台服务尚未就绪");
+  if (!outputActions) throw new Error("Venus 服务尚未启动，请稍后重试");
   return outputActions.openOutput(outputId);
 });
 ipcMain.handle("lc:reveal-output", (event, outputId) => {
   assertTrustedRenderer(event);
-  if (!outputActions) throw new Error("后台服务尚未就绪");
+  if (!outputActions) throw new Error("Venus 服务尚未启动，请稍后重试");
   return outputActions.revealOutput(outputId);
 });
 ipcMain.handle("lc:select-issue-source", (event, issueId) => {
   assertTrustedRenderer(event);
-  if (!fileSelections) throw new Error("后台服务尚未就绪");
+  if (!fileSelections) throw new Error("Venus 服务尚未启动，请稍后重试");
   return fileSelections.selectIssueSource(issueId);
 });
 ipcMain.handle("lc:select-recovery-output", (event, issueId) => {
   assertTrustedRenderer(event);
-  if (!fileSelections) throw new Error("后台服务尚未就绪");
+  if (!fileSelections) throw new Error("Venus 服务尚未启动，请稍后重试");
   return fileSelections.selectRecoveryOutput(issueId);
 });
 ipcMain.handle("lc:show-migration-backup", (event, migrationId) => {
   assertTrustedRenderer(event);
-  if (!migrationActions) throw new Error("后台服务尚未就绪");
+  if (!migrationActions) throw new Error("Venus 服务尚未启动，请稍后重试");
   return migrationActions.showBackup(migrationId);
 });
 ipcMain.handle("lc:quit-app", (event) => {
@@ -372,7 +372,7 @@ function createTray() {
   }
   const items = runtime.isRestricted()
     ? [
-      { label: "查看升级", click: () => showWindow("/studio") },
+      { label: "继续升级", click: () => showWindow("/studio") },
       { type: "separator" },
       { label: "退出 Venus", click: () => app.quit() },
     ]
@@ -502,7 +502,7 @@ if (!app.requestSingleInstanceLock()) {
       migrationActions = createMigrationActions({ client: backendClient, shell, runtime, appHome });
       startBackend(backendPort);
       const startup = await backendClient.waitUntilReady({ isAlive: () => Boolean(backendProcess) });
-      if (!startup?.entry?.mode) throw new Error("后台启动状态无效");
+      if (!startup?.entry?.mode) throw new Error("无法读取 Venus 启动状态，请重新打开应用");
       runtime.setStartup(startup);
       await session.defaultSession.cookies.set({
         url: `http://127.0.0.1:${backendPort}`,

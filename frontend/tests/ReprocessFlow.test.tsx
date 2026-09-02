@@ -68,7 +68,7 @@ describe("Spec T reprocess and version flow", () => {
     const dialog = await screen.findByRole("dialog", { name: "重新处理这条录像" });
     expect(dialog).toHaveTextContent("将使用当前设置创建新的处理记录。原有记录和成片不会被修改。");
     for (const phase of ["读取录像", "语音转写", "内容分析", "结果仲裁", "AI 审阅", "渲染成片"]) expect(dialog).toHaveTextContent(phase);
-    expect(dialog).toHaveTextContent("不会修改原文件；处理时会在受控工作目录创建临时工作副本。");
+    expect(dialog).toHaveTextContent("处理时会复制一份录像，不会修改原文件。");
     const start = within(dialog).getByRole("button", { name: "开始重新处理" });
     fireEvent.click(start);
     await waitFor(() => expect(calls.filter(([path]) => path === "/api/runs/run-origin/reprocess")).toHaveLength(1));
@@ -122,7 +122,7 @@ describe("Spec T reprocess and version flow", () => {
     render(<App />); fireEvent.click(await screen.findByRole("button", { name: "重新处理" }));
     const dialog = await screen.findByRole("dialog", { name: "重新处理这条录像" });
     fireEvent.click(within(dialog).getByRole("button", { name: "开始重新处理" }));
-    expect(await within(dialog).findByText(/结果暂时无法确认/)).toBeVisible();
+    expect(await within(dialog).findByText(/暂时无法确认是否已创建/)).toBeVisible();
     fireEvent.click(within(dialog).getByRole("button", { name: "开始重新处理" }));
     await waitFor(() => expect(window.location.pathname).toBe("/projects/project-1/runs/run-recovered"));
     const ids = calls.filter(([path]) => path === "/api/runs/run-origin/reprocess").map(([, options]) => JSON.parse(String(options?.body)).request_id);

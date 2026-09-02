@@ -93,13 +93,13 @@ def _safe_session_from_repository(repository: ProjectRepository, session: FirstR
 def _request_id(value: Any) -> str:
     normalized = str(value or "").strip()
     if not normalized or len(normalized) > 128:
-        raise OnboardingError("validation_failed", "request_id 必须是非空短字符串", status=422, fields={"request_id": "无效"})
+        raise OnboardingError("validation_failed", "操作信息无效，请重新打开首次设置", status=422, fields={"request_id": "无效"})
     return normalized
 
 
 def _revision(value: Any) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        raise OnboardingError("validation_failed", "expected_revision 必须是正整数", status=422, fields={"expected_revision": "无效"})
+        raise OnboardingError("validation_failed", "首次设置状态无效，请重新打开", status=422, fields={"expected_revision": "无效"})
     return value
 
 
@@ -277,12 +277,12 @@ class OnboardingCoordinator:
                     or project is None
                 ):
                     repo.close()
-                    raise OnboardingError("diagnostic_required", "首次设置的项目结果无法安全恢复", status=409)
+                    raise OnboardingError("diagnostic_required", "无法恢复首次设置创建的项目，请记录问题编号并联系支持", status=409)
                 try:
                     session = repo.bind_first_project(session.revision, session.project_request_id, project.project_id)
                 except (FirstRunStateError, ValueError) as exc:
                     repo.close()
-                    raise OnboardingError("diagnostic_required", "首次设置的项目结果无法安全恢复", status=409) from exc
+                    raise OnboardingError("diagnostic_required", "无法恢复首次设置创建的项目，请记录问题编号并联系支持", status=409) from exc
         session_payload = _safe_session_from_repository(repo, session) if repo is not None else _safe_session(session)
         if repo is not None:
             repo.close()
@@ -346,7 +346,7 @@ class OnboardingCoordinator:
             if existing is not None:
                 if existing["request_hash"] != _request_hash(replay_payload):
                     repo.close()
-                    raise OnboardingError("request_id_conflict", "同一 request_id 的请求内容不一致", status=409)
+                    raise OnboardingError("request_id_conflict", "这次操作与上次提交的内容不一致，请重新打开首次设置", status=409)
                 # A durable idempotency record is authoritative for a replay;
                 # the caller will project the current session without applying
                 # the state transition a second time.
@@ -477,7 +477,7 @@ class OnboardingCoordinator:
         existing = repo.get_idempotency_key("onboarding.resource", request_id)
         if existing:
             if existing["request_hash"] != _request_hash(payload):
-                raise OnboardingError("request_id_conflict", "同一 request_id 的请求内容不一致", status=409)
+                raise OnboardingError("request_id_conflict", "这次操作与上次提交的内容不一致，请重新打开首次设置", status=409)
             return True
         return False
 
@@ -733,7 +733,7 @@ class OnboardingCoordinator:
                 effective_expected = current.revision
             elif current is not None and current.state == "activation_pending":
                 probe.close()
-                raise OnboardingError("request_id_conflict", "重试必须复用首次设置请求身份", status=409)
+                raise OnboardingError("request_id_conflict", "无法继续上次操作，请重新打开首次设置后再试", status=409)
             probe.close()
         repo = self._require_writable_session(expected_revision=effective_expected, allowed_states={"in_progress", "activation_pending"})
         created_output: Path | None = None
@@ -742,7 +742,7 @@ class OnboardingCoordinator:
             assert session is not None
             if session.state == "activation_pending":
                 if session.project_request_id != request_id:
-                    raise OnboardingError("request_id_conflict", "重试必须复用首次设置请求身份", status=409)
+                    raise OnboardingError("request_id_conflict", "无法继续上次操作，请重新打开首次设置后再试", status=409)
                 return self._retry({"request_id": request_id, "expected_revision": session.revision}, repository=repo)
             settings = self.settings()
             self._revalidate_resources(settings, draft=session.draft)
@@ -792,7 +792,7 @@ class OnboardingCoordinator:
         except RequestConflictError as exc:
             if created_output is not None and created_output.is_dir() and not any(created_output.iterdir()):
                 created_output.rmdir()
-            raise OnboardingError("request_id_conflict", "同一 request_id 的请求内容不一致", status=409) from exc
+            raise OnboardingError("request_id_conflict", "这次操作与上次提交的内容不一致，请重新打开首次设置", status=409) from exc
         except FirstRunStateError as exc:
             if created_output is not None and created_output.is_dir() and not any(created_output.iterdir()):
                 created_output.rmdir()
@@ -836,7 +836,7 @@ class OnboardingCoordinator:
             if session.state != "activation_pending" or session.first_project_id is None:
                 raise OnboardingError("onboarding_state_conflict", "当前没有可重试的首项目服务", status=409)
             if session.project_request_id != request_id:
-                raise OnboardingError("request_id_conflict", "重试必须复用首次设置请求身份", status=409)
+                raise OnboardingError("request_id_conflict", "无法继续上次操作，请重新打开首次设置后再试", status=409)
             # Reusing the reserved project request is safe across a lost
             # response: the durable session revision is the current CAS point.
             effective_expected = session.revision if expected <= session.revision else expected

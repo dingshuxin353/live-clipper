@@ -18,7 +18,7 @@ const REPORT = {
 
 function route(path = "/studio") { window.history.replaceState({}, "", path); }
 async function inspectFlow() {
-  const dialog = await screen.findByRole("dialog", { name: "检查现有内容，准备安全升级" });
+  const dialog = await screen.findByRole("dialog", { name: "检查现有内容，准备升级" });
   fireEvent.click(within(dialog).getByRole("button", { name: "检查升级内容" }));
   await within(dialog).findByRole("heading", { name: "升级内容已准备好" });
   return dialog;
@@ -26,7 +26,7 @@ async function inspectFlow() {
 async function reachConfirmation() {
   const dialog = await inspectFlow();
   fireEvent.click(within(dialog).getByRole("button", { name: "继续确认" }));
-  await within(dialog).findByRole("heading", { name: "确认升级方案" });
+  await within(dialog).findByRole("heading", { name: "确认升级内容" });
   return dialog;
 }
 
@@ -100,7 +100,7 @@ describe("M2 migration flow", () => {
   });
 
   it.each([
-    ["completed_ready", "进入默认项目", 0],
+    ["completed_ready", "进入项目", 0],
     ["completed_attention", "查看并修复", 2],
   ])("restores %s before workbench, reveals backup by id, acknowledges, and navigates", async (state, action, blockerCount) => {
     const session = { ...SESSION, state, stage: null, revision: 8, backup_status: "completed", project_id: "project-1" };
@@ -128,10 +128,10 @@ describe("M2 migration flow", () => {
     installFetchMock({
       "/api/onboarding": { ...MIGRATION_STARTUP, migration: { entry: "failed", session: failed, report: null } },
       "/api/migration": { ...MIGRATION_SNAPSHOT, entry: "failed", plan: null, session: failed },
-      "/api/migration/retry": () => jsonResponse({ ok: false, error: { code: "migration_plan_changed", message: "迁移计划已变化", fields: {} } }, 409),
+      "/api/migration/retry": () => jsonResponse({ ok: false, error: { code: "migration_plan_changed", message: "升级内容已变化，请重新检查", fields: {} } }, 409),
     });
     render(<App />); expect(await screen.findByText("没有修改")).toBeVisible(); expect(screen.getByText("已完成并可复用")).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "重新尝试升级" })); expect(await screen.findByRole("heading", { name: "检查现有内容，准备安全升级" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "重新尝试升级" })); expect(await screen.findByRole("heading", { name: "检查现有内容，准备升级" })).toBeVisible();
     expect(screen.getByText(/请修复后重新检查/)).toBeVisible();
   });
 

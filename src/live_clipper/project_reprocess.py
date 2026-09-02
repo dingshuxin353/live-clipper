@@ -189,7 +189,7 @@ class ProjectReprocess:
         existing = self.repository.get_idempotency_key(f"run_reprocess:{run_id}", request_id)
         if existing is not None:
             if existing["request_hash"] != request_hash:
-                raise ProjectError("request_id_conflict", "同一 request_id 不能用于不同操作")
+                raise ProjectError("request_id_conflict", "这次操作与上次提交的内容不一致，请重新打开页面后再试")
             run = self._run(str(existing["object_id"]))
             return {"ok": True, "run": self._version_identity(run), "created": False, "reuse_reason": "idempotent_request"}, 200
         preflight = self.preflight(run_id)
@@ -207,7 +207,7 @@ class ProjectReprocess:
                 source_path=str(preflight["source"]["path"]),
             )
         except RequestConflictError as exc:
-            raise ProjectError("request_id_conflict", "同一 request_id 不能用于不同操作") from exc
+            raise ProjectError("request_id_conflict", "这次操作与上次提交的内容不一致，请重新打开页面后再试") from exc
         except RevisionConflictError as exc:
             raise ProjectError("preflight_changed", "预检状态已变化，请重新确认", status=409) from exc
         return {

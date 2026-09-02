@@ -447,8 +447,8 @@ export function Settings(props: SettingsProps) {
     return [
       ["录播源", sourceDir ? "已配置" : "未配置", sourceDir || "未填写录播源目录", sourceDir ? "success" : "warning"],
       ["本地项目库", inputDir && outputRoot ? "正常" : "待配置", `输入：${inputDir || "-"} · 输出：${outputRoot || "-"}`, inputDir && outputRoot ? "success" : "warning"],
-      ["LLM", envStatus[llmKey] ? "已配置" : "未配置", envStatus[llmKey] ? "密钥已安全保存在本机" : "请在设置页粘贴 AI API key", envStatus[llmKey] ? "success" : "warning"],
-      ["ASR", envStatus[asrKey] ? "已配置" : "未配置", `${config.asr?.backend || "-"} · ${asrKey || "未填写 API key 环境变量名"}`, envStatus[asrKey] ? "success" : "warning"],
+      ["AI 服务", envStatus[llmKey] ? "已配置" : "未配置", envStatus[llmKey] ? "密钥已保存在本机" : "请在设置页粘贴 AI API Key", envStatus[llmKey] ? "success" : "warning"],
+      ["语音识别", envStatus[asrKey] ? "已配置" : "未配置", `${config.asr?.backend || "-"} · ${asrKey || "未填写 API key 环境变量名"}`, envStatus[asrKey] ? "success" : "warning"],
       ["服务", service?.running ? "运行中" : "未运行", service?.service?.pid ? `PID ${service.service.pid}` : "可在自动化页启动", service?.running ? "success" : "neutral"],
       ["定时任务", scheduler?.scheduler?.enabled ? "已启用" : "未启用", scheduler?.scheduler?.next_due_at ? `下次：${formatLocalTime(scheduler.scheduler.next_due_at)}` : "暂无下一次任务", scheduler?.scheduler?.enabled ? "success" : "neutral"],
       ["AI 审阅", review.enabled ? (reviewAvailable ? "可用" : "不可用") : "未启用", `${review.mode || "-"} · ${review.provider || "-"}`, review.enabled ? (reviewAvailable ? "success" : "warning") : "neutral"],
@@ -461,14 +461,14 @@ export function Settings(props: SettingsProps) {
         <div>
           <h2>设置</h2>
           <p className="muted technical-value" id="configMeta" title={String(configPayload?.config_path || "live-clipper.toml")}>
-            {String(configPayload?.config_path || "live-clipper.toml")} · {configPayload?.exists ? "已存在" : "尚未创建"} · API Key 明文只保存在本机{dirty ? " · 有未保存改动" : ""}
+            {String(configPayload?.config_path || "live-clipper.toml")} · {configPayload?.exists ? "已存在" : "尚未创建"} · API Key 只保存在本机{dirty ? " · 有未保存改动" : ""}
           </p>
         </div>
         <div className="button-row">
           {returnTo && <Button label="取消并返回原记录" onClick={() => navigate(returnTo, { replace: true })} />}
           <Button id="validateConfigBtn" label="检查配置" onClick={() => void validate()} />
           <Button id="saveConfigBtn" label={returnTo ? "保存并返回原记录" : "保存配置"} onClick={() => void save()} variant="primary" />
-          <Button id="reloadConfigBtn" label="重载配置" onClick={() => { setDirty(false); void reloadConfig(); notify("已重新读取配置文件"); }} />
+          <Button id="reloadConfigBtn" label="重新读取" onClick={() => { setDirty(false); void reloadConfig(); notify("已重新读取配置文件"); }} />
           <Button id="resetConfigBtn" label="恢复默认" onClick={() => setResetOpen(true)} />
           <Button id="restartServiceBtn" label="重启服务" onClick={() => void action("/api/config/restart-service", "服务已重启。")} />
         </div>
@@ -484,7 +484,7 @@ export function Settings(props: SettingsProps) {
       )}
       <form id="configForm" className="config-form" onSubmit={(event) => event.preventDefault()}>
         <section className="settings-group health-layer" data-config-layer="health">
-          <div className="layer-heading"><div><h3>配置体检</h3><p className="muted">先看状态，再决定要改哪里。</p></div></div>
+          <div className="layer-heading"><div><h3>配置状态</h3><p className="muted">查看当前配置是否可用。</p></div></div>
           <div id="configHealth" className="health-grid">
             {healthCards.map(([label, status, detail, tone]) => (
               <Card
@@ -506,15 +506,15 @@ export function Settings(props: SettingsProps) {
         <fieldset className="settings-group" data-config-layer="quick-start">
           <legend>基础设置</legend>
           <div className="full-span settings-guidance">
-            <Text as="div" color="secondary" type="supporting">配好三件事就能用</Text>
-            <Text as="div" color="secondary" type="supporting">录像在哪、成片放哪、AI 用哪家。API key 可在本页直接粘贴，明文只保存在本机。</Text>
+            <Text as="div" color="secondary" type="supporting">常用设置</Text>
+            <Text as="div" color="secondary" type="supporting">设置录像目录、成片位置和 AI 服务。API Key 只保存在本机。</Text>
           </div>
           <SettingsSection title="文件位置">
-            {control("recording_source_default.source_dir", "录播文件夹", { placeholder: "例如 /Volumes/your-nas/recordings", description: "直播录像所在的文件夹（支持 NAS）。出现新录像会自动切片；留空则不自动扫描。" })}
-            {control("paths.workspace_root", "任务工作区位置", { description: "每次处理都会在这里建立独立目录，并把本地录像副本和转写、切片产物放在一起。" })}
+            {control("recording_source_default.source_dir", "录像目录", { placeholder: "例如 /Volumes/your-nas/recordings", description: "旧版扫描使用的录像目录（支持 NAS）。项目使用各自的录像目录。" })}
+            {control("paths.workspace_root", "临时文件位置", { description: "处理录像时，副本和中间文件会保存在这里。" })}
           </SettingsSection>
           <SettingsSection title="AI 服务">
-            {control("llm.api_base", "AI 服务地址", { description: "负责选片、写标题的 AI（OpenAI 兼容接口，如 DeepSeek / 通义 / Kimi）。" })}
+            {control("llm.api_base", "AI 服务地址", { description: "用于内容分析、AI 判断和发布物料（OpenAI 兼容接口）。" })}
             {control("llm.model", "AI 模型名")}
             <Field className="full-span" inputID="settingsLlmApiKey" label="AI API key" width="100%">
               <div className="secret-input-row">
@@ -523,7 +523,7 @@ export function Settings(props: SettingsProps) {
                   className="onboarding-secret-input"
                   id="settingsLlmApiKey"
                   onChange={(event) => { llmKeyRef.current = event.currentTarget.value; }}
-                  placeholder={envStatus[String(draft.llm?.api_key_env || "CHEAP_MODEL_API_KEY")] ? "已配置；粘贴新密钥可替换" : "直接粘贴，安全保存在本机"}
+                  placeholder={envStatus[String(draft.llm?.api_key_env || "CHEAP_MODEL_API_KEY")] ? "已配置；粘贴新密钥可替换" : "直接粘贴，只保存在本机"}
                   ref={llmKeyInputRef}
                   spellCheck={false}
                   type="password"
@@ -542,23 +542,23 @@ export function Settings(props: SettingsProps) {
             </div>
           </SettingsSection>
           <SettingsSection title="出片">
-            {control("service.auto_render_after_selection", "AI 选完片后自动生成成片", { type: "checkbox" })}
+            {control("service.auto_render_after_selection", "AI 判断完成后自动生成成片", { type: "checkbox" })}
           </SettingsSection>
         </fieldset>
 
         <fieldset className="settings-group scheduler-fieldset" data-config-layer="automation">
           <legend>自动化</legend>
           <div className="full-span settings-guidance">
-            <Text as="div" color="secondary" type="supporting">自动化引擎随 App 运行</Text>
-            <Text as="div" color="secondary" type="supporting">AI 自动选片默认关闭，勾选下方开关并在「自动化」页点「测试 AI 审阅环境」确认可用后即可全自动出片。</Text>
-            <Text as="div" color="secondary" type="supporting">旧版“启用自动处理引擎”和“扫描间隔”开关已弃用；请通过恢复/暂停服务和下方定时任务管理自动扫描。</Text>
+            <Text as="div" color="secondary" type="supporting">自动处理随 Venus 运行</Text>
+            <Text as="div" color="secondary" type="supporting">启用 AI 自动判断前，请先确认 AI 服务可用。</Text>
+            <Text as="div" color="secondary" type="supporting">使用下方开关和定时任务管理自动处理。</Text>
           </div>
           <FormLayout className="settings-field-grid full-span">
             {control("scheduler.enabled", "按时间表自动扫描和检查（默认每周日）", { type: "checkbox" })}
             {control("review_automation.enabled", "让 AI 自动选片（不用人工挑）", { type: "checkbox" })}
             {control("review_automation.mode", "审阅方式", { options: [["local_agent", "本地 Agent"], ["model", "配置模型直连"]] })}
             {control("review_automation_local_agent.provider", "本地 Agent", { options: [["codex_cli", "Codex CLI"], ["claude_code", "Claude Code"]] })}
-            {control("review_automation_model.model", "模型", { placeholder: "为空时复用 LLM 模型" })}
+            {control("review_automation_model.model", "模型", { placeholder: "为空时使用上方 AI 模型" })}
             {control("review_automation.max_runs_per_tick", "每次最多处理任务数", { type: "number" })}
           </FormLayout>
           <details className="scheduler-editor full-span">
@@ -625,7 +625,7 @@ export function Settings(props: SettingsProps) {
                 {control("review_automation.prompt_template", "提示词模板")}
                 {control("review_automation_local_agent.command_timeout_minutes", "Agent 超时（分钟）", { type: "number" })}
                 {control("review_automation_local_agent.include_review_package_inline", "把审阅包放入 prompt", { type: "checkbox" })}
-                {control("review_automation_local_agent.allow_agent_file_writes", "允许 Agent 直接写文件（安全边界固定关闭）", { type: "checkbox", disabled: true })}
+                {control("review_automation_local_agent.allow_agent_file_writes", "允许本地 Agent 直接写文件（始终关闭）", { type: "checkbox", disabled: true })}
                 {control("review_automation_model.max_candidates", "最多候选数", { type: "number" })}
                 {control("review_automation_model.temperature", "Temperature", { type: "number", step: 0.1 })}
                 {control("review_automation_model.max_tokens", "Max tokens", { type: "number" })}
