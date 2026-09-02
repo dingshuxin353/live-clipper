@@ -1,5 +1,7 @@
 # 配置说明
 
+本文面向源码、CLI 和兼容 Web 流程。Venus 1.0.0 桌面客户端会通过首次设置与“设置”页面管理这些配置。
+
 `live-clipper config init` 会生成 `live-clipper.toml`。推荐把非敏感配置写在 TOML 文件里，把 API key 留在 `.env` 或 shell 环境变量里。
 
 配置分组：

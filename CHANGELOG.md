@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.0.0 - 2026-09-02
+
+### Changed
+
+- On first launch, Venus now checks and backs up existing 0.3.x data before migration. The writable workbench remains closed until the upgrade finishes, and migration does not delete original recordings.
+- New installations now use guided setup for speech recognition, the AI service, and the first project.
+
+### Added
+
+- Added project workspaces with independent recording sources, output folders, manual and scheduled scans, processing history, and queue status.
+- Added automatic transcription, analysis, structured AI review, subtitle generation, and per-clip rendering.
+- Added clip playback with saved AI decisions, titles, descriptions, and other publishing material.
+- Added actionable issue recovery and same-recording reprocessing with preserved earlier versions and settings comparison.
+
 ## 0.3.6 - 2026-08-20
 
 ### Changed
