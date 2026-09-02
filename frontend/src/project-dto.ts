@@ -51,8 +51,12 @@ export interface Run {
   has_result?: boolean; result_summary?: ResultSummary | null; active_issue_summary?: IssueSummary | null; legacy_awaiting_review?: boolean;
 }
 export type ReprocessBlockerAction = "source_repair" | "project_settings" | "asr_settings" | "ai_settings" | "active_run" | "recheck";
+export interface ReprocessResourceSummary {
+  backend?: string | null; provider?: string | null; model?: string | null; language?: string | null; endpoint?: string | null;
+}
 export interface ReprocessSettingsSummary {
-  asr: string | null; analysis: string | null; ai_review: string | null; render: string | null;
+  asr: ReprocessResourceSummary | string | null; analysis: ReprocessResourceSummary | string | null;
+  ai_review: ReprocessResourceSummary | string | null; render: string | null;
   naming: string | null; output_directory: string | null; retention: string | null;
 }
 export interface ReprocessVersion {

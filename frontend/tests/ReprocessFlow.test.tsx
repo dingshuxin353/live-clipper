@@ -12,15 +12,20 @@ const ORIGIN = {
   processing_sequence: 1,
   completed_at: "2026-09-01T02:00:00Z",
 };
-const CURRENT = { asr: "asr.local", analysis: "analysis.main", ai_review: "analysis.main", render: "current_renderer", naming: "system_safe", output_directory: "/outputs/new", retention: "keep" };
-const OLD = { ...CURRENT, analysis: "analysis.old", output_directory: "/outputs/old", retention: "remind_after_7_days" };
+const CURRENT = {
+  asr: { backend: "cloud", model: "asr-fast", language: "zh" },
+  analysis: { provider: "OpenAI-compatible LLM", model: "analysis-main" },
+  ai_review: { provider: "OpenAI-compatible LLM", model: "review-main", endpoint: "https://ai.example.test" },
+  render: "current_renderer", naming: "system_safe", output_directory: "/outputs/new", retention: "keep",
+};
+const OLD = { ...CURRENT, analysis: { provider: "OpenAI-compatible LLM", model: "analysis-old" }, output_directory: "/outputs/old", retention: "remind_after_7_days" };
 const PREFLIGHT = {
   ok: true,
   run: { run_id: ORIGIN.run_id, project_id: PROJECT.project_id, status: ORIGIN.status, processing_sequence: 1 },
   source: { path: "/recordings/final-night.mkv", name: "final-night.mkv", expected_content_id: "content-1", content_id: "content-1", bytes: 4096, mtime_ns: 1, state: "ready" },
   current_settings: { config_revision: 2, summary: CURRENT, snapshot: {} },
   changes: [
-    { field: "analysis", before: "analysis.old", after: "analysis.main" },
+    { field: "analysis", before: OLD.analysis, after: CURRENT.analysis },
     { field: "output_directory", before: "/outputs/old", after: "/outputs/new" },
   ],
   space: { work_directory: "/work", required_bytes: 4096, available_bytes: 8192, additional_estimate_bytes: null, sufficient: true },
@@ -177,9 +182,15 @@ describe("Spec T reprocess and version flow", () => {
     const drawer = await screen.findByRole("dialog", { name: "处理版本" });
     const rows = within(drawer).getAllByRole("link");
     expect(rows.map((row) => row.textContent)).toEqual(expect.arrayContaining([expect.stringContaining("初次处理"), expect.stringContaining("第 2 次处理")]));
+    expect(drawer).toHaveTextContent("识别方式：cloud · 模型：asr-fast · 语言：zh");
+    expect(drawer).toHaveTextContent("服务：OpenAI-compatible LLM · 模型：analysis-main");
+    expect(drawer).not.toHaveTextContent("[object Object]");
     fireEvent.click(within(drawer).getByRole("button", { name: "比较第 2 次处理" }));
     const compare = await screen.findByRole("dialog", { name: "比较两次处理" });
     expect(compare).toHaveTextContent("AI 模型");
+    expect(compare).toHaveTextContent("模型：analysis-old");
+    expect(compare).toHaveTextContent("模型：analysis-main");
+    expect(compare).not.toHaveTextContent("[object Object]");
     expect(compare).toHaveTextContent("输出目录");
     expect(compare).toHaveTextContent("中间产物");
     expect(compare).toHaveTextContent("尚未产生结果");
