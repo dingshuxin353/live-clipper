@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { AlertDialog } from "@astryxdesign/core/AlertDialog";
 import { Button } from "@astryxdesign/core/Button";
 import { Card } from "@astryxdesign/core/Card";
@@ -13,6 +14,7 @@ import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 
 import { post } from "./api";
+import { safeRunReturn } from "./ProjectDialogs";
 import {
   defaultConfig,
   getConfigValue,
@@ -313,6 +315,9 @@ export function Settings(props: SettingsProps) {
     notify,
     schedulerDraft,
   } = props;
+  const navigate = useNavigate();
+  const [params] = useSearchParams();
+  const returnTo = safeRunReturn(params.get("returnTo"));
   const [draft, setDraft] = useState<GenericRecord>({});
   const [dirty, setDirty] = useState(false);
   const [notice, setNotice] = useState<{ messages: string[]; tone: "success" | "error" | "warning" | "info" } | null>(null);
@@ -320,6 +325,12 @@ export function Settings(props: SettingsProps) {
   const [llmKeyBusy, setLlmKeyBusy] = useState(false);
   const llmKeyInputRef = useRef<HTMLInputElement>(null);
   const llmKeyRef = useRef("");
+
+  useEffect(() => {
+    const target = params.get("focus") === "asr" ? document.getElementById("asrModelList") : params.get("focus") === "ai" ? document.getElementById("settingsLlmApiKey") : null;
+    target?.scrollIntoView?.({ block: "center" });
+    if (target instanceof HTMLElement) target.focus();
+  }, [params]);
 
   useEffect(() => {
     if (!dirty && configPayload?.config) setDraft(structuredClone(configPayload.config));
@@ -348,6 +359,7 @@ export function Settings(props: SettingsProps) {
       setNotice({ messages, tone: "success" });
       setDirty(false);
       await reloadConfig();
+      if (returnTo) navigate(returnTo, { replace: true });
     } catch (error) {
       setNotice({ messages: [(error as Error).message], tone: "error" });
     }
@@ -403,6 +415,7 @@ export function Settings(props: SettingsProps) {
       if (llmKeyInputRef.current) llmKeyInputRef.current.value = "";
       setNotice({ messages: [String(result.message || "AI API key 已保存")], tone: "success" });
       await reloadConfig();
+      if (returnTo) navigate(returnTo, { replace: true });
     } catch (error) {
       setNotice({ messages: [(error as Error).message], tone: "error" });
     } finally {
@@ -452,8 +465,9 @@ export function Settings(props: SettingsProps) {
           </p>
         </div>
         <div className="button-row">
+          {returnTo && <Button label="取消并返回原记录" onClick={() => navigate(returnTo, { replace: true })} />}
           <Button id="validateConfigBtn" label="检查配置" onClick={() => void validate()} />
-          <Button id="saveConfigBtn" label="保存配置" onClick={() => void save()} variant="primary" />
+          <Button id="saveConfigBtn" label={returnTo ? "保存并返回原记录" : "保存配置"} onClick={() => void save()} variant="primary" />
           <Button id="reloadConfigBtn" label="重载配置" onClick={() => { setDirty(false); void reloadConfig(); notify("已重新读取配置文件"); }} />
           <Button id="resetConfigBtn" label="恢复默认" onClick={() => setResetOpen(true)} />
           <Button id="restartServiceBtn" label="重启服务" onClick={() => void action("/api/config/restart-service", "服务已重启。")} />

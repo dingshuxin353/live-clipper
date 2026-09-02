@@ -1,12 +1,13 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { BrowserRouter, MemoryRouter } from "react-router-dom";
 
 import { Settings } from "../src/Settings";
 import { defaultConfig } from "../src/config";
 import { formatLocalTime } from "../src/ui/presentation";
 import { installFetchMock, MODELS } from "./helpers";
 
-function renderSettings(models = MODELS) {
-  return render(<Settings
+function renderSettings(models = MODELS, entry = "/settings") {
+  return render(<MemoryRouter initialEntries={[entry]}><Settings
     configPayload={{ ok: true, config: defaultConfig(), config_path: "live-clipper.toml", exists: true, env_status: {}, warnings: [] }}
     service={{ status: "stopped" }}
     scheduler={{ scheduler: { enabled: true } }}
@@ -17,7 +18,7 @@ function renderSettings(models = MODELS) {
     refreshAll={vi.fn(async () => undefined)}
     notify={vi.fn()}
     schedulerDraft={null}
-  />);
+  /></MemoryRouter>);
 }
 
 describe("Astryx settings migration", () => {
@@ -129,5 +130,26 @@ describe("Astryx settings migration", () => {
       /^2026-07-30 \d{2}:15$/,
     );
     expect(formatLocalTime("not-a-time")).toBe("not-a-time");
+  });
+
+  it("accepts only an app-controlled Run return and returns after saving without reprocessing", async () => {
+    const calls = installFetchMock();
+    window.history.replaceState({}, "", "/settings?returnTo=%2Fprojects%2Fproject-1%2Fruns%2Frun-origin%3Freprocess%3D1");
+    render(<BrowserRouter><Settings
+      configPayload={{ ok: true, config: defaultConfig(), config_path: "live-clipper.toml", exists: true, env_status: {}, warnings: [] }}
+      service={{ status: "stopped" }} scheduler={{ scheduler: { enabled: true } }} reviewAutomation={{ review_automation: { enabled: false }, environment: {} }} models={MODELS}
+      reloadConfig={vi.fn(async () => undefined)} refreshModels={vi.fn(async () => undefined)} refreshAll={vi.fn(async () => undefined)} notify={vi.fn()} schedulerDraft={null}
+    /></BrowserRouter>);
+    fireEvent.click(screen.getByRole("button", { name: "保存并返回原记录" }));
+    await waitFor(() => expect(window.location.pathname).toBe("/projects/project-1/runs/run-origin"));
+    expect(window.location.search).toBe("?reprocess=1");
+    expect(calls.some(([path]) => path.includes("/reprocess"))).toBe(false);
+  });
+
+  it("rejects an external settings return target", () => {
+    installFetchMock();
+    renderSettings(MODELS, "/settings?returnTo=https%3A%2F%2Fevil.example");
+    expect(screen.queryByRole("button", { name: "保存并返回原记录" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "保存配置" })).toBeVisible();
   });
 });

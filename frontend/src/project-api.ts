@@ -1,5 +1,5 @@
 import { api, patch, post } from "./api";
-import type { ClipsPayload, FormOptionsPayload, IssueDetail, MigrationAcknowledgePayload, MigrationChoices, MigrationInspectPayload, MigrationPlan, MigrationPlanPayload, MigrationSessionPayload, MigrationSnapshot, ModelJob, OnboardingFinishPayload, OnboardingSessionPayload, OnboardingSnapshot, OnboardingStep, OnboardingValidationPayload, OutputMaterial, ProjectConfig, ProjectSummary, RecoveryAttempt, RepairContext, Run, RunFilter, RunOutput, RunResultPayload, ScanEvent, ScanPreviewPayload, SourceFile, StageEvent, StudioPayload, ValidationPayload } from "./project-dto";
+import type { ClipsPayload, FormOptionsPayload, IssueDetail, MigrationAcknowledgePayload, MigrationChoices, MigrationInspectPayload, MigrationPlan, MigrationPlanPayload, MigrationSessionPayload, MigrationSnapshot, ModelJob, OnboardingFinishPayload, OnboardingSessionPayload, OnboardingSnapshot, OnboardingStep, OnboardingValidationPayload, OutputMaterial, ProjectConfig, ProjectSummary, RecoveryAttempt, RepairContext, ReprocessPreflight, ReprocessVersion, ReprocessVersionsPayload, Run, RunFilter, RunOutput, RunResultPayload, ScanEvent, ScanPreviewPayload, SourceFile, StageEvent, StudioPayload, ValidationPayload } from "./project-dto";
 
 export const projectApi = {
   studio: (signal?: AbortSignal) => api<StudioPayload>("/api/studio", {}, signal),
@@ -8,6 +8,10 @@ export const projectApi = {
   project: (projectId: string, signal?: AbortSignal) => api<{ ok: true; project: ProjectSummary }>(`/api/projects/${projectId}`, {}, signal),
   runs: (projectId: string, filter: RunFilter, cursor?: string | null, signal?: AbortSignal) => { const search = new URLSearchParams({ filter, limit: "50" }); if (cursor) search.set("cursor", cursor); return api<{ ok: true; runs: Run[]; cursor: string | null; has_more: boolean }>(`/api/projects/${projectId}/runs?${search}`, {}, signal); },
   run: (runId: string, signal?: AbortSignal) => api<{ ok: true; run: Run; stage_events: StageEvent[] }>(`/api/runs/${runId}`, {}, signal),
+  reprocessPreflight: (runId: string, signal?: AbortSignal) => api<ReprocessPreflight>(`/api/runs/${runId}/reprocess-preflight`, {}, signal),
+  reprocessVersions: (runId: string, signal?: AbortSignal) => api<ReprocessVersionsPayload>(`/api/runs/${runId}/versions`, {}, signal),
+  createReprocess: (runId: string, id: string, expectedRevision: string) => post<{ ok: true; run: ReprocessVersion; created: boolean; reuse_reason: string | null }>(`/api/runs/${runId}/reprocess`, { request_id: id, expected_preflight_revision: expectedRevision }),
+  repairReprocessSource: (runId: string) => post<{ ok: true; issue: IssueDetail; reused: boolean }>(`/api/runs/${runId}/reprocess-source-repair`),
   formOptions: (signal?: AbortSignal) => api<FormOptionsPayload>("/api/project-form-options", {}, signal),
   scanPreview: (sourceDirectory: string, mode: ProjectConfig["source"]["first_scan_mode"], lookbackDays: number | null) => post<ScanPreviewPayload>("/api/projects/scan-preview", { source_directory: sourceDirectory, first_scan_mode: mode, ...(mode === "recent" ? { lookback_days: lookbackDays } : {}) }),
   validate: (project: { name: string; description: string; config: ProjectConfig }, activationState: "active" | "inactive") => post<ValidationPayload>("/api/projects/validate", { project, activation_state: activationState }),
