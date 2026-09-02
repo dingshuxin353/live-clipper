@@ -26,7 +26,7 @@ def test_fifo_dispatch_failure_does_not_block_next_and_recovery_keeps_run_id(tmp
         trigger_source="manual",
         first_seen_path=str(source / "first.mp4"),
         latest_seen_path=str(source / "first.mp4"),
-        parameter_snapshot={},
+        parameter_snapshot={"source": {"relative_path": "first.mp4", "bytes": 1}},
         queued_at="2026-08-20T00:00:00Z",
     ).run
     started = repo.create_normal_run(
