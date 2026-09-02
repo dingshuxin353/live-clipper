@@ -50,7 +50,7 @@ def dispatch_queued(
         if len(started) >= available:
             break
         expected_source = run.parameter_snapshot.get("source")
-        if isinstance(expected_source, dict):
+        if isinstance(expected_source, dict) and {"bytes", "mtime_ns", "content_id"} <= expected_source.keys():
             try:
                 source_stat = Path(run.latest_seen_path).stat()
                 source_error = None if (

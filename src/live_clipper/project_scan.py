@@ -213,7 +213,8 @@ def scan_project(
                 failures.append({"path": relative, "code": "source_unavailable"})
                 continue
             suffix = candidate.suffix.lower()
-            modified = datetime.fromtimestamp(candidate.stat().st_mtime, UTC)
+            source_stat = candidate.stat()
+            modified = datetime.fromtimestamp(source_stat.st_mtime, UTC)
         except OSError:
             counts["failed_count"] += 1
             failures.append({"path": relative, "code": "source_unavailable"})
@@ -238,7 +239,12 @@ def scan_project(
                 **snapshot,
                 "project_id": project_id,
                 "config_revision": revision.revision,
-                "source": {"relative_path": relative, "bytes": int(identity["bytes"])},
+                "source": {
+                    "relative_path": relative,
+                    "bytes": int(identity["bytes"]),
+                    "mtime_ns": source_stat.st_mtime_ns,
+                    "content_id": str(identity["content_id"]),
+                },
                 "work_dir": str(Path(settings.paths.work_dir) / "projects" / project_id),
             }
             created = repository.create_normal_run(

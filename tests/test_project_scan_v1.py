@@ -9,6 +9,7 @@ import pytest
 
 from live_clipper.config import RecordingSourceDefaultConfig, Settings
 from live_clipper.project_domain import default_project_config
+from live_clipper.project_runtime import dispatch_queued
 from live_clipper.project_scan import ProjectScanError, list_source_files, scan_project
 from live_clipper.project_service import ProjectManager, open_project_repository
 
@@ -36,7 +37,15 @@ def test_scan_deduplicates_within_project_and_lists_relative_sources(tmp_path):
     second = scan_project(repo, project.project_id, settings=settings, service_dir=tmp_path / "service")
     assert first.created_count == 1
     assert second.created_count == 0 and second.duplicate_count == 1
-    assert len(repo.list_runs(project.project_id)) == 1
+    run = repo.list_runs(project.project_id)[0]
+    assert run.parameter_snapshot["source"] == {
+        "relative_path": "b.mp4",
+        "bytes": 12,
+        "mtime_ns": (source / "b.mp4").stat().st_mtime_ns,
+        "content_id": run.content_id,
+    }
+    dispatched = dispatch_queued(repo, work_dir=tmp_path / "work", processor=lambda _run, _target: None)
+    assert dispatched.started_run_ids == (run.run_id,)
     assert [item.relative_path for item in list_source_files(repo, project.project_id)] == ["b.mp4"]
 
 
