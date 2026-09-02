@@ -65,11 +65,14 @@ describe("Spec T reprocess and version flow", () => {
     for (const phase of ["读取录像", "语音转写", "内容分析", "结果仲裁", "AI 审阅", "渲染成片"]) expect(dialog).toHaveTextContent(phase);
     expect(dialog).toHaveTextContent("不会修改原文件；处理时会在受控工作目录创建临时工作副本。");
     const start = within(dialog).getByRole("button", { name: "开始重新处理" });
-    fireEvent.click(start); fireEvent.click(start);
+    fireEvent.click(start);
     await waitFor(() => expect(calls.filter(([path]) => path === "/api/runs/run-origin/reprocess")).toHaveLength(1));
     const body = JSON.parse(String(calls.find(([path]) => path === "/api/runs/run-origin/reprocess")?.[1]?.body));
     expect(body).toEqual({ request_id: expect.stringMatching(/^run-reprocess-/), expected_preflight_revision: "revision-1" });
     expect(window.location.pathname).toBe("/projects/project-1/runs/run-new");
+    expect(start).toBeDisabled();
+    fireEvent.click(start);
+    expect(calls.filter(([path]) => path === "/api/runs/run-origin/reprocess")).toHaveLength(1);
   });
 
   it("keeps M8 recovery primary and M9 separate while hiding reprocess for active runs", async () => {

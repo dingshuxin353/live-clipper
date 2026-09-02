@@ -62,7 +62,8 @@ export function ReprocessControls({ run, project }: { run: Run; project: Project
       const apiError = reason as ApiError; const unknown = apiError.status === 0 || apiError.status >= 500 || apiError.code === "invalid_response";
       if (unknown) { setUncertain(true); setError("创建请求的结果暂时无法确认。再次尝试会沿用同一请求，不会重复创建。"); }
       else { clearPendingId(run.run_id); requestRef.current = null; if (apiError.status === 409) { try { setPreflight(await projectApi.reprocessPreflight(run.run_id)); setReconfirm(true); setError("检查结果已经变化，请确认最新状态后再开始。"); } catch { setError(apiError.message); } } else setError(apiError.message); }
-    } finally { submittingRef.current = false; setSubmitting(false); }
+      submittingRef.current = false; setSubmitting(false);
+    }
   };
   const blocker = async (action: ReprocessBlockerAction) => {
     if (!preflight) return;
