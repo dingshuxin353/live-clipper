@@ -1,8 +1,8 @@
-# MCP 工作台小白使用指南
+# live-clipper 高级 MCP 兼容流程
 
-这份指南面向第一次使用 `live-clipper` 的用户，目标是把一场长直播录播变成可发布的短视频切片。
+这份指南面向仍通过 MCP、命令行和兼容 Web 控制台操作 `live-clipper` 的高级用户。Venus 1.0.0 桌面客户端会自动完成 AI 审阅和渲染，普通用户应阅读[产品首页](../README.md)。
 
-当前版本的核心能力是：
+这条高级兼容流程包含：
 
 1. 常驻服务自动扫描录播源目录。
 2. 发现稳定录播后，复制到本地项目库并开始切片流水线。
@@ -39,23 +39,13 @@ Web 控制台负责给人看：现在服务是否运行、哪些任务待审阅�
 cd /path/to/live-clipper
 ```
 
-确认当前分支是 MCP 工作台版本：
+确认当前检出包含 MCP 工具：
 
 ```bash
-git branch --show-current
+.venv/bin/python -c "from live_clipper import mcp_tools; print('MCP tools available')"
 ```
 
-应该看到：
-
-```text
-codex/mcp-workbench
-```
-
-如果不是，可以切换：
-
-```bash
-git switch codex/mcp-workbench
-```
+命令成功后再继续。无需切换到历史开发分支。
 
 ## 第 1 步：做一次环境检查
 

@@ -1,7 +1,7 @@
 {
   "name": "venus-renderer",
   "private": true,
-  "version": "0.3.6",
+  "version": "1.0.0",
   "type": "module",
   "engines": {
     "node": ">=24 <25",

@@ -1,6 +1,6 @@
-# Venus 高级使用
+# Venus 高级与兼容流程
 
-本文承接产品首页不展开的 CLI、源码安装、Service Core、MCP、自动化和开发内容。第一次使用桌面客户端，请先阅读[产品首页](../README.md)。
+本文记录 CLI、源码安装、Service Core、MCP、传统 Web 控制台和 Agent 编排。这些入口仍受支持，但不是 Venus 1.0.0 桌面客户端的主流程。普通用户请从[产品首页](../README.md)开始。
 
 ## 技术边界
 
@@ -48,7 +48,7 @@ python -m venv .venv
 
 ## 本地 ASR 安装
 
-源码/CLI 模式默认使用 MLX 本地 ASR。Venus 0.3 桌面包为控制体积不内置 MLX，新建 App 配置默认使用 OpenAI-compatible 云端 ASR，首次向导会分别收集 LLM 与 ASR 的服务地址、模型和 API key；两个 key 用途独立且只保存在本机 `.env`，已有配置不会被自动覆写。
+源码/CLI 模式默认使用 MLX 本地 ASR。桌面客户端会在首次设置中让用户选择本地或云端语音识别，并单独配置 AI 服务；密钥只保存在本机 `.env`，已有配置不会被自动覆写。
 
 Apple Silicon 推荐安装 MLX extra：
 
@@ -161,7 +161,7 @@ failure_log_mode = "redacted"
 
 ## 本机常驻服务
 
-V1 提供一个本机常驻服务，用来替代手写的定时提示词编排。内置 Scheduler 的 `scan_recordings` 任务是自动扫描的唯一调度来源；服务会把稳定录制复制到本地 `input/`，启动现有 pipeline，并在有效且非空的 `selected_clips.json` 出现后按配置自动渲染。
+兼容的本机常驻服务可用于源码工作流。内置 Scheduler 的 `scan_recordings` 任务是自动扫描的唯一调度来源；服务会把稳定录制复制到本地 `input/`，启动现有 pipeline，并在有效且非空的 `selected_clips.json` 出现后按配置自动渲染。
 
 常用命令：
 
@@ -209,12 +209,12 @@ stable_check_seconds = 60
 - 服务不会自动删除本地输入副本。
 - 服务不会自动执行 `cleanup --confirm`。
 - `service stop` 只停止服务主进程，不会主动终止已经启动的 pipeline 子进程。
-- V1 只会在渲染完成后做 cleanup preview，并把状态记录到本地文件。
+- 兼容服务只会在渲染完成后做 cleanup preview，并把状态记录到本地文件。
 - 空选片不会创建新的正式 `selected_clips.json`，也不会进入渲染或清理；旧版本留下的空选片会无损恢复为待审阅状态。
 
 ## MCP 工具面
 
-V2 提供 MCP 工具函数层，供 Agent 或后续 MCP server wrapper 调用。它是本机常驻服务的 thin adapter：不另建状态库，不重新推断 `output/` 状态，所有有意义动作都会复用 Service Core，并写入同一套 `work/service/` 状态与事件。
+高级 MCP 工具函数层供 Agent 或 MCP server wrapper 调用。它是本机常驻服务的 thin adapter：不另建状态库，不重新推断 `output/` 状态，所有有意义动作都会复用 Service Core，并写入同一套 `work/service/` 状态与事件。
 
 工具入口在 `live_clipper.mcp_tools`：
 
@@ -459,7 +459,7 @@ Agent 的介入信号是文件状态：
 
 ## Web 控制台
 
-V3 Web 控制台是 Service Core 的统一控制面，默认只允许本机访问：
+高级 Web 兼容控制台是 Service Core 的控制面，默认只允许本机访问：
 
 ```bash
 .venv/bin/live-clipper web
@@ -475,9 +475,9 @@ V3 Web 控制台是 Service Core 的统一控制面，默认只允许本机访�
 - `日志`：查看事件流和任务日志尾部。
 - `配置`：在 Web 端检查、保存必要配置，并查看 API key 环境变量是否已配置。
 
-### V4 Web 配置页
+### Web 配置页（兼容）
 
-V4 Web 配置页把原来的只读 `设置` 升级为可编辑 `配置`，适合不熟悉 TOML 的用户完成第一次可运行配置。
+兼容 Web 配置页把原来的只读 `设置` 升级为可编辑 `配置`，可用于源码部署的首次配置。
 
 在 `配置` 页面可以做这些事：
 
@@ -496,9 +496,9 @@ V4 Web 配置页把原来的只读 `设置` 升级为可编辑 `配置`，适合
 - 修改 Web host/port 后，需要手动重启 Web 控制台命令本身才会生效。
 - 如果 TOML 解析失败，Web 配置页不会覆盖旧配置；请先修复 `live-clipper.toml`。
 
-### V5 内置定时调度
+### 内置定时调度（兼容）
 
-V5 增加内置 Scheduler，跟随 `live-clipper service` 运行，不再依赖 Codex 定时任务、cron 或 launchd。定时配置统一放在 Web `配置` 页的 `定时任务` 分区。
+内置 Scheduler 跟随 `live-clipper service` 运行，不再依赖 Codex 定时任务、cron 或 launchd。定时配置统一放在 Web `配置` 页的 `定时任务` 分区。
 
 默认定时任务：
 
@@ -518,12 +518,11 @@ Scheduler 以 `work/service/scheduler_runs.json` 中持久化的 `next_run_at` �
 
 - Scheduler 不会删除文件，不会执行 cleanup confirm，不会 approve/reject confirmation。
 - Scheduler 不会主动终止已经启动的 pipeline 子进程。
-- V5 的 `review_due_check` 不会自动生成 selected_clips.json，也不会调用 Codex CLI、Claude Code 或模型自动选片。
-- AI 自动审阅将在后续版本配置；当前 V5 只做定时提醒和状态标记。
+- `review_due_check` 不会自动生成 selected_clips.json，也不会调用 Codex CLI、Claude Code 或模型自动选片。
 
-### V6 AI 自动审阅
+### AI 自动审阅（兼容）
 
-V6 增加 AI 自动审阅执行器，用来把 `needs_review` 任务的审阅包转换成经过系统校验的 `selected_clips.json`。默认不会静默启用，必须在 Web `配置` 页的 `AI 审阅` 分区明确打开。
+兼容流程可把 `needs_review` 任务的审阅包转换成经过系统校验的 `selected_clips.json`。默认不会静默启用，必须在 Web `配置` 页的 `AI 审阅` 分区明确打开。
 
 支持三种方式：
 
@@ -553,9 +552,9 @@ V6 增加 AI 自动审阅执行器，用来把 `needs_review` 任务的审阅包
 
 老用户提示：已有的周日 12:00 `review_due_check` 不会被自动强改成 `AI 自动审阅`。如果你确认要自动选片，请在 `配置` 页编辑该定时任务，把动作类型改为 `AI 自动审阅`，并先用 `测试 AI 审阅环境` 检查本机 Agent 或模型配置。
 
-### V7 配置页分层
+### 配置页分层（兼容）
 
-V7 把 Web `配置` 页重组为更适合新用户的四层结构，常用配置默认展示，高级设置默认收起：
+兼容 Web `配置` 页分为四层，常用配置默认展示，高级设置默认收起：
 
 - `配置体检`：只读查看录播源、本地项目库、AI 服务、语音识别、自动化和 AI 审阅状态。
 - `基础设置`：只保留 7 个常用字段，回答录像在哪、成片放哪、AI 用哪家。

@@ -13,7 +13,7 @@ def test_ai_assistant_guide_exists_and_covers_beginner_safety():
 
     text = guide.read_text(encoding="utf-8")
 
-    assert "# live-clipper AI 使用说明" in text
+    assert "# live-clipper 源码与命令行兼容流程 AI 使用说明" in text
     assert "不要把 API key" in text
     assert "录制检测任务" in text
     assert "选片与收尾任务" in text
@@ -28,8 +28,8 @@ def test_ai_assistant_guide_tells_ai_to_detect_environment_before_questions():
     assert "不要询问用户是否安装了 Python" in text
     assert "安装前必须先说明目的" in text
     assert "征得用户同意" in text
-    assert "桌面 App 默认云端 ASR" in text
-    assert "源码/CLI 默认本地 MLX" in text
+    assert "桌面客户端在首次设置中选择语音识别方式" in text
+    assert "源码/CLI 默认使用本地 MLX" in text
     assert "`.env` 写模型服务密钥" in text
     assert "`live-clipper.toml` 写非敏感配置" in text
 
@@ -134,11 +134,11 @@ def test_web_static_exposes_v5_scheduler_config_section():
     assert "自动处理随 Venus 运行" in settings
 
 
-def test_advanced_usage_documents_v3_web_console_confirmation_flow():
+def test_advanced_usage_documents_web_console_confirmation_flow():
     text = Path("docs/advanced-usage.md").read_text(encoding="utf-8")
     workbench = Path("docs/mcp-workbench-user-guide.md").read_text(encoding="utf-8")
 
-    assert "V3 Web 控制台" in text
+    assert "高级 Web 兼容控制台" in text
     assert "`文件清理`" in text
     assert "Web 控制台 `文件清理` 页" in workbench
     assert "批量确认/拒绝" in text
@@ -146,10 +146,10 @@ def test_advanced_usage_documents_v3_web_console_confirmation_flow():
     assert "NAS 原始录播不会被 Web 直接删除" in text
 
 
-def test_advanced_usage_documents_v4_web_config_editor():
+def test_advanced_usage_documents_web_config_editor():
     text = Path("docs/advanced-usage.md").read_text(encoding="utf-8")
 
-    assert "V4 Web 配置页" in text
+    assert "Web 配置页（兼容）" in text
     assert "`配置`" in text
     assert "检查配置" in text
     assert "保存配置" in text
@@ -157,10 +157,10 @@ def test_advanced_usage_documents_v4_web_config_editor():
     assert "不会显示明文 API key" in text
 
 
-def test_advanced_usage_documents_v5_internal_scheduler_without_v6_ai_review():
+def test_advanced_usage_documents_internal_scheduler_without_automatic_selection():
     text = Path("docs/advanced-usage.md").read_text(encoding="utf-8")
 
-    assert "V5 内置定时调度" in text
+    assert "内置定时调度（兼容）" in text
     assert "不再依赖 Codex 定时任务、cron 或 launchd" in text
     assert "每周日 00:00" in text
     assert "每周日 12:00" in text
@@ -208,19 +208,19 @@ def test_web_static_exposes_v7_layered_config_page():
         assert field in advanced
 
 
-def test_advanced_usage_documents_v7_layered_config_page():
+def test_advanced_usage_documents_layered_config_page():
     text = Path("docs/advanced-usage.md").read_text(encoding="utf-8")
 
-    assert "V7 配置页分层" in text
+    assert "配置页分层（兼容）" in text
     assert "配置体检" in text
     assert "快速开始" in text
     assert "高级设置默认收起" in text
 
 
-def test_advanced_usage_documents_v6_ai_review_safety_and_modes():
+def test_advanced_usage_documents_ai_review_safety_and_modes():
     text = Path("docs/advanced-usage.md").read_text(encoding="utf-8")
 
-    assert "V6 AI 自动审阅" in text
+    assert "AI 自动审阅（兼容）" in text
     assert "默认不会静默启用" in text
     assert "Codex CLI" in text
     assert "Claude Code" in text
@@ -255,8 +255,8 @@ def test_readme_explains_product_level_local_model_capability():
         "约 1.6 GB",
     ]:
         assert expected in text
-    assert "下载完成后，可以离线完成语音转写" in text
-    assert "AI 选片是否联网" in text
+    assert "本地语音识别可以离线运行" in text
+    assert "AI 审阅是否联网" in text
     assert "镜像下载源" not in text
 
 
@@ -273,6 +273,44 @@ def test_english_readme_explains_current_local_model_choices():
         assert expected in text
     assert "recommended local speech model" not in text
     assert "Hugging Face or a mirror" not in text
+
+
+def test_public_readmes_describe_the_1_0_0_desktop_flow():
+    chinese = Path("README.md").read_text(encoding="utf-8")
+    english = Path("docs/README.en.md").read_text(encoding="utf-8")
+
+    for expected in [
+        "首次设置或安全升级",
+        "手动或定时发现录像",
+        "自动转写、分析、AI 审阅和渲染",
+        "修复问题或重新处理",
+    ]:
+        assert expected in chinese
+    for expected in [
+        "First-time setup or a safe upgrade",
+        "Find recordings manually or on a schedule",
+        "Transcribe, analyze, review with AI, and render automatically",
+        "Fix issues or reprocess a recording",
+    ]:
+        assert expected in english
+    for obsolete in ["待审阅", "启动 AI 审阅", "自动化中心", "切片结果"]:
+        assert obsolete not in chinese
+    for obsolete in ["needs-review", "Start AI review", "Automation center", "Clip Results"]:
+        assert obsolete not in english
+
+
+def test_advanced_documents_mark_non_desktop_paths_explicitly():
+    advanced = Path("docs/advanced-usage.md").read_text(encoding="utf-8")
+    assistant = Path("docs/ai-assistant-guide.md").read_text(encoding="utf-8")
+    mcp = Path("docs/mcp-workbench-user-guide.md").read_text(encoding="utf-8")
+    workflow = Path("docs/workflow.md").read_text(encoding="utf-8")
+    web = Path("docs/web-console.md").read_text(encoding="utf-8")
+
+    assert "高级与兼容流程" in advanced
+    assert "源码与命令行兼容流程" in assistant
+    assert "高级 MCP 兼容流程" in mcp
+    assert "源码与命令行兼容工作流" in workflow
+    assert "高级 Web 兼容控制台" in web
 
 
 def test_changelog_documents_only_verified_0_3_2_changes():
@@ -324,26 +362,24 @@ def test_changelog_documents_only_implemented_0_3_3_changes():
         assert forbidden not in section
 
 
-def test_readmes_document_0_3_3_processing_reliability():
+def test_readmes_document_1_0_0_project_processing():
     chinese = Path("README.md").read_text(encoding="utf-8")
     english = Path("docs/README.en.md").read_text(encoding="utf-8")
 
     for expected in [
-        "0.3.3 提升了录播处理可靠性",
-        "失败任务可人工重试",
-        "完整内容身份去重",
-        "单并发队列",
-        "Stone 语义颜色",
+        "项目制工作台",
+        "自动完成转写、分析、AI 审阅、字幕和成片渲染",
+        "成片页查看视频、AI 判断、标题、简介和其他发布物料",
+        "从原录像建立新版本",
     ]:
         assert expected in chinese
     assert "Node.js 24" in chinese
     assert "Node.js 20" not in chinese
     for expected in [
-        "Version 0.3.3 improves recording reliability",
-        "failed runs can be retried manually",
-        "complete content identity",
-        "single-concurrency queue",
-        "Stone semantic colors",
+        "Project workbench",
+        "transcribe, analyze, review with AI, subtitle, and render",
+        "Clips and publishing material",
+        "Reprocessing",
     ]:
         assert expected in english
 
@@ -364,17 +400,13 @@ def test_readme_is_a_product_homepage():
     for expected in [
         '<h1 align="center">Venus</h1>',
         "美神直播剪辑工作台",
-        "把一场长直播，让 AI 自动帮你剪辑成可发布的短视频。",
-        "面向主播和内容团队的 macOS 客户端：自动发现录播、AI 选片、AI剪辑并渲染成片。",
+        "把长直播整理成可查看、可恢复、可继续处理的短视频成片。",
+        "面向主播和内容团队的 macOS 客户端：按项目发现录像，自动完成转写、AI 审阅和渲染。",
         "下载最新版",
-        "## 为什么选择 Venus",
+        "## 1.0.0 主流程",
+        "## 从 0.3.x 升级",
         "## 界面预览",
-        "## 一场直播如何变成短视频",
-        "### 1. 发现录播",
-        "### 2. 语音转写",
-        "### 3. AI 选片",
-        "### 4. 生成成片",
-        "## 功能特性",
+        "## 主要能力",
         "## 快速开始",
         "## 常见问题",
         "Apple Silicon",
@@ -423,9 +455,9 @@ def test_readme_relative_links_exist():
 def test_readme_screenshots_exist_and_are_substantial():
     text = Path("README.md").read_text(encoding="utf-8")
     screenshots = [
-        Path("docs/assets/readme/venus-overview.png"),
-        Path("docs/assets/readme/venus-automation.png"),
-        Path("docs/assets/readme/venus-local-models.png"),
+        Path("docs/assets/readme/venus-studio.png"),
+        Path("docs/assets/readme/venus-project.png"),
+        Path("docs/assets/readme/venus-results.png"),
     ]
 
     for screenshot in screenshots:
