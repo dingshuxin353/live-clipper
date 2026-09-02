@@ -16,13 +16,22 @@ const ACTION_LABELS: Record<ReprocessBlockerAction, string> = {
   source_repair: "找回原录像", project_settings: "打开项目设置", asr_settings: "打开语音识别设置",
   ai_settings: "打开 AI 设置", active_run: "查看正在处理的记录", recheck: "重新检查",
 };
+const SUMMARY_PART_LABELS = { backend: "识别方式", provider: "服务", model: "模型", language: "语言", endpoint: "地址" };
 
 function versionLabel(sequence: number) { return sequence === 1 ? "初次处理" : `第 ${sequence} 次处理`; }
 function requestKey(runId: string) { return `venus.reprocess.request.${runId}`; }
 function getPendingId(runId: string) { try { return sessionStorage.getItem(requestKey(runId)); } catch { return null; } }
 function keepPendingId(runId: string, id: string) { try { sessionStorage.setItem(requestKey(runId), id); } catch { /* the in-memory request still protects this render */ } }
 function clearPendingId(runId: string) { try { sessionStorage.removeItem(requestKey(runId)); } catch { /* nothing else to clear */ } }
-function value(value: unknown) { return value === null || value === undefined || value === "" ? "无法获取" : String(value); }
+function value(value: unknown) {
+  if (value === null || value === undefined || value === "") return "无法获取";
+  if (typeof value !== "object" || Array.isArray(value)) return String(value);
+  const parts = Object.entries(SUMMARY_PART_LABELS).flatMap(([key, label]) => {
+    const item = (value as Record<string, unknown>)[key];
+    return item === null || item === undefined || item === "" ? [] : [`${label}：${String(item)}`];
+  });
+  return parts.length ? parts.join(" · ") : "无法获取";
+}
 function bytes(value: number) { return value === 0 ? "0 KB" : formatBytes(value); }
 function resultValue(version: ReprocessVersion) {
   const result = version.result_summary;
