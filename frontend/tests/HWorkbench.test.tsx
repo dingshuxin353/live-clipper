@@ -48,6 +48,19 @@ describe("Venus 1.0 result workbench", () => {
     expect(calls.some(([path]) => path.includes("/result/seen"))).toBe(false);
   });
 
+  it("keeps project settings in one field order and preserves a cancelled folder choice", async () => {
+    const selectFolder = vi.fn(async () => null); window.liveClipperShell = { selectFolder };
+    installFetchMock(); route("/projects/project-1?dialog=project-settings"); render(<App />);
+    const dialog = await screen.findByRole("dialog", { name: "项目设置" });
+    const controls = [within(dialog).getByLabelText("项目名称"), within(dialog).getByLabelText("项目描述"), within(dialog).getByRole("textbox", { name: /录像目录/ }), within(dialog).getByRole("textbox", { name: /输出目录/ }), within(dialog).getByRole("combobox", { name: "中间产物保留" }), within(dialog).getByRole("checkbox", { name: "定时扫描" })];
+    for (let index = 1; index < controls.length; index += 1) expect(controls[index - 1].compareDocumentPosition(controls[index]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(dialog).getByLabelText("项目描述")).toHaveAttribute("rows", "4");
+    expect(dialog.querySelector(".form-pair")).not.toBeInTheDocument();
+    fireEvent.click(within(dialog).getAllByRole("button", { name: "选择…" })[0]);
+    await waitFor(() => expect(selectFolder).toHaveBeenCalledWith("选择录像目录"));
+    expect(within(dialog).getByRole("textbox", { name: /录像目录/ })).toHaveValue("/recordings");
+  });
+
   it("renders native output playback and marks the rendered result seen once", async () => {
     const calls = resultMocks(); route("/projects/project-1/runs/run-result?view=result"); render(<App />);
     expect(await screen.findByRole("heading", { name: "两条高光已经完成" })).toBeVisible();
@@ -69,6 +82,7 @@ describe("Venus 1.0 result workbench", () => {
     const calls = resultMocks({ "/api/outputs/output-1/material": (options?: RequestInit) => options?.method === "PATCH" ? jsonResponse({ ok: true, material: { ...material(1), material_revision: 2, description: "新的发布描述" }, reused: false }) : jsonResponse({ ok: true, material: material(1) }) });
     route("/projects/project-1/runs/run-result?view=materials&output=output-1"); render(<App />);
     const description = await screen.findByLabelText("描述");
+    expect(description.closest(".astryx-field")).not.toBeNull();
     fireEvent.change(description, { target: { value: "新的发布描述" } });
     await waitFor(() => expect(calls.some(([path, options]) => path === "/api/outputs/output-1/material" && options?.method === "PATCH")).toBe(true), { timeout: 2500 });
     const body = JSON.parse(String(calls.find(([path, options]) => path === "/api/outputs/output-1/material" && options?.method === "PATCH")?.[1]?.body));
@@ -145,7 +159,9 @@ describe("Venus 1.0 result workbench", () => {
     const calls = resultMocks({ "/api/runs/run-result/result": { ...RESULT, issues: [issueSummary] }, "/api/issues/issue-ai": { ok: true, issue }, "/api/resources/analysis.main/repair-context": { ok: true, repair_context: { resource_id: "analysis.main", display_name: "AI 审阅资源", resource_type: "analysis", api_base: "https://api.example.com/v1", model: "review-model", credential_state: "missing", repair_capability: "inline_connection", settings_url: "/settings", issue_id: "issue-ai" } }, "/api/resources/analysis.main/connection": { ok: true, resource_id: "analysis.main", api_base: "https://api.example.com/v1", model: "review-model", credential_updated: true, reused: false }, "/api/resources/analysis.main/connection-test": { ok: true, resource_id: "analysis.main", success: true, tested_at: "2026-08-27T03:02:00Z", reused: false }, "/api/issues/issue-ai/recheck": { ok: true, issue: ready, reused: false } });
     route("/projects/project-1/runs/run-result?view=result&issue=issue-ai"); render(<App />);
     const drawer = await screen.findByRole("dialog", { name: "问题详情" }); fireEvent.click(await within(drawer).findByRole("button", { name: "修复资源连接" }));
-    fireEvent.change(await screen.findByLabelText("API Key（留空表示不更新）"), { target: { value: "new-secret" } });
+    const apiKey = await screen.findByLabelText("API Key（留空表示不更新）");
+    expect(apiKey.closest(".astryx-field")).not.toBeNull();
+    fireEvent.input(apiKey, { target: { value: "new-secret" } });
     fireEvent.click(screen.getByRole("button", { name: "保存、测试并重新检查" }));
     await waitFor(() => expect(calls.some(([path]) => path === "/api/resources/analysis.main/connection-test")).toBe(true));
     const connectionBody = JSON.parse(String(calls.find(([path]) => path === "/api/resources/analysis.main/connection")?.[1]?.body));

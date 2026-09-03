@@ -122,6 +122,8 @@ describe("five-step first-run setup", () => {
     const marker = "asr-secret-marker"; const session = { ...SESSION, current_step: "asr" as const, draft: { asr: { mode: "cloud" as const, api_base: "https://asr.example/v1", model: "speech" } } };
     const calls = installFetchMock({ "/api/onboarding/resources/asr/cloud": { ok: true, session: { ...session, revision: 2 } } }); renderOnboarding(onboardingSnapshot(session));
     const key = screen.getByLabelText("API key") as HTMLInputElement; fireEvent.input(key, { target: { value: marker } });
+    expect(screen.getByLabelText("服务地址").closest(".astryx-text-input")).not.toBeNull();
+    expect(key.closest(".astryx-field")).not.toBeNull();
     expect(document.body.innerHTML).not.toContain(marker); fireEvent.click(screen.getByRole("button", { name: "测试并保存" }));
     await waitFor(() => expect(calls.some(([path]) => path === "/api/onboarding/resources/asr/cloud")).toBe(true));
     const body = JSON.parse(String(calls.find(([path]) => path === "/api/onboarding/resources/asr/cloud")?.[1]?.body));
@@ -141,6 +143,7 @@ describe("five-step first-run setup", () => {
     const selectFolder = vi.fn(async () => "/recordings/interviews"); window.liveClipperShell = { selectFolder };
     const session = { ...SESSION, current_step: "project" as const, draft: { project: { trigger_mode: "manual" as const, schedule_mode: "daily" as const, daily_time: "22:00", interval_minutes: 60, output_directory: "/output" } } };
     const calls = installFetchMock({ "/api/onboarding/project/validate": { ok: true, valid: true, fatal: [], blockers: [], warnings: [], checks: { asr: { ready: true }, ai: { ready: true }, source_directory: { status: "ready" }, output_directory: { status: "creatable" } }, summary: { recording_source: "/recordings/interviews", discovery: "new_only", processing: "ai_auto", output: "/output" }, existing_video_count: 2, normalized_config: {} } }, session); renderOnboarding(onboardingSnapshot(session));
+    expect(document.querySelectorAll(".form-path-field")).toHaveLength(2);
     fireEvent.click(screen.getAllByRole("button", { name: "选择…" })[0]);
     expect(await screen.findByDisplayValue("interviews")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "检查配置" }));

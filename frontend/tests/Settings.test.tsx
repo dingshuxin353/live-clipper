@@ -34,6 +34,7 @@ describe("Astryx settings migration", () => {
       ".astryx-text-input, .astryx-number-input, .astryx-selector, .astryx-checkbox-input",
     ))).toBe(true);
     expect(document.querySelector(".astryx-form-layout")).toBeInTheDocument();
+    expect(screen.getByLabelText("AI API key").closest(".astryx-field")).not.toBeNull();
   });
 
   it("keeps SettingsSection content spanning the outer settings grid", async () => {

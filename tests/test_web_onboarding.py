@@ -111,7 +111,7 @@ def test_migration_react_uses_real_o_contract_and_keeps_state_private():
         'event.key !== "Tab"',
         'document.addEventListener("visibilitychange"',
         "document.hidden ? 4000 : 1000",
-        'aria-describedby={fields.project_name ? "migration-project-name-error" : undefined}',
+        'status={fields.project_name ? { type: "error", message: fields.project_name } : undefined}',
     ]:
         assert token in migration
     for forbidden in ["localStorage", "sessionStorage", "indexedDB", "console."]:
@@ -131,7 +131,7 @@ def test_secret_inputs_are_uncontrolled_and_never_logged_or_persisted():
     assert 'aiKeyRef = useRef("")' in source
     assert "asrKeyRef.current" in source
     assert "aiKeyRef.current" in source
-    secret_inputs = re.findall(r'<input ref=\{keyInput\} className="onboarding-secret-input".*?/>', source)
+    secret_inputs = re.findall(r'<input ref=\{keyInput\} className="form-control form-secret-input".*?/>', source)
     assert len(secret_inputs) == 2
     for input_source in secret_inputs:
         assert 'type="password"' in input_source
