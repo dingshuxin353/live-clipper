@@ -53,11 +53,12 @@ describe("M2 migration flow", () => {
     render(<App />); const dialog = await screen.findByRole("dialog"); fireEvent.click(await within(dialog).findByRole("button", { name: "检查升级内容" }));
     expect(await within(dialog).findByRole("heading", { name: "处理必要差异" })).toBeVisible();
     const source = within(dialog).getByDisplayValue("/recordings"); fireEvent.click(within(dialog).getByRole("button", { name: "选择…" }));
+    expect(source.closest(".form-path-field")).not.toBeNull();
     await waitFor(() => expect(window.liveClipperShell?.selectFolder).toHaveBeenCalledTimes(1)); expect(source).toHaveValue("/recordings");
     fireEvent.click(within(dialog).getByRole("radio", { name: "定时自动检查" }));
-    expect(within(dialog).getByLabelText("定时方式")).toHaveValue("daily");
-    fireEvent.change(within(dialog).getByLabelText("定时方式"), { target: { value: "interval" } });
-    expect(within(dialog).getByLabelText("检查间隔")).toHaveValue("60");
+    const schedule = within(dialog).getByRole("combobox", { name: "定时方式" }); expect(schedule).toHaveTextContent("每天固定时间");
+    fireEvent.click(schedule); fireEvent.click(await screen.findByRole("option", { name: "固定间隔" }));
+    expect(within(dialog).getByRole("combobox", { name: "检查间隔" })).toHaveTextContent("1 小时");
     expect(within(dialog).queryByLabelText("项目名称")).not.toBeInTheDocument();
   });
 

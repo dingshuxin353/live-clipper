@@ -520,7 +520,7 @@ export function Settings(props: SettingsProps) {
               <div className="secret-input-row">
                 <input
                   autoComplete="off"
-                  className="onboarding-secret-input"
+                  className="form-control form-secret-input"
                   id="settingsLlmApiKey"
                   onChange={(event) => { llmKeyRef.current = event.currentTarget.value; }}
                   placeholder={envStatus[String(draft.llm?.api_key_env || "CHEAP_MODEL_API_KEY")] ? "已配置；粘贴新密钥可替换" : "直接粘贴，只保存在本机"}

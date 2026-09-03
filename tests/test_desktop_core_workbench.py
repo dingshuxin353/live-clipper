@@ -80,3 +80,30 @@ def test_electron_titlebar_keeps_traffic_lights_clear_of_workbench_navigation():
     assert interactive_navigation is not None
     assert "-webkit-app-region: no-drag" in interactive_navigation.group("rule")
     assert ".astryx-app-shell-sidenav .venus-side-nav" not in styles
+
+
+def test_forms_share_astryx_controls_path_fields_and_container_layout():
+    frontend = ROOT / "frontend" / "src"
+    shared = (frontend / "workbench-shared.tsx").read_text(encoding="utf-8")
+    dialogs = (frontend / "ProjectDialogs.tsx").read_text(encoding="utf-8")
+    onboarding = (frontend / "Onboarding.tsx").read_text(encoding="utf-8")
+    migration = (frontend / "features" / "migration" / "MigrationFlow.tsx").read_text(encoding="utf-8")
+    results = (frontend / "RunResultPage.tsx").read_text(encoding="utf-8")
+    settings = (frontend / "Settings.tsx").read_text(encoding="utf-8")
+    styles = (frontend / "styles.css").read_text(encoding="utf-8")
+
+    assert "export function PathField" in shared
+    for source in [dialogs, onboarding, migration]:
+        assert "PathField" in source
+    for source in [dialogs, onboarding, migration, results]:
+        assert "@astryxdesign/core/Field" in source or "@astryxdesign/core/TextInput" in source
+    combined = "\n".join([dialogs, onboarding, migration, styles])
+    for obsolete in ["input-action", "toggle-field", "onboarding-folder", "migration-field", "migration-schedule"]:
+        assert f'className="{obsolete}"' not in combined
+        assert re.search(rf"(?<![-\w])\.{re.escape(obsolete)}(?![-\w])", styles) is None
+    assert "container-type: inline-size" in styles
+    assert "@container" in styles
+    assert "form-control form-secret-input" in onboarding
+    assert "form-control form-secret-input" in results
+    assert "form-control form-secret-input" in settings
+    assert "const [apiKey, setApiKey]" not in results

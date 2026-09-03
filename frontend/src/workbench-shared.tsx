@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import { Button } from "@astryxdesign/core/Button";
+import { Field } from "@astryxdesign/core/Field";
 
 import type { FormOptionsPayload, ProjectConfig, ProjectMainStatus, ProjectSummary, Run, RunStage, ScanEvent } from "./project-dto";
 import { formatLocalTime } from "./ui/presentation";
@@ -74,6 +76,10 @@ export function SectionHeading({ title, subtitle, action }: { title: string; sub
 export function Metric({ label, value, tone = "default" }: { label: string; value: number; tone?: string }) { return <div className={`metric tone-${tone}`}><span>{label}</span><strong>{value}</strong></div>; }
 export function LoadingState() { return <div className="empty-state" role="status">正在加载…</div>; }
 export function ErrorState({ message, retry }: { message: string; retry(): void }) { return <div className="error-state" role="alert"><strong>暂时无法读取数据</strong><p>{message}</p><button className="button" onClick={retry}>重试</button></div>; }
+export function PathField({ label, value, onChange, choose, description, error, isReadOnly = false, isRequired = true }: { label: string; value: string; onChange?(value: string): void; choose?(): void | Promise<void>; description?: string; error?: string; isReadOnly?: boolean; isRequired?: boolean }) {
+  const inputID = useId(); const descriptionID = `${inputID}-description`; const errorID = `${inputID}-error`;
+  return <Field className="form-path-field" description={error ? undefined : description} descriptionID={description ? descriptionID : undefined} inputID={inputID} isRequired={isRequired} label={label} status={error ? { type: "error", message: error, messageID: errorID } : undefined} width="100%"><div className="form-path-control"><input aria-describedby={error ? errorID : description ? descriptionID : undefined} aria-invalid={Boolean(error)} className="form-control" id={inputID} onChange={(event) => onChange?.(event.target.value)} placeholder="选择文件夹" readOnly={isReadOnly} required={isRequired} value={value} />{choose && <Button className="form-path-button" label="选择…" onClick={() => void choose()} />}</div></Field>;
+}
 export function RunCard({ run, project }: { run: Run; project?: ProjectSummary }) { return <Link className="run-card" to={`/projects/${run.project_id}/runs/${run.run_id}`}><div><span className="overline">{project?.name ?? "项目"}</span><strong>{run.source_name}</strong><small>{time(run.updated_at)}</small></div><StatusPill status={run.status} label={run.status === "queued" && run.queue_position ? `队列第 ${run.queue_position} 位` : undefined} /></Link>; }
 
 const PRIORITY: Record<ProjectMainStatus, number> = { blocked: 0, failed: 1, processing: 2, queued: 3, new_results: 4, paused: 5, inactive: 6, idle: 7 };
