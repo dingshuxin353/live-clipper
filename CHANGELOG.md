@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.1 - 2026-09-03
+
+### Changed
+
+- Standardized form controls and field structure across project creation and settings, first-run setup, migration, rendered assets, resource repair, and global settings.
+
+### Fixed
+
+- Fixed cramped project settings layouts with single-column fields, non-wrapping directory buttons, and clearer grouping for boolean settings and their conditional fields.
+
 ## 1.0.0 - 2026-09-02
 
 ### Changed
