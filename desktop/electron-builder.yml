@@ -25,6 +25,7 @@ beforePack: ./scripts/prepare-media-tools.js
 afterPack: ./scripts/after-pack.js
 npmRebuild: false
 mac:
+  minimumSystemVersion: "14.0"
   target:
     - target: dmg
       arch:
