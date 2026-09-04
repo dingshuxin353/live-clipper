@@ -176,7 +176,7 @@ def test_project_pins_lightweight_model_hub_dependencies_and_freezes_them():
     assert "--collect-all modelscope_hub" in build_script
 
 
-def test_release_versions_are_frozen_at_1_0_1():
+def test_release_versions_match_current_project_and_changelog():
     pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
     desktop_package = json.loads(Path("desktop/package.json").read_text(encoding="utf-8"))
     desktop_lock = json.loads(Path("desktop/package-lock.json").read_text(encoding="utf-8"))
@@ -193,8 +193,10 @@ def test_release_versions_are_frozen_at_1_0_1():
         frontend_lock["packages"][""]["version"],
     }
 
-    assert release_versions == {"1.0.1"}
-    assert "## 1.0.1 - 2026-09-03" in Path("CHANGELOG.md").read_text(encoding="utf-8")
+    version = pyproject["project"]["version"]
+    assert re.fullmatch(r"\d+\.\d+\.\d+", version)
+    assert release_versions == {version}
+    assert re.search(rf"^## {re.escape(version)} - \d{{4}}-\d{{2}}-\d{{2}}$", Path("CHANGELOG.md").read_text(encoding="utf-8"), re.M)
 
 
 def test_electron_runtime_is_supported_secure_release():
@@ -202,7 +204,7 @@ def test_electron_runtime_is_supported_secure_release():
     lock = json.loads(Path("desktop/package-lock.json").read_text(encoding="utf-8"))
     root = lock["packages"][""]
 
-    assert package["version"] == lock["version"] == root["version"] == "1.0.1"
+    assert package["version"] == lock["version"] == root["version"]
     assert package["scripts"]["postinstall"] == "install-electron"
     assert package["dependencies"] == {"electron-updater": "^6.3.0"}
     assert package["devDependencies"] == {
@@ -256,47 +258,8 @@ def test_ci_workflow_checks_current_desktop_entrypoints_with_node_24():
     assert "src/live_clipper/web_static/onboarding.js" not in workflow
 
 
-def test_release_recovery_workflow_contract():
-    import re
-
-    workflow = Path(".github/workflows/release-recovery.yml").read_text(encoding="utf-8")
-
-    assert "workflow_dispatch:" in workflow
-    assert "release_ref:" in workflow
-    assert "timeout-minutes: 360" in workflow
-    assert "ref: ${{ inputs.release_ref }}" in workflow
-    assert "notarytool history" in workflow
-    assert "In Progress" in workflow
-    assert "do not create a duplicate" in workflow
-    assert "concurrency:" in workflow
-    assert "cancel-in-progress: false" in workflow
-    assert '["git", "describe", "--tags", "--exact-match"]' in workflow
-    assert "pyproject.toml" in workflow
-    assert "desktop/package.json" in workflow
-    assert 'node-version: "24"' in workflow
-    assert '.venv/bin/pip install ".[mlx]" "pyinstaller>=6.10"' in workflow
-    assert ".venv/bin/python scripts/ci/assert_backend_bundle.py" in workflow
-    assert "DEBUG: electron-notarize:*" in workflow
-    assert "gh release view" in workflow
-    assert workflow.index("npm run build:backend") < workflow.index("scripts/ci/assert_backend_bundle.py")
-    assert workflow.index("scripts/ci/assert_backend_bundle.py") < workflow.index("npx electron-builder --mac --publish always")
-    for suffix in ("-arm64.dmg", "-arm64-mac.zip", "-arm64-mac.zip.blockmap", "latest-mac.yml"):
-        assert suffix in workflow
-
-    assert re.search(r"\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b", workflow) is None
-    for secret_name in (
-        "CSC_LINK",
-        "CSC_KEY_PASSWORD",
-        "APPLE_ID",
-        "APPLE_APP_SPECIFIC_PASSWORD",
-        "APPLE_TEAM_ID",
-    ):
-        assert f"{secret_name}: ${{{{ secrets.{secret_name} }}}}" in workflow
-
-
-def test_local_release_requires_backend_bundle_contract_before_publish():
-    script = Path("desktop/scripts/release-local.sh").read_text(encoding="utf-8")
-
-    assert "../.venv/bin/python ../scripts/ci/assert_backend_bundle.py" in script
-    assert script.index("npm run build:backend") < script.index("assert_backend_bundle.py")
-    assert script.index("assert_backend_bundle.py") < script.index("npx electron-builder --mac --publish always")
+def test_local_release_has_one_authorized_entrypoint():
+    assert not Path("desktop/scripts/release-local.sh").exists()
+    assert not Path(".github/workflows/release-recovery.yml").exists()
+    assert Path("scripts/release.py").is_file()
+    assert Path("docs/releasing.md").is_file()
