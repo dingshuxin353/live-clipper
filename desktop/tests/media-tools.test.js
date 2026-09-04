@@ -3,14 +3,12 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
-const https = require("node:https");
-const { EventEmitter } = require("node:events");
-const { PassThrough } = require("node:stream");
+const childProcess = require("node:child_process");
 const { createHash } = require("node:crypto");
 const vm = require("node:vm");
 const { createRequire } = require("node:module");
 const { checkMediaTools } = require("../media-runtime");
-const { default: beforePack, prepareTools, download, verify, TOOLS } = require("../scripts/prepare-media-tools");
+const { default: beforePack, prepareTools, verifyCache } = require("../scripts/prepare-media-tools");
 const { default: afterPack } = require("../scripts/after-pack");
 
 function temporary(t) {
@@ -105,113 +103,84 @@ test("afterPack requires backend and both tools, restores mode, and runs checks"
   await assert.rejects(afterPack({ appOutDir: root }), /ffprobe.*missing/);
 });
 
-test("beforePack checks the target architecture and refuses missing license material", async (t) => {
-  const root = temporary(t);
+test("beforePack rejects unsupported targets before touching tools", async () => {
   for (const [electronPlatformName, arch] of [["linux", 3], ["darwin", 1], ["darwin", "arm64"]]) {
     await assert.rejects(beforePack({ electronPlatformName, arch }), /macOS arm64 build target/);
   }
-  await assert.rejects(beforePack({ electronPlatformName: "darwin", arch: 3,
-    packager: { projectDir: root } }), /SOURCE.md.*missing/);
-  assert.equal(fs.existsSync(path.join(root, "vendor")), false);
 });
 
-test("identity checks reject changed bytes, truncated files and oversized files", () => {
-  const bytes = Buffer.from("verified bytes");
-  const hash = createHash("sha256").update(bytes).digest("hex");
-  verify(bytes, bytes.length, hash);
-  for (const candidate of [Buffer.from("tampered bytes"), bytes.subarray(1), Buffer.concat([bytes, bytes])]) {
-    assert.throws(() => verify(candidate, bytes.length, hash), /SHA-256 mismatch/);
+function cacheFixture(t) {
+  const desktop = temporary(t);
+  const root = path.join(desktop, "vendor/media-tools/darwin-arm64");
+  fs.mkdirSync(path.join(root, "licenses"), { recursive: true });
+  const manifest = { identity: { version: "1.0.1", inputs: {} }, outputs: {}, tools: {} };
+  for (const name of ["ffmpeg", "ffprobe"]) {
+    const version = name + " version 9.0.1 test\n";
+    fs.writeFileSync(path.join(root, name), "#!/bin/sh\nif [ \"$1\" = \"-L\" ]; then echo 'GNU General Public License version 2'; else echo '" + version.trim() + "'; fi\n", { mode: 0o755 });
+    manifest.tools[name] = { version };
   }
-});
-
-function responseFixture(t, statusCode, send) {
-  const requests = [];
-  t.mock.method(https, "get", (url, callback) => {
-    requests.push(url);
-    const request = new EventEmitter();
-    const response = new PassThrough();
-    response.statusCode = statusCode;
-    request.destroy = (error) => {
-      response.destroy();
-      if (error) request.emit("error", error);
-      request.emit("close");
-    };
-    queueMicrotask(() => {
-      callback(response);
-      if (!response.destroyed) send(response, request);
-    });
-    response.on("end", () => request.emit("close"));
-    return request;
-  });
-  return requests;
+  for (const name of ["media-sources.tar.gz", "licenses/SOURCE.md", "licenses/COMPONENTS.md", "licenses/GPL-2.0.txt", "licenses/CORRESPONDING-SOURCE.md"]) {
+    fs.writeFileSync(path.join(root, name), "unit test fixture");
+  }
+  for (const name of ["ffmpeg", "ffprobe", "media-sources.tar.gz", "licenses/SOURCE.md", "licenses/COMPONENTS.md", "licenses/GPL-2.0.txt", "licenses/CORRESPONDING-SOURCE.md"]) {
+    const bytes = fs.readFileSync(path.join(root, name));
+    manifest.outputs[name] = { size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") };
+  }
+  fs.writeFileSync(path.join(root, "build-manifest.json"), JSON.stringify(manifest));
+  return { desktop, root, manifest };
 }
 
-test("download uses the fixed HTTPS URL and refuses redirects and HTTP failures", async (t) => {
-  for (const status of [302, 404, 503]) {
-    const requests = responseFixture(t, status, () => assert.fail("must not consume body"));
-    await assert.rejects(download("ffmpeg"), /download failed/);
-    assert.equal(requests[0], "https://ffmpeg.martin-riedl.de/download/macos/arm64/1787073674_9.0.1/ffmpeg.zip");
-    t.mock.restoreAll();
-  }
-  assert.throws(() => download("../ffplay"), /Unknown media tool/);
-});
-
-test("network error, truncated response and wrong hash leave no install or staging files", async (t) => {
-  for (const send of [
-    (_, request) => request.destroy(new Error("network secret")),
-    (response) => response.destroy(new Error("connection reset")),
-    (response) => response.end("truncated zip"),
-    (response) => response.end(Buffer.alloc(TOOLS.ffmpeg.zipSize)),
-    (response) => response.end(Buffer.alloc(TOOLS.ffmpeg.zipSize + 1)),
-  ]) {
-    const root = temporary(t);
-    responseFixture(t, 200, send);
-    await assert.rejects(prepareTools(root), /download|SHA-256 mismatch/);
-    assert.deepEqual(fs.readdirSync(path.join(root, "vendor", "media-tools")), []);
-    t.mock.restoreAll();
-  }
-});
-
-test("download has a total deadline even if no response arrives", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
-  t.mock.method(https, "get", () => {
-    const request = new EventEmitter();
-    request.destroy = (error) => { request.emit("error", error); request.emit("close"); };
-    return request;
+test("valid cache is rehashed and reused without running the builder", (t) => {
+  const { desktop, manifest } = cacheFixture(t);
+  const calls = [];
+  t.mock.method(childProcess, "execFileSync", (file, args) => {
+    calls.push(args);
+    assert.ok(args.includes("--identity"));
+    return JSON.stringify(manifest.identity);
   });
-  const pending = assert.rejects(download("ffprobe"), /download failed/);
-  t.mock.timers.tick(120000);
-  await pending;
+  assert.deepEqual(prepareTools(desktop), manifest);
+  assert.equal(calls.length, 1);
 });
 
-test("partial and escaped caches are rejected without network or writes outside desktop", async (t) => {
-  t.mock.method(https, "get", () => assert.fail("corrupt cache must not redownload"));
-  const root = temporary(t);
-  const parent = path.join(root, "vendor", "media-tools");
-  fs.mkdirSync(path.join(parent, "darwin-arm64"), { recursive: true });
-  await assert.rejects(prepareTools(root), /missing/);
-  const outside = temporary(t);
-  const escaped = temporary(t);
-  fs.mkdirSync(path.join(escaped, "vendor"));
-  fs.symlinkSync(outside, path.join(escaped, "vendor", "media-tools"));
-  await assert.rejects(prepareTools(escaped), /escapes desktop/);
-  assert.deepEqual(fs.readdirSync(outside), ["bin"]);
-  const vendorEscape = temporary(t);
-  fs.symlinkSync(outside, path.join(vendorEscape, "vendor"));
-  await assert.rejects(prepareTools(vendorEscape), /escapes desktop/);
-  assert.deepEqual(fs.readdirSync(outside), ["bin"]);
-});
-
-test("size-correct corrupt cache fails SHA verification without redownloading", async (t) => {
-  const root = temporary(t);
-  const cache = path.join(root, "vendor", "media-tools", "darwin-arm64");
-  fs.mkdirSync(cache, { recursive: true });
-  for (const [name, size] of [["ffmpeg", TOOLS.ffmpeg.size], ["ffmpeg.zip", TOOLS.ffmpeg.zipSize]]) {
-    fs.writeFileSync(path.join(cache, name), "", { mode: 0o755 });
-    fs.truncateSync(path.join(cache, name), size);
+test("stale identity, missing artifacts, wrong hashes and escaped files fail closed", (t) => {
+  const { desktop, root, manifest } = cacheFixture(t);
+  assert.throws(() => verifyCache(desktop, { ...manifest.identity, version: "1.0.2" }), /stale/);
+  const extra = path.join(root, "licenses/private.log");
+  fs.writeFileSync(extra, "not a license");
+  assert.throws(() => verifyCache(desktop, manifest.identity), /Unexpected media license/);
+  fs.unlinkSync(extra);
+  for (const name of ["ffprobe", "media-sources.tar.gz", "licenses/COMPONENTS.md"]) {
+    const file = path.join(root, name);
+    const bytes = fs.readFileSync(file);
+    fs.writeFileSync(file, "tampered");
+    assert.throws(() => verifyCache(desktop, manifest.identity), /hash mismatch/);
+    fs.unlinkSync(file);
+    assert.throws(() => verifyCache(desktop, manifest.identity), /missing/);
+    fs.symlinkSync("/bin/echo", file);
+    assert.throws(() => verifyCache(desktop, manifest.identity), /unsafe/);
+    fs.unlinkSync(file);
+    fs.writeFileSync(file, bytes, { mode: 0o755 });
   }
-  t.mock.method(https, "get", () => assert.fail("must not redownload"));
-  await assert.rejects(prepareTools(root), /SHA-256 mismatch/);
+  const calls = [];
+  t.mock.method(childProcess, "execFileSync", (_, args) => {
+    calls.push(args);
+    return JSON.stringify({ version: "changed" });
+  });
+  assert.throws(() => prepareTools(desktop), /stale/);
+  assert.equal(calls.length, 1);
+});
+
+test("a missing cache invokes the source builder and propagates failure without installing", (t) => {
+  const desktop = temporary(t);
+  let calls = 0;
+  t.mock.method(childProcess, "execFileSync", (_, args) => {
+    calls += 1;
+    if (args.includes("--identity")) return "{}";
+    throw new Error("source build failed");
+  });
+  assert.throws(() => prepareTools(desktop), /source build failed/);
+  assert.equal(calls, 2);
+  assert.equal(fs.existsSync(path.join(desktop, "vendor/media-tools/darwin-arm64")), false);
 });
 
 test("real main startup gates packaged mode before any backend setup; development skips it", async (t) => {

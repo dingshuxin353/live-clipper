@@ -255,7 +255,7 @@ def test_bundled_media_tools_are_prepared_packaged_and_checked_before_backend():
     assert "afterPack: ./scripts/after-pack.js" in builder
     for tool in ("ffmpeg", "ffprobe"):
         assert f"from: vendor/media-tools/darwin-arm64/{tool}\n    to: bin/{tool}" in builder
-    assert "from: build/ffmpeg\n    to: licenses/ffmpeg" in builder
+    assert "from: vendor/media-tools/darwin-arm64/licenses\n    to: licenses/ffmpeg" in builder
     assert "ffmpeg-static" not in builder
     startup = main.split("app.whenReady().then", 1)[1]
     guard = "if (app.isPackaged) checkMediaTools(process.resourcesPath);"

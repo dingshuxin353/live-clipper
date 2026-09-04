@@ -1,37 +1,46 @@
-# FFmpeg 与 ffprobe 来源
+# 媒体工具源码与重建
 
-这组 macOS arm64 工具由 Martin Riedl 构建，版本为
-`9.0.1-https://www.martin-riedl.de`，构建日期为 2026-08-18。
-Venus 通过独立进程调用工具，不修改 Venus 自身的许可证。
+Venus 内置 ffmpeg 与 ffprobe 9.0.1，由 FFmpeg 官方源码构建，
+静态编入 x264 和 dav1d。工具通过独立进程运行；Venus 自身的许可证不变。
+没有修改上游源码。输入下载地址、版本、提交及 SHA-256 均在 `sources.lock.json`。
 
-固定下载目录：
-<https://ffmpeg.martin-riedl.de/download/macos/arm64/1787073674_9.0.1/>
+- FFmpeg 9.0.1：<https://ffmpeg.org/releases/ffmpeg-9.0.1.tar.xz>
+- x264：<https://code.videolan.org/videolan/x264.git>，提交
+  `b35605ace3ddf7c1a5d67a2eb553f034aef41d55`，使用该提交的规范 Git tar 归档。
+- dav1d 1.5.4：<https://download.videolan.org/pub/videolan/dav1d/1.5.4/>
+- pkgconf 2.5.1（仅构建时）：<https://distfiles.ariadne.space/pkgconf/>
 
-| 文件 | 字节数 | SHA-256（上游签名原件） |
-| --- | ---: | --- |
-| ffmpeg.zip | 28447413 | 8287a1b2229e05eb41859f073e18e6c52c60a778f2f5e6881070fe51b79407fe |
-| ffprobe.zip | 28370930 | 102a26b8940a053298d9929bfaae71e4b6ef65ba5f19a99a88c433108560741a |
-| ffmpeg | 66334032 | 393e4c395020a1cb7cbd77fbe00599ce69d1c6466fee0dbd59d13f86a81a1611 |
-| ffprobe | 66159232 | 7abc49fb2bdf2204f018e76dc6e0a8ae7643313bae09a9fa43e7eb12442271bc |
+随 App 的 `CORRESPONDING-SOURCE.md` 列出本版本源码包的准确文件名、
+SHA-256 和下载地址。该源码包与安装包在同一 GitHub Release 提供。
+GPL 正文及组件声明见 `GPL-2.0.txt`、`COMPONENTS.md`。
 
-重新签名会改变可执行文件的哈希。上述身份用于构建前核验，
-不能用来覆盖或修补已经签名的 App。
+## 从源码包重建
 
-两个工具的 `-L` 声明为 GPL v3 或更新版本，未启用 nonfree。
-GPL 全文见同目录 `GPL-3.0.txt`，原文取自
-<https://raw.githubusercontent.com/FFmpeg/FFmpeg/n9.0.1/COPYING.GPLv3>。
-FFmpeg 的许可说明见 <https://ffmpeg.org/legal.html>。
+需要 macOS arm64、Python 3.11，以及提供 Apple Clang
+17.0.0（clang-1700.6.4.2）和 SDK 26.2 的 Command Line Tools。
+最低运行系统参数为 macOS 14.0。不使用 Homebrew 媒体库。
 
-## 分发材料尚未齐备
+解压 `Venus-<version>-media-sources.tar.gz`，在解压目录运行：
 
-本说明和 GPL 正文不足以完成这组静态工具的分发材料。
-打包入口还要求 `COMPONENTS.md` 和 `CORRESPONDING-SOURCE.md`：
-前者需保留实际组件的必要版权及许可声明；后者需列出与二进制
-准确对应的源码、构建脚本、补丁及正式下载位置。材料未核实前不能发布。
+```sh
+python3.11 desktop/scripts/build-media-tools.py --archives archives
+```
 
-已找到的上游构建脚本提交为
-`f63b8aab8f5ce1a067da86ba69e34a36a7e217e5`：
-<https://git.martin-riedl.de/ffmpeg/build-script/src/commit/f63b8aab8f5ce1a067da86ba69e34a36a7e217e5>。
-该提交的 x264 脚本下载浮动 master，构建目录的 `versions.txt`
-仅记录 `0.165.x`。这两项不能证明实际 x264 源码身份，
-也不能将构建脚本的 Apache 2.0 许可证当作二进制许可证。
+源码包包含四份实际输入归档、构建脚本、锁定清单、声明和最小版本元数据，
+不需要 Venus checkout。构建使用包内归档，不重新获取媒体源码；
+仍需网络从 PyPI 安装固定 Meson 1.9.0、Ninja 1.13.0 到本次隔离环境。
+实际安装件哈希、工具版本和编译器版本保存在构建记录中。
+
+在 Venus checkout 中不传 `--archives` 时，脚本从锁定来源获取源码，
+核对 x264 的精确提交与规范归档哈希后再编译。
+不允许浮动分支、替代镜像或未经校验的本机二进制。
+
+结果位于 `desktop/vendor/media-tools/darwin-arm64/`：两个工具、
+`build-manifest.json`、`licenses/` 和 `media-sources.tar.gz`。
+安装使用中性前缀 `/venus-media`，但只暂存到隔离目录，不写系统目录。
+App 仅包含工具和声明；编译器、构建环境、源码包不进入 App。
+
+缓存存在时构建脚本拒绝覆盖。打包入口会重新核验缓存；
+输入、工具链或版本变化需要保留旧现场后进行新的构建。
+重新签名会改变二进制哈希，不得用签名前缓存覆盖冻结 App。
+不同工具链下的输出不承诺逐字节相同。

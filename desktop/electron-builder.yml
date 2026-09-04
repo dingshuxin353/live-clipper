@@ -17,7 +17,7 @@ extraResources:
     to: bin/ffmpeg
   - from: vendor/media-tools/darwin-arm64/ffprobe
     to: bin/ffprobe
-  - from: build/ffmpeg
+  - from: vendor/media-tools/darwin-arm64/licenses
     to: licenses/ffmpeg
   - from: build/app-update.yml
     to: app-update.yml
