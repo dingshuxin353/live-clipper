@@ -6,6 +6,7 @@
 
 - Bundled ffprobe to fix first-run setup failing when no system copy is installed, and replaced ffmpeg with a matching build from pinned FFmpeg 9.0.1 sources.
 - Pinned the macOS 14 builds of MLX 0.32.2 and added binary checks to prevent packaging a runtime that requires a newer system.
+- Fixed the results page going blank during clip playback when playback progress updates were processed after the video event.
 
 ## 1.0.1 - 2026-09-03
 
