@@ -7,15 +7,21 @@ files:
   - preload.js
   - backend-client.js
   - runtime-state.js
+  - media-runtime.js
   - package.json
   - assets/**
 extraResources:
   - from: backend-dist/live-clipper-backend
     to: backend
-  - from: node_modules/ffmpeg-static/ffmpeg
+  - from: vendor/media-tools/darwin-arm64/ffmpeg
     to: bin/ffmpeg
+  - from: vendor/media-tools/darwin-arm64/ffprobe
+    to: bin/ffprobe
+  - from: build/ffmpeg
+    to: licenses/ffmpeg
   - from: build/app-update.yml
     to: app-update.yml
+beforePack: ./scripts/prepare-media-tools.js
 afterPack: ./scripts/after-pack.js
 npmRebuild: false
 mac:

@@ -208,14 +208,13 @@ def test_electron_runtime_is_supported_secure_release():
     assert package["devDependencies"] == {
         "electron": "43.2.0",
         "electron-builder": "^26.0.0",
-        "ffmpeg-static": "^5.2.0",
     }
     assert root["dependencies"] == package["dependencies"]
     assert root["devDependencies"] == package["devDependencies"]
     assert lock["packages"]["node_modules/electron"]["version"] == "43.2.0"
     assert lock["packages"]["node_modules/electron-builder"]["version"] == "26.15.3"
     assert lock["packages"]["node_modules/electron-updater"]["version"] == "6.8.9"
-    assert lock["packages"]["node_modules/ffmpeg-static"]["version"] == "5.3.0"
+    assert "node_modules/ffmpeg-static" not in lock["packages"]
     assert not any(
         marker in package["devDependencies"]["electron"].lower()
         for marker in ("alpha", "beta", "nightly")
@@ -245,6 +244,25 @@ def test_automatic_tag_release_workflow_is_disabled():
         "secrets.",
     ):
         assert forbidden not in workflow
+
+
+def test_bundled_media_tools_are_prepared_packaged_and_checked_before_backend():
+    builder = Path("desktop/electron-builder.yml").read_text(encoding="utf-8")
+    main = Path("desktop/main.js").read_text(encoding="utf-8")
+    hook = Path("desktop/scripts/after-pack.js").read_text(encoding="utf-8")
+    assert "  - media-runtime.js\n" in builder
+    assert "beforePack: ./scripts/prepare-media-tools.js" in builder
+    assert "afterPack: ./scripts/after-pack.js" in builder
+    for tool in ("ffmpeg", "ffprobe"):
+        assert f"from: vendor/media-tools/darwin-arm64/{tool}\n    to: bin/{tool}" in builder
+    assert "from: build/ffmpeg\n    to: licenses/ffmpeg" in builder
+    assert "ffmpeg-static" not in builder
+    startup = main.split("app.whenReady().then", 1)[1]
+    guard = "if (app.isPackaged) checkMediaTools(process.resourcesPath);"
+    assert startup.index(guard) < startup.index("startBackend(backendPort)")
+    assert 'env.PATH = `${path.join(process.resourcesPath, "bin")}:${env.PATH || ""}`' in main
+    assert "checkMediaTools(resources)" in hook
+    assert "existsSync" not in hook
 
 
 def test_ci_workflow_checks_current_desktop_entrypoints_with_node_24():
