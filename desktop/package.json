@@ -1,6 +1,6 @@
 {
   "name": "live-clipper-desktop",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "private": true,
   "description": "Desktop shell for Venus (live-clipper).",
   "main": "main.js",

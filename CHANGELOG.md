@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.2 - 2026-09-04
+
+### Fixed
+
+- Bundled ffprobe to fix first-run setup failing when no system copy is installed, and replaced ffmpeg with a matching build from pinned FFmpeg 9.0.1 sources.
+- Pinned the macOS 14 builds of MLX 0.32.2 and added binary checks to prevent packaging a runtime that requires a newer system.
+
 ## 1.0.1 - 2026-09-03
 
 ### Changed
