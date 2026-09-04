@@ -206,6 +206,9 @@ def test_release_versions_are_frozen_at_1_0_2():
     }
 
     assert release_versions == {"1.0.2"}
+    builder = Path("desktop/electron-builder.yml").read_text(encoding="utf-8")
+    mac_config = builder.split("\nmac:\n", 1)[1].split("\npublish:", 1)[0]
+    assert '  minimumSystemVersion: "14.0"\n' in mac_config
     assert "## 1.0.2 - 2026-09-04" in Path("CHANGELOG.md").read_text(encoding="utf-8")
 
 
