@@ -112,21 +112,33 @@ def test_react_renderer_package_and_frozen_build_contract():
 
 def test_desktop_backend_build_fails_closed_without_mlx_before_any_side_effect():
     build_script = Path("desktop/scripts/build-backend.sh").read_text(encoding="utf-8")
-    runtime_guard = '.venv/bin/python -c "import mlx, mlx_whisper"'
+    runtime_guard = '.venv/bin/python scripts/ci/assert_backend_bundle.py --installed'
 
     assert runtime_guard in build_script
-    assert '.venv/bin/pip install ".[mlx]"' in build_script
+    assert '.venv/bin/pip install ".[mlx]" -r desktop/build/mlx-requirements.txt' in build_script
     assert "packaged app will need ASR backend 'openai'" not in build_script
     assert "--collect-all mlx" in build_script
     assert "--collect-all mlx_whisper" in build_script
     for side_effect in (
         "npm --prefix frontend ci",
-        ".venv/bin/pip install",
+        '.venv/bin/pip install "pyinstaller',
         "rm -rf desktop/backend-dist desktop/backend-build",
         ".venv/bin/pyinstaller",
     ):
         assert build_script.index(runtime_guard) < build_script.index(side_effect)
     assert build_script.index("npm --prefix frontend ci") < build_script.index(".venv/bin/pyinstaller")
+    bundle_guard = ".venv/bin/python scripts/ci/assert_backend_bundle.py --bundle"
+    assert build_script.index(".venv/bin/pyinstaller") < build_script.index(bundle_guard)
+    assert build_script.index(bundle_guard) < build_script.index('[build-backend] done')
+    requirements = Path("desktop/build/mlx-requirements.txt").read_text()
+    lines = [line for line in requirements.splitlines() if line and not line.startswith("#")]
+    assert len(lines) == 3
+    assert lines[-1] == "mlx-whisper==0.4.3"
+    for name, abi, digest in (
+        ("mlx", "cp311-cp311", "238b50d2ee3917c836e73f9446011518b79ff094940eb0107fa6cd17d02a2eca"),
+        ("mlx_metal", "py3-none", "3825fff379dbc107dd3413e564a06caeaa24819910ec49c0439e454c06a1b9b8"),
+    ):
+        assert f"/{name}-0.32.2-{abi}-macosx_14_0_arm64.whl#sha256={digest}" in requirements
 
 
 def test_astryx_stone_theme_is_generated_offline_and_not_recompiled():
@@ -208,14 +220,13 @@ def test_electron_runtime_is_supported_secure_release():
     assert package["devDependencies"] == {
         "electron": "43.2.0",
         "electron-builder": "^26.0.0",
-        "ffmpeg-static": "^5.2.0",
     }
     assert root["dependencies"] == package["dependencies"]
     assert root["devDependencies"] == package["devDependencies"]
     assert lock["packages"]["node_modules/electron"]["version"] == "43.2.0"
     assert lock["packages"]["node_modules/electron-builder"]["version"] == "26.15.3"
     assert lock["packages"]["node_modules/electron-updater"]["version"] == "6.8.9"
-    assert lock["packages"]["node_modules/ffmpeg-static"]["version"] == "5.3.0"
+    assert "node_modules/ffmpeg-static" not in lock["packages"]
     assert not any(
         marker in package["devDependencies"]["electron"].lower()
         for marker in ("alpha", "beta", "nightly")
@@ -245,6 +256,25 @@ def test_automatic_tag_release_workflow_is_disabled():
         "secrets.",
     ):
         assert forbidden not in workflow
+
+
+def test_bundled_media_tools_are_prepared_packaged_and_checked_before_backend():
+    builder = Path("desktop/electron-builder.yml").read_text(encoding="utf-8")
+    main = Path("desktop/main.js").read_text(encoding="utf-8")
+    hook = Path("desktop/scripts/after-pack.js").read_text(encoding="utf-8")
+    assert "  - media-runtime.js\n" in builder
+    assert "beforePack: ./scripts/prepare-media-tools.js" in builder
+    assert "afterPack: ./scripts/after-pack.js" in builder
+    for tool in ("ffmpeg", "ffprobe"):
+        assert f"from: vendor/media-tools/darwin-arm64/{tool}\n    to: bin/{tool}" in builder
+    assert "from: vendor/media-tools/darwin-arm64/licenses\n    to: licenses/ffmpeg" in builder
+    assert "ffmpeg-static" not in builder
+    startup = main.split("app.whenReady().then", 1)[1]
+    guard = "if (app.isPackaged) checkMediaTools(process.resourcesPath);"
+    assert startup.index(guard) < startup.index("startBackend(backendPort)")
+    assert 'env.PATH = `${path.join(process.resourcesPath, "bin")}:${env.PATH || ""}`' in main
+    assert "checkMediaTools(resources)" in hook
+    assert "existsSync" not in hook
 
 
 def test_ci_workflow_checks_current_desktop_entrypoints_with_node_24():

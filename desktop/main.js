@@ -5,6 +5,7 @@ const https = require("https");
 const net = require("net");
 const path = require("path");
 const { BackendClient, redactText } = require("./backend-client");
+const { checkMediaTools } = require("./media-runtime");
 const {
   appUrl,
   createBadgePoller,
@@ -489,6 +490,7 @@ if (!app.requestSingleInstanceLock()) {
 
   app.whenReady().then(async () => {
     try {
+      if (app.isPackaged) checkMediaTools(process.resourcesPath);
       backendPort = await findFreePort();
       backendClient = new BackendClient({ port: backendPort, token: backendToken });
       outputActions = createOutputActions({ client: backendClient, shell, runtime });
