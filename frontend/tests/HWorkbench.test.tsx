@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import { App } from "../src/App";
 import { PROJECT, RUN, installFetchMock, jsonResponse } from "./helpers";
@@ -69,6 +69,36 @@ describe("Venus 1.0 result workbench", () => {
     await waitFor(() => expect(calls.filter(([path, options]) => path === "/api/runs/run-result/result/seen" && options?.method === "POST")).toHaveLength(1));
     const body = JSON.parse(String(calls.find(([path]) => path === "/api/runs/run-result/result/seen")?.[1]?.body));
     expect(body.expected_result_revision).toBe(3);
+  });
+
+  it("keeps playback positions across consecutive updates and output switches", async () => {
+    resultMocks(); route("/projects/project-1/runs/run-result?view=result"); render(<App />);
+    const first = await screen.findByLabelText<HTMLVideoElement>("播放 clip-1.mp4");
+    fireEvent.loadedMetadata(first);
+    act(() => {
+      first.currentTime = 1;
+      fireEvent.timeUpdate(first);
+      first.currentTime = 2;
+      fireEvent.timeUpdate(first);
+    });
+    expect(screen.getByRole("heading", { name: "两条高光已经完成" })).toBeVisible();
+
+    fireEvent.click(screen.getByRole("tab", { name: /成片 2/ }));
+    const second = screen.getByLabelText<HTMLVideoElement>("播放 clip-2.mp4");
+    fireEvent.loadedMetadata(second);
+    expect(second.currentTime).toBe(0);
+    second.currentTime = 3;
+    fireEvent.timeUpdate(second);
+
+    fireEvent.click(screen.getByRole("tab", { name: /成片 1/ }));
+    const restoredFirst = screen.getByLabelText<HTMLVideoElement>("播放 clip-1.mp4");
+    fireEvent.loadedMetadata(restoredFirst);
+    expect(restoredFirst.currentTime).toBe(2);
+    fireEvent.click(screen.getByRole("tab", { name: /成片 2/ }));
+    const restoredSecond = screen.getByLabelText<HTMLVideoElement>("播放 clip-2.mp4");
+    fireEvent.loadedMetadata(restoredSecond);
+    expect(restoredSecond.currentTime).toBe(3);
+    expect(screen.getByRole("heading", { name: "两条高光已经完成" })).toBeVisible();
   });
 
   it("normalizes unknown result view and renders a no-clip conclusion", async () => {
