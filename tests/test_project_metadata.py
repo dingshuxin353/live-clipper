@@ -112,21 +112,33 @@ def test_react_renderer_package_and_frozen_build_contract():
 
 def test_desktop_backend_build_fails_closed_without_mlx_before_any_side_effect():
     build_script = Path("desktop/scripts/build-backend.sh").read_text(encoding="utf-8")
-    runtime_guard = '.venv/bin/python -c "import mlx, mlx_whisper"'
+    runtime_guard = '.venv/bin/python scripts/ci/assert_backend_bundle.py --installed'
 
     assert runtime_guard in build_script
-    assert '.venv/bin/pip install ".[mlx]"' in build_script
+    assert '.venv/bin/pip install ".[mlx]" -r desktop/build/mlx-requirements.txt' in build_script
     assert "packaged app will need ASR backend 'openai'" not in build_script
     assert "--collect-all mlx" in build_script
     assert "--collect-all mlx_whisper" in build_script
     for side_effect in (
         "npm --prefix frontend ci",
-        ".venv/bin/pip install",
+        '.venv/bin/pip install "pyinstaller',
         "rm -rf desktop/backend-dist desktop/backend-build",
         ".venv/bin/pyinstaller",
     ):
         assert build_script.index(runtime_guard) < build_script.index(side_effect)
     assert build_script.index("npm --prefix frontend ci") < build_script.index(".venv/bin/pyinstaller")
+    bundle_guard = ".venv/bin/python scripts/ci/assert_backend_bundle.py --bundle"
+    assert build_script.index(".venv/bin/pyinstaller") < build_script.index(bundle_guard)
+    assert build_script.index(bundle_guard) < build_script.index('[build-backend] done')
+    requirements = Path("desktop/build/mlx-requirements.txt").read_text()
+    lines = [line for line in requirements.splitlines() if line and not line.startswith("#")]
+    assert len(lines) == 3
+    assert lines[-1] == "mlx-whisper==0.4.3"
+    for name, abi, digest in (
+        ("mlx", "cp311-cp311", "238b50d2ee3917c836e73f9446011518b79ff094940eb0107fa6cd17d02a2eca"),
+        ("mlx_metal", "py3-none", "3825fff379dbc107dd3413e564a06caeaa24819910ec49c0439e454c06a1b9b8"),
+    ):
+        assert f"/{name}-0.32.2-{abi}-macosx_14_0_arm64.whl#sha256={digest}" in requirements
 
 
 def test_astryx_stone_theme_is_generated_offline_and_not_recompiled():
