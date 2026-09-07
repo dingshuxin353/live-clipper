@@ -12,7 +12,7 @@ class FakeClient:
     def __init__(self):
         self.payloads = []
 
-    def complete_json(self, system_prompt, user_payload, max_tokens=2048):
+    def complete_json(self, system_prompt, user_payload, max_tokens=2048, temperature=0.1):
         self.payloads.append(user_payload)
         return {
             "window_id": user_payload["id"],
@@ -77,7 +77,7 @@ def test_scan_windows_file_reports_window_progress(tmp_path, capsys):
 
 def test_scan_windows_file_checkpoints_completed_windows_before_failure(tmp_path):
     class FailingSecondWindowClient:
-        def complete_json(self, system_prompt, user_payload, max_tokens=2048):
+        def complete_json(self, system_prompt, user_payload, max_tokens=2048, temperature=0.1):
             if user_payload["id"] == "w0002":
                 raise RuntimeError("api interrupted")
             return {
@@ -126,7 +126,7 @@ def test_scan_windows_file_resume_skips_checkpointed_windows(tmp_path):
         def __init__(self):
             self.window_ids = []
 
-        def complete_json(self, system_prompt, user_payload, max_tokens=2048):
+        def complete_json(self, system_prompt, user_payload, max_tokens=2048, temperature=0.1):
             self.window_ids.append(user_payload["id"])
             return {
                 "window_id": user_payload["id"],
@@ -187,7 +187,7 @@ def test_scan_windows_file_resume_skips_checkpointed_windows(tmp_path):
 
 def test_scan_windows_file_skips_invalid_model_candidate(tmp_path, monkeypatch):
     class InvalidClient:
-        def complete_json(self, system_prompt, user_payload, max_tokens=2048):
+        def complete_json(self, system_prompt, user_payload, max_tokens=2048, temperature=0.1):
             return {
                 "window_id": user_payload["id"],
                 "candidates": [
@@ -229,7 +229,7 @@ def test_scan_windows_file_skips_invalid_model_candidate(tmp_path, monkeypatch):
 
 def test_scan_windows_file_defaults_non_numeric_suggested_context_fields(tmp_path):
     class NonNumericContextClient:
-        def complete_json(self, system_prompt, user_payload, max_tokens=2048):
+        def complete_json(self, system_prompt, user_payload, max_tokens=2048, temperature=0.1):
             return {
                 "window_id": user_payload["id"],
                 "candidates": [
@@ -267,7 +267,7 @@ def test_scan_windows_file_defaults_non_numeric_suggested_context_fields(tmp_pat
 
 def test_scan_windows_file_skips_response_missing_candidates(tmp_path, monkeypatch):
     class MissingCandidatesClient:
-        def complete_json(self, system_prompt, user_payload, max_tokens=2048):
+        def complete_json(self, system_prompt, user_payload, max_tokens=2048, temperature=0.1):
             return {"window_id": user_payload["id"]}
 
     monkeypatch.chdir(tmp_path)
@@ -294,7 +294,7 @@ def test_scan_windows_file_skips_response_missing_candidates(tmp_path, monkeypat
 
 def test_scan_windows_file_skips_non_object_window_response(tmp_path, monkeypatch):
     class NonObjectWindowClient:
-        def complete_json(self, system_prompt, user_payload, max_tokens=2048):
+        def complete_json(self, system_prompt, user_payload, max_tokens=2048, temperature=0.1):
             return ["bad response"]
 
     monkeypatch.chdir(tmp_path)
@@ -320,7 +320,7 @@ def test_scan_windows_file_skips_non_object_window_response(tmp_path, monkeypatc
 
 def test_scan_windows_file_skips_mismatched_window_id(tmp_path, monkeypatch):
     class MismatchedWindowClient:
-        def complete_json(self, system_prompt, user_payload, max_tokens=2048):
+        def complete_json(self, system_prompt, user_payload, max_tokens=2048, temperature=0.1):
             return {"window_id": "other", "candidates": []}
 
     monkeypatch.chdir(tmp_path)
@@ -347,7 +347,7 @@ def test_scan_windows_file_skips_mismatched_window_id(tmp_path, monkeypatch):
 
 def test_scan_windows_file_skips_non_object_candidate(tmp_path, monkeypatch):
     class NonObjectCandidateClient:
-        def complete_json(self, system_prompt, user_payload, max_tokens=2048):
+        def complete_json(self, system_prompt, user_payload, max_tokens=2048, temperature=0.1):
             return {
                 "window_id": user_payload["id"],
                 "candidates": [
@@ -385,7 +385,7 @@ def test_scan_windows_file_skips_non_object_candidate(tmp_path, monkeypatch):
 
 def test_scan_windows_file_skips_candidate_outside_window(tmp_path, monkeypatch):
     class OutsideWindowClient:
-        def complete_json(self, system_prompt, user_payload, max_tokens=2048):
+        def complete_json(self, system_prompt, user_payload, max_tokens=2048, temperature=0.1):
             return {
                 "window_id": user_payload["id"],
                 "candidates": [
@@ -428,7 +428,7 @@ def test_scan_windows_file_skips_candidate_outside_window(tmp_path, monkeypatch)
 
 def test_scan_windows_file_skips_duplicate_candidate_ids(tmp_path, monkeypatch):
     class DuplicateCandidateIdClient:
-        def complete_json(self, system_prompt, user_payload, max_tokens=2048):
+        def complete_json(self, system_prompt, user_payload, max_tokens=2048, temperature=0.1):
             return {
                 "window_id": user_payload["id"],
                 "candidates": [

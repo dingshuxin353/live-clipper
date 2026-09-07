@@ -11,7 +11,7 @@ PROMPT_FILES = [
     "cheap_refine_candidate.md",
     "cheap_reverse_review.md",
     "cheap_scan_window.md",
-    "codex_select_clips.md",
+    "review_select_clips.md",
 ]
 
 
@@ -22,6 +22,10 @@ def _packaged_prompt_path(file_name: str):
 def load_prompt(file_name: str, description: str, *, prompt_dir: Path | None = None) -> str:
     if prompt_dir is not None:
         user_prompt = prompt_dir / file_name
+        if file_name == 'review_select_clips.md' and not user_prompt.exists():
+            historical = prompt_dir / 'codex_select_clips.md'
+            if historical.is_file():
+                user_prompt = historical
         if user_prompt.exists():
             return user_prompt.read_text(encoding="utf-8")
 

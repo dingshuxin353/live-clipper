@@ -6,12 +6,10 @@ import json
 import re
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, unquote, urlparse, urlsplit
+from urllib.parse import parse_qs, unquote, urlparse
 
-from . import config_editor, onboarding
 from .config import Settings
 from .project_domain import Run, stable_json
 from .project_file_grants import (
@@ -20,9 +18,10 @@ from .project_file_grants import (
     process_file_selection_grants,
 )
 from .project_recovery import continue_run, recheck_issue, retry_material, retry_output
-from .project_resources import resource_map, resource_repair_context
+from .project_resources import resource_repair_context
 from .project_result_domain import RequestConflictError, RevisionConflictError
 from .project_storage import ProjectRepository
+from .resource_store import ResourceError
 
 _ACTIVE_ISSUE_STATUSES = {"retrying", "action_required", "checking", "ready_to_recover", "recovering"}
 _RESULT_LIST_TYPES = {"clips_ready", "no_clip", "partial"}
@@ -690,12 +689,17 @@ class ProjectResultAPI:
             "updated_at": issue.updated_at,
             "resolved_at": issue.resolved_at,
         }
+        result['repair_resource_id'] = None
+        if issue.run_id and issue.issue_code in {'asr_resource_unavailable', 'ai_resource_unavailable'}:
+            run = self.repository.get_run(issue.run_id)
+            purpose = 'asr' if issue.issue_code == 'asr_resource_unavailable' else 'analysis' if 'analyze' in issue.redo_stages else 'review'
+            if run and run.parameter_snapshot.get('resource_contract') == 1:
+                result['repair_resource_id'] = run.parameter_snapshot.get('resources', {}).get(purpose, {}).get('resource_id')
         if include_events:
             result["events"] = [asdict(item) for item in self.repository.list_issue_events(issue.issue_id)]
         return result
 
-    @staticmethod
-    def issue_actions(issue: Any) -> list[str]:
+    def issue_actions(self, issue: Any) -> list[str]:
         actions: list[str] = []
         if issue.status in {"action_required", "retrying"}:
             actions.append("recheck")
@@ -711,6 +715,18 @@ class ProjectResultAPI:
                 "retry_output": ["retry_output"],
                 "retry_material": ["retry_material"],
             }.get(issue.recovery_capability, []))
+        if 'continue_run' in actions:
+            from .project_recovery import _check_frozen_resources
+            from .resource_store import ResourceError
+
+            run = self.repository.get_run(issue.run_id) if issue.run_id else None
+            try:
+                if run is None:
+                    raise ResourceError('original_configuration_unknown')
+                _check_frozen_resources(self.repository, run)
+            except ResourceError:
+                actions.remove('continue_run')
+                actions.append('recheck')
         if issue.diagnostic_id:
             actions.append("copy_diagnostic")
         return actions
@@ -842,106 +858,28 @@ class ProjectResultAPI:
         issue = self._issue(issue_id)
         self._require_issue_resource(issue, resource_id)
         try:
-            context = resource_repair_context(self.settings, resource_id, issue_id=issue_id)
-        except KeyError as exc:
+            run = self.repository.get_run(str(issue.run_id))
+            if run is None or run.parameter_snapshot.get('resource_contract') != 1:
+                raise ResourceError('original_configuration_unknown')
+            purpose = ('analysis' if 'analyze' in issue.redo_stages else 'review') if issue.issue_code == 'ai_resource_unavailable' else 'asr'
+            frozen = run.parameter_snapshot['resources'][purpose]
+            context = resource_repair_context(self.repository, resource_id, issue_id=issue_id, revision=frozen['revision'])
+        except (KeyError, ResourceError) as exc:
             raise ResultAPIError("resource_not_repairable", "资源不支持修复", status=404) from exc
         return {"ok": True, "repair_context": context}
 
     def update_connection(self, resource_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
-        _strict(payload, {"request_id", "issue_id", "api_base", "api_key"}, {"request_id", "issue_id", "api_base"})
-        request_id = _clean_string(payload["request_id"], "request_id", maximum=128)
-        issue_id = _clean_string(payload["issue_id"], "issue_id", maximum=128)
-        issue = self._issue(issue_id)
-        self._require_issue_resource(issue, resource_id)
-        resource = resource_map(self.settings).get(resource_id)
-        if resource is None or resource.resource_type != "analysis":
-            raise ResultAPIError("resource_not_repairable", "该资源只能从全局设置修复")
-        api_base = self._validate_api_base(payload["api_base"])
-        api_key_present = "api_key" in payload and bool(str(payload.get("api_key") or "").strip())
-        operation = {
-            "resource_id": resource_id,
-            "issue_id": issue_id,
-            "api_base": api_base,
-            "credential_supplied": api_key_present,
-        }
-        scope = f"resource.connection:{resource_id}:{issue_id}"
-        if self._idempotent(scope, request_id, operation, resource_id):
-            return {"ok": True, "resource_id": resource_id, "api_base": api_base, "credential_updated": api_key_present, "reused": True}
-        api_key = str(payload.get("api_key") or "")
-        if api_key_present:
-            normalized_key = api_key.strip()
-            if any(character in normalized_key for character in ("\r", "\n", "\0")):
-                raise ResultAPIError("validation_failed", "API key 内容无效", status=422, fields={"api_key": "包含控制字符"})
-        saved = config_editor.save_llm_api_base(api_base, config_path=self.config_path)
-        if not saved.get("ok"):
-            raise ResultAPIError("validation_failed", "连接地址未通过配置校验", status=422)
-        if api_key_present:
-            api_key_env = self.settings.llm.api_key_env if self.settings.llm else "CHEAP_MODEL_API_KEY"
-            key_result = onboarding.save_llm_api_key(
-                api_key,
-                api_key_env=api_key_env,
-                env_path=self.config_path.parent / ".env",
-            )
-            if not key_result.get("ok"):
-                raise ResultAPIError("validation_failed", "API key 保存失败", status=422, fields={"api_key": "内容无效"})
-        self._save_idempotency(scope, request_id, operation, "resource", resource_id)
-        return {
-            "ok": True,
-            "resource_id": resource_id,
-            "api_base": api_base,
-            "model": resource.version,
-            "credential_updated": api_key_present,
-            "reused": False,
-        }
+        raise ResultAPIError("resource_route_retired", "请打开原资源版本，验证同一账号的凭据后修复", status=410)
 
     def connection_test(self, resource_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
-        _strict(payload, {"request_id", "issue_id"}, {"request_id", "issue_id"})
-        request_id = _clean_string(payload["request_id"], "request_id", maximum=128)
-        issue_id = _clean_string(payload["issue_id"], "issue_id", maximum=128)
-        issue = self._issue(issue_id)
-        self._require_issue_resource(issue, resource_id)
-        resource = resource_map(self.settings).get(resource_id)
-        if resource is None or resource.resource_type != "analysis":
-            raise ResultAPIError("resource_not_repairable", "该资源不支持连接测试")
-        operation = {"resource_id": resource_id, "issue_id": issue_id}
-        scope = f"resource.connection-test:{resource_id}:{issue_id}"
-        existing = self.repository.get_idempotency_key(scope, request_id)
-        if existing is not None:
-            if existing["request_hash"] != _request_hash(operation) or existing["object_id"] != resource_id:
-                raise RequestConflictError("request_id_conflict")
-            if existing["object_type"] == "resource_test_failed":
-                raise ResultAPIError("connection_test_failed", "AI 连接测试失败，请检查地址、凭据和网络")
-            return {"ok": True, "resource_id": resource_id, "success": True, "reused": True}
-        result = onboarding.test_llm(
-            str(self.settings.cheap_model_api_base or ""),
-            str(self.settings.cheap_model_api_key or ""),
-            str(self.settings.cheap_model_name or ""),
-        )
-        tested_at = datetime.now(UTC).isoformat()
-        if not result.get("ok"):
-            self._save_idempotency(scope, request_id, operation, "resource_test_failed", resource_id)
-            raise ResultAPIError(
-                "connection_test_failed",
-                "AI 连接测试失败，请检查地址、凭据和网络",
-                current={"resource_id": resource_id, "success": False, "tested_at": tested_at, "failure_code": result.get("error_code")},
-            )
-        self._save_idempotency(scope, request_id, operation, "resource_test_success", resource_id)
-        return {"ok": True, "resource_id": resource_id, "success": True, "tested_at": tested_at, "reused": False}
-
-    @staticmethod
-    def _validate_api_base(value: Any) -> str:
-        api_base = _clean_string(value, "api_base", maximum=2048).rstrip("/")
-        parsed = urlsplit(api_base)
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password:
-            raise ResultAPIError("validation_failed", "api_base 必须是无内嵌凭据的 HTTP(S) 地址", status=422, fields={"api_base": "URL 无效"})
-        return api_base
+        raise ResultAPIError("resource_route_retired", "请使用资源用途验证", status=410)
 
     def _require_issue_resource(self, issue: Any, resource_id: str) -> None:
         if issue.issue_code not in {"ai_resource_unavailable", "asr_resource_unavailable"}:
             raise ResultAPIError("resource_not_repairable", "当前问题不是资源连接问题")
         run = self.repository.get_run(str(issue.run_id)) if issue.run_id else None
         references = run.parameter_snapshot.get("resources", {}) if run else {}
-        expected = references.get("review_ref") if issue.issue_code == "ai_resource_unavailable" else references.get("asr_ref")
+        expected = references.get("analysis_ref" if "analyze" in issue.redo_stages else "review_ref") if issue.issue_code == "ai_resource_unavailable" else references.get("asr_ref")
         if str(expected or issue.root_cause_ref or "") != resource_id:
             raise ResultAPIError("resource_not_repairable", "资源与当前问题不匹配")
 

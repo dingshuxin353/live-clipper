@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import os
-from datetime import datetime, timedelta
-
 from live_clipper import mcp_tools
-from live_clipper.config import RecordingSourceDefaultConfig, ServiceConfig, Settings
+from live_clipper.config import RecordingSourceDefaultConfig, Settings
 from live_clipper.utils import read_json, write_json
 
 
@@ -71,8 +68,8 @@ def test_read_tools_return_service_state_runs_detail_logs_and_review_package(tmp
     write_json(service_dir / "confirmations.json", {"confirmations": [{"id": "confirm-1", "status": "pending"}]})
     (service_dir / "runs").mkdir()
     (service_dir / "runs" / "run-1.log").write_text("one\ntwo\nthree\n", encoding="utf-8")
-    write_json(run_dir / "codex_brief.json", {"candidates": [_candidate()]})
-    (run_dir / "codex_review.md").write_text("# Review\n", encoding="utf-8")
+    write_json(run_dir / "review_brief.json", {"candidates": [_candidate()]})
+    (run_dir / "review_notes.md").write_text("# Review\n", encoding="utf-8")
     write_json(run_dir / "selected_clips.template.json", _selection())
     write_json(run_dir / "refined_candidates.json", [_candidate()])
     write_json(run_dir / "selected_clips.json", _selection())
@@ -90,12 +87,12 @@ def test_read_tools_return_service_state_runs_detail_logs_and_review_package(tmp
     assert status["pending_confirmation_count"] == 1
     assert runs["runs"][0]["run_id"] == "run-1"
     assert detail["run"]["run_dir"] == str(run_dir)
-    assert detail["files"]["codex_brief.json"]["exists"] is True
+    assert detail["files"]["review_brief.json"]["exists"] is True
     assert detail["selected_count"] == 1
     assert detail["rendered_clip_count"] == 1
     assert log["log"] == "two\nthree"
-    assert package["files"]["codex_brief.json"]["content"]["candidates"][0]["id"] == "clip-1"
-    assert package["files"]["codex_review.md"]["text"] == "# Review\n"
+    assert package["files"]["review_brief.json"]["content"]["candidates"][0]["id"] == "clip-1"
+    assert package["files"]["review_notes.md"]["text"] == "# Review\n"
     assert run["run_id"] in status["pending_review_runs"]
 
 
@@ -284,40 +281,6 @@ def test_cleanup_tools_use_saved_run_input_instead_of_legacy_setting(tmp_path, m
     assert confirmation["validation"]["must_be_relative_to"] == str(run_input)
 
 
-def test_scan_now_and_start_run_for_source_use_service_core(tmp_path, monkeypatch):
-    service_dir = tmp_path / "service"
-    source_dir = tmp_path / "nas"
-    source_dir.mkdir()
-    source = source_dir / "recording.mkv"
-    source.write_bytes(b"video")
-    stable_time = (datetime.now() - timedelta(minutes=30)).timestamp()
-    os.utime(source, (stable_time, stable_time))
-
-    class FakeProcess:
-        pid = 4321
-
-    monkeypatch.setattr(mcp_tools.service.subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
-    settings = Settings(
-        cheap_model_api_key="test-key",
-        service=ServiceConfig(scan_interval_minutes=30),
-        recording_source_default=RecordingSourceDefaultConfig(
-            source_dir=source_dir,
-            input_dir=tmp_path / "input",
-            output_root=tmp_path / "output",
-            min_age_minutes=10,
-            stable_check_seconds=0,
-        ),
-    )
-
-    scan = mcp_tools.scan_now(settings=settings, service_dir=service_dir)
-    duplicate = mcp_tools.start_run_for_source(str(source), settings=settings, service_dir=service_dir)
-
-    assert scan["ok"] is True
-    assert scan["started_runs"] == 1
-    assert scan["message"].startswith("本次发现 1 个，本轮启动 1 个，当前总排队 0 个；")
-    assert "不支持格式 0 个" in scan["message"]
-    assert duplicate["ok"] is False
-    assert duplicate["error_code"] == "duplicate_run"
 
 
 def test_scan_and_retry_return_actionable_configuration_error(tmp_path):
@@ -331,7 +294,7 @@ def test_scan_and_retry_return_actionable_configuration_error(tmp_path):
     for result in (scan, retry):
         assert result["ok"] is False
         assert result["error_code"] == "pipeline_configuration_required"
-        assert result["message"] == "请先到「设置 → AI 服务」配置 AI API Key，再开始处理录播。"
+        assert result["message"] == "原处理资源身份不明，请在项目中明确选择资源后新建处理记录。"
 
 
 def test_retry_rejects_missing_run_wrong_phase_and_missing_sources(tmp_path):
@@ -346,33 +309,9 @@ def test_retry_rejects_missing_run_wrong_phase_and_missing_sources(tmp_path):
 
     assert missing["error_code"] == "run_not_found"
     assert wrong_phase["error_code"] == "invalid_phase"
-    assert unavailable["error_code"] == "source_unavailable"
+    assert unavailable["error_code"] == "pipeline_configuration_required"
 
 
-def test_start_run_for_source_rejects_unstable_or_out_of_scope_source(tmp_path):
-    service_dir = tmp_path / "service"
-    source_dir = tmp_path / "nas"
-    source_dir.mkdir()
-    recent = source_dir / "recent.mkv"
-    recent.write_bytes(b"video")
-    settings = Settings(
-        cheap_model_api_key="test-key",
-        recording_source_default=RecordingSourceDefaultConfig(
-            source_dir=source_dir,
-            input_dir=tmp_path / "input",
-            output_root=tmp_path / "output",
-            min_age_minutes=10,
-            stable_check_seconds=0,
-        ),
-    )
-
-    unstable = mcp_tools.start_run_for_source(str(recent), settings=settings, service_dir=service_dir)
-    escaped = mcp_tools.start_run_for_source(str(tmp_path / "elsewhere.mkv"), settings=settings, service_dir=service_dir)
-
-    assert unstable["ok"] is False
-    assert unstable["error_code"] == "source_not_stable"
-    assert escaped["ok"] is False
-    assert escaped["error_code"] == "path_rejected"
 
 
 def test_destructive_tools_create_confirmations_and_never_delete(tmp_path):

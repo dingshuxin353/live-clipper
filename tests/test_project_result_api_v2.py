@@ -4,8 +4,9 @@ import hashlib
 import json
 from pathlib import Path
 
+from resource_test_support import ready_project_config
+
 from live_clipper.config import PathsConfig, Settings
-from live_clipper.project_domain import default_project_config
 from live_clipper.project_resources import resolve_parameter_snapshot
 from live_clipper.project_result_api import ProjectResultAPI
 from live_clipper.project_service import ProjectManager, open_project_repository
@@ -27,7 +28,7 @@ def result_api_fixture(tmp_path: Path, *, output_container: str = "mp4"):
     manager = ProjectManager(repository, settings)
     project = manager.create_project(
         name="高光项目",
-        config=default_project_config(source_dir, output_dir),
+        config=ready_project_config(repository, source_dir, output_dir),
         activation_state="active",
     )
     revision = repository.get_config_revision(project.project_id)
@@ -38,7 +39,7 @@ def result_api_fixture(tmp_path: Path, *, output_container: str = "mp4"):
         trigger_source="manual",
         first_seen_path=str(source),
         latest_seen_path=str(source),
-        parameter_snapshot=resolve_parameter_snapshot(revision.config, settings),
+        parameter_snapshot=resolve_parameter_snapshot(revision.config, settings, repository=repository),
         config_revision=revision.revision,
         queued_at="2026-08-27T00:00:00Z",
     ).run

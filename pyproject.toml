@@ -68,6 +68,7 @@ where = ["src"]
 [tool.setuptools.package-data]
 live_clipper = [
   "prompts/*.md",
+  "validation_audio.wav",
   "web_static/fonts/*.woff2",
   "web_static/fonts/*.pdf",
   "web_static/fonts/*.txt",

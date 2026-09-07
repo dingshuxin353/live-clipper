@@ -189,7 +189,7 @@ def legacy_id(source_fingerprint: str, object_identity: str) -> str:
 def assert_secret_free(value: Any, *, path: str = "$") -> None:
     if isinstance(value, Mapping):
         for key, item in value.items():
-            if _CREDENTIAL_KEY.search(str(key)):
+            if str(key) != "max_tokens" and _CREDENTIAL_KEY.search(str(key)):
                 raise ValueError(f"credential field is not persistable: {path}.{key}")
             assert_secret_free(item, path=f"{path}.{key}")
     elif isinstance(value, (list, tuple)):
@@ -225,8 +225,8 @@ def default_project_config(source_directory: str | Path, output_directory: str |
             "timezone": "Asia/Tokyo",
         },
         "resources": {
-            "asr_ref": "legacy.asr.default",
-            "analysis_ref": "legacy.analysis.default",
+            "asr_ref": "",
+            "analysis_ref": "",
             "arbitration_mode": "reuse_analysis",
             "arbitration_ref": None,
         },
@@ -342,12 +342,12 @@ def validate_project_config(config: Mapping[str, Any]) -> dict[str, Any]:
     except ZoneInfoNotFoundError as exc:
         raise ValueError("invalid schedule timezone") from exc
     resources = config["resources"]
-    if not all(isinstance(resources[field], str) and resources[field] for field in ("asr_ref", "analysis_ref")):
+    if not all(isinstance(resources[field], str) for field in ("asr_ref", "analysis_ref")):
         raise ValueError("ASR and analysis resource references are required")
     if resources["arbitration_mode"] != "reuse_analysis" or resources["arbitration_ref"] is not None:
         raise ValueError("arbitration must reuse the analysis resource")
     if version == 2:
-        if not isinstance(resources["review_ref"], str) or not resources["review_ref"]:
+        if not isinstance(resources["review_ref"], str):
             raise ValueError("schema v2 review_ref is required")
         processing = config["processing"]
         if processing["review_strategy"] != "ai_auto":

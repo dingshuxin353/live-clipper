@@ -124,6 +124,7 @@ export interface OutputMaterial {
 }
 export type MaterialDraft = Pick<OutputMaterial, "titles" | "preferred_title_id" | "description" | "tags" | "material_revision">;
 export interface IssueDetail extends IssueSummary {
+  repair_resource_id?: string | null;
   category: string; scope: { type: "project" | "run" | "output" | "material"; project_id: string; run_id: string | null; output_id: string | null; material_id: string | null };
   impact: string; preserved_content: string; safe_checkpoint: RunStage | null; reuse_stages: RunStage[]; redo_stages: RunStage[];
   automatic_attempt_count: number; total_attempt_count: number; next_retry_at: string | null; retry_exhausted: boolean;
@@ -134,8 +135,8 @@ export interface IssueEvent { issue_event_id?: number; event_id?: number; issue_
 export type IssueGroup = IssueGroupSummary;
 export interface RecoveryAttempt { ok: true; run_id: string; recovery_attempt_id: string; queued_at: string; queue_position: number | null; reused_stages: string[]; rerun_stages: string[] }
 export interface RunResultPayload { ok: true; result: RunResult; review_session: ReviewSession | null; decisions: ReviewDecision[]; outputs: RunOutput[]; issues: IssueSummary[]; available_actions: string[] }
-export interface RepairContext { resource_id: string; display_name: string; resource_type: string; api_base: string | null; model: string | null; credential_state: string; repair_capability: "inline_connection" | "settings_only"; settings_url: string; issue_id: string }
-export interface ResourceOption { resource_id: string; display_name: string; resource_type: string; ready: boolean; problem: string | null; version: string | null }
+export interface RepairContext { revision: number; resource_id: string; display_name: string; resource_type: string; api_base: string | null; model: string | null; credential_state: string; repair_capability: "inline_connection" | "settings_only"; settings_url: string; issue_id: string }
+export interface ResourceOption { resource_id: string; display_name: string; resource_type: string; purposes: string[]; ready_purposes: string[]; ready: boolean; problem: string | null; version: string | null }
 export interface FormOptionsPayload {
   ok: true; data_mode: "legacy" | "projects"; resources: ResourceOption[];
   first_scan_modes: ProjectConfig["source"]["first_scan_mode"][]; lookback_days: Array<3 | 7 | 30>;
@@ -153,8 +154,8 @@ export type OnboardingEntryState = "new" | "resume" | "paused" | "activation_pen
 export type OnboardingSessionState = "in_progress" | "paused" | "activation_pending" | "completed";
 export type OnboardingStep = "welcome" | "asr" | "ai" | "project" | "complete";
 export interface OnboardingDraft {
-  asr?: { mode?: "local" | "cloud"; local_model_id?: string; model_source?: string; api_base?: string; model?: string };
-  ai?: { provider_id?: string; api_base?: string; model?: string };
+  asr?: { resource_id?: string; mode?: "local" | "cloud"; local_model_id?: string; model_source?: string; api_base?: string; model?: string };
+  ai?: { resource_id?: string; provider_id?: string; api_base?: string; model?: string };
   project?: { name?: string; source_directory?: string; trigger_mode?: "manual" | "scheduled"; schedule_mode?: "daily" | "interval"; daily_time?: string; interval_minutes?: number; output_directory?: string };
 }
 export interface OnboardingSession {

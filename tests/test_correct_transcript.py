@@ -12,7 +12,7 @@ class FakeClient:
     def __init__(self):
         self.calls = []
 
-    def complete_json(self, system_prompt, user_payload, max_tokens=2048):
+    def complete_json(self, system_prompt, user_payload, max_tokens=2048, temperature=0.1):
         self.calls.append((system_prompt, user_payload, max_tokens))
         return {
             "sentences": [
@@ -75,7 +75,7 @@ def test_correct_transcript_file_allows_missing_glossary(tmp_path):
 
 def test_correct_transcript_file_keeps_original_sentence_timestamps(tmp_path):
     class TimestampChangingClient(FakeClient):
-        def complete_json(self, system_prompt, user_payload, max_tokens=2048):
+        def complete_json(self, system_prompt, user_payload, max_tokens=2048, temperature=0.1):
             return {
                 "sentences": [
                     {"start": 99.0, "end": 100.0, "text": "改正文本", "speaker": "changed"},
@@ -106,7 +106,7 @@ def test_correct_transcript_file_keeps_original_sentence_timestamps(tmp_path):
 
 def test_correct_transcript_file_accepts_bare_sentence_list_response(tmp_path):
     class BareListClient(FakeClient):
-        def complete_json(self, system_prompt, user_payload, max_tokens=2048):
+        def complete_json(self, system_prompt, user_payload, max_tokens=2048, temperature=0.1):
             return [
                 {
                     "start": 99.0,
@@ -149,7 +149,7 @@ def test_correct_transcript_file_batches_long_transcripts_and_merges_results(tmp
         def __init__(self):
             self.calls = []
 
-        def complete_json(self, system_prompt, user_payload, max_tokens=2048):
+        def complete_json(self, system_prompt, user_payload, max_tokens=2048, temperature=0.1):
             self.calls.append((system_prompt, user_payload, max_tokens))
             return {
                 "sentences": [
@@ -213,7 +213,7 @@ def test_correct_transcript_file_default_batch_size_stays_conservative_for_model
         def __init__(self):
             self.batch_lengths = []
 
-        def complete_json(self, system_prompt, user_payload, max_tokens=2048):
+        def complete_json(self, system_prompt, user_payload, max_tokens=2048, temperature=0.1):
             self.batch_lengths.append(len(user_payload["sentences"]))
             return {
                 "sentences": [
@@ -248,7 +248,7 @@ def test_correct_transcript_file_checkpoints_completed_batches_before_failure(tm
         def __init__(self):
             self.calls = 0
 
-        def complete_json(self, system_prompt, user_payload, max_tokens=2048):
+        def complete_json(self, system_prompt, user_payload, max_tokens=2048, temperature=0.1):
             self.calls += 1
             if self.calls == 2:
                 raise RuntimeError("api interrupted")
@@ -298,7 +298,7 @@ def test_correct_transcript_file_resume_skips_checkpointed_sentences(tmp_path):
         def __init__(self):
             self.payloads = []
 
-        def complete_json(self, system_prompt, user_payload, max_tokens=2048):
+        def complete_json(self, system_prompt, user_payload, max_tokens=2048, temperature=0.1):
             self.payloads.append(user_payload)
             return {
                 "sentences": [
@@ -357,7 +357,7 @@ def test_correct_transcript_file_resume_checkpoint_counts_from_original_start(tm
         def __init__(self):
             self.calls = 0
 
-        def complete_json(self, system_prompt, user_payload, max_tokens=2048):
+        def complete_json(self, system_prompt, user_payload, max_tokens=2048, temperature=0.1):
             self.calls += 1
             if self.calls == 3:
                 raise RuntimeError("api interrupted")
@@ -416,7 +416,7 @@ def test_correct_transcript_file_resume_checkpoint_counts_from_original_start(tm
 
 def test_correct_transcript_file_falls_back_to_original_batch_on_sentence_count_mismatch(tmp_path, monkeypatch):
     class MismatchClient(FakeClient):
-        def complete_json(self, system_prompt, user_payload, max_tokens=2048):
+        def complete_json(self, system_prompt, user_payload, max_tokens=2048, temperature=0.1):
             return {
                 "sentences": [],
                 "corrections": [],
@@ -446,12 +446,12 @@ def test_correct_transcript_file_falls_back_to_original_batch_on_sentence_count_
     log = read_json(logs[0])
     assert log["raw_sentence_count"] == 1
     assert log["model_sentence_count"] == 0
-    assert log["model_response"]["sentences"] == []
+    assert "model_response" not in log and "user_payload" not in log
 
 
 def test_correct_transcript_file_rejects_non_list_sentences(tmp_path, monkeypatch):
     class BadShapeClient(FakeClient):
-        def complete_json(self, system_prompt, user_payload, max_tokens=2048):
+        def complete_json(self, system_prompt, user_payload, max_tokens=2048, temperature=0.1):
             return {
                 "sentences": {"text": "bad"},
                 "corrections": [],
@@ -476,4 +476,4 @@ def test_correct_transcript_file_rejects_non_list_sentences(tmp_path, monkeypatc
 
     logs = list(Path("work/logs").glob("correct_transcript_validation_failure_*.json"))
     assert len(logs) == 1
-    assert read_json(logs[0])["model_response"]["sentences"] == {"text": "bad"}
+    assert "model_response" not in read_json(logs[0])

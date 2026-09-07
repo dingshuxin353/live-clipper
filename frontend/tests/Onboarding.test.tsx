@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { createMemoryRouter, RouterProvider } from "react-router-dom";
 
 import { Onboarding } from "../src/Onboarding";
 import type { OnboardingDraft, OnboardingSession, OnboardingSnapshot } from "../src/project-dto";
@@ -49,7 +49,7 @@ export function onboardingSnapshot(session: OnboardingSession = SESSION): Onboar
 
 function renderOnboarding(snapshot = onboardingSnapshot(), handlers: Partial<React.ComponentProps<typeof Onboarding>> = {}) {
   const props = { snapshot, onSession: vi.fn(), onRefresh: vi.fn(async () => snapshot), onPaused: vi.fn(), onClose: vi.fn(), ...handlers };
-  return { ...render(<MemoryRouter><Onboarding {...props} /></MemoryRouter>), props };
+  return { ...render(<RouterProvider router={createMemoryRouter([{ path: "*", element: <Onboarding {...props} /> }])} />), props };
 }
 
 describe("five-step first-run setup", () => {
@@ -100,43 +100,36 @@ describe("five-step first-run setup", () => {
     expect(calls.map(([path]) => path).filter((path) => ["/api/onboarding/session", "/api/onboarding/pause"].includes(path))).toEqual(["/api/onboarding/session", "/api/onboarding/pause"]);
   });
 
-  it("selects the backend-recommended balanced model and commits an installed model", async () => {
-    const asrSession = { ...SESSION, current_step: "asr" as const, draft: { asr: { mode: "local" as const, local_model_id: "balanced", model_source: "modelscope" } } };
-    const committed = { ...asrSession, revision: 2, draft: asrSession.draft };
-    const calls = installFetchMock({ "/api/onboarding/resources/asr/local": { ok: true, session: committed } }); renderOnboarding(onboardingSnapshot(asrSession));
-    expect(screen.getByText("平衡").closest("button")).toHaveClass("selected");
-    fireEvent.click(screen.getByRole("button", { name: "使用这个模型" }));
-    await waitFor(() => expect(calls.some(([path]) => path === "/api/onboarding/resources/asr/local")).toBe(true));
-    expect(await screen.findByRole("button", { name: "已保存" })).toBeVisible();
+  it("requires an explicit resource selection and persists only its identity", async () => {
+    const session = { ...SESSION, current_step: "asr" as const };
+    const calls = installFetchMock({ "/api/resources": { resources: [{ resource_id: "speech", name: "课程识别", ready: true, config: { purposes: ["asr"] }, validation: { asr: { state: "ready" } } }] } }, session);
+    renderOnboarding(onboardingSnapshot(session));
+    expect(screen.getByRole("button", { name: "继续" })).toBeDisabled();
+    await screen.findByRole("option", { name: /课程识别/ });
+    fireEvent.change(screen.getByLabelText("资源"), { target: { value: "speech" } });
+    expect(screen.getByRole("button", { name: "继续" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "继续" }));
+    await waitFor(() => expect(calls.some(([path]) => path === "/api/onboarding/session")).toBe(true));
+    const body = JSON.parse(String(calls.find(([path]) => path === "/api/onboarding/session")![1]?.body));
+    expect(body.patch.asr).toEqual({ resource_id: "speech" });
+    expect(calls.some(([path]) => path.includes('/resources/asr/'))).toBe(false);
   });
 
-  it("renders only real byte progress with progressbar semantics", () => {
-    const session = { ...SESSION, current_step: "asr" as const, draft: { asr: { mode: "local" as const, local_model_id: "light", model_source: "modelscope" } } };
-    const snapshot = onboardingSnapshot(session); snapshot.model_catalog[0] = { ...snapshot.model_catalog[0], state: "downloading", downloading: true, job_id: "job-1", bytes_downloaded: 250 };
-    installFetchMock({ "/api/jobs/job-1": () => new Promise<Response>(() => undefined) }); renderOnboarding(snapshot);
-    const progress = screen.getByRole("progressbar", { name: "模型下载进度" });
-    expect(progress).toHaveAttribute("aria-valuenow", "25"); expect(screen.getByText(/250 B \/ 1000 B/)).toBeVisible();
+  it("blocks analysis-only evidence when onboarding also needs review", async () => {
+    const session = { ...SESSION, current_step: "ai" as const, draft: { ai: { resource_id: "analysis" } } };
+    installFetchMock({ "/api/resources": { resources: [{ resource_id: "analysis", name: "仅分析", ready: false, config: { purposes: ["analysis", "review"] }, validation: { analysis: { state: "ready" } } }] } }, session);
+    renderOnboarding(onboardingSnapshot(session)); await screen.findByRole("option", { name: /仅分析/ });
+    expect(screen.getByRole("button", { name: "继续" })).toBeDisabled();
+    expect(screen.getByText("所选资源尚未就绪")).toBeVisible();
   });
 
-  it("keeps cloud ASR key outside React state and clears it immediately after submission", async () => {
-    const marker = "asr-secret-marker"; const session = { ...SESSION, current_step: "asr" as const, draft: { asr: { mode: "cloud" as const, api_base: "https://asr.example/v1", model: "speech" } } };
-    const calls = installFetchMock({ "/api/onboarding/resources/asr/cloud": { ok: true, session: { ...session, revision: 2 } } }); renderOnboarding(onboardingSnapshot(session));
-    const key = screen.getByLabelText("API key") as HTMLInputElement; fireEvent.input(key, { target: { value: marker } });
-    expect(screen.getByLabelText("服务地址").closest(".astryx-text-input")).not.toBeNull();
-    expect(key.closest(".astryx-field")).not.toBeNull();
-    expect(document.body.innerHTML).not.toContain(marker); fireEvent.click(screen.getByRole("button", { name: "测试并保存" }));
-    await waitFor(() => expect(calls.some(([path]) => path === "/api/onboarding/resources/asr/cloud")).toBe(true));
-    const body = JSON.parse(String(calls.find(([path]) => path === "/api/onboarding/resources/asr/cloud")?.[1]?.body));
-    expect(body.api_key).toBe(marker); expect(key).toHaveValue(""); expect(document.body.innerHTML).not.toContain(marker);
-    expect(localStorage.length).toBe(0); expect(sessionStorage.length).toBe(0); expect(window.location.href).not.toContain(marker);
-  });
-
-  it("uses AI presets as prefill and invalidates success when a field changes", async () => {
-    const session = { ...SESSION, current_step: "ai" as const, draft: { ai: { provider_id: "deepseek", api_base: "https://api.example/v1", model: "chat" } } };
-    const snapshot = onboardingSnapshot(session); snapshot.resources.ai = { configured: true, ready: true, credential_present: true, provider_label: "DeepSeek", model: "chat", problem: null };
-    installFetchMock(); renderOnboarding(snapshot); expect(screen.getByText("AI 服务连接成功")).toBeVisible();
-    fireEvent.change(screen.getByLabelText("模型"), { target: { value: "new-model" } });
-    await waitFor(() => expect(screen.getByText("连接尚未验证")).toBeVisible());
+  it("opens the same resource editor inside the first-run guide", async () => {
+    const session = { ...SESSION, current_step: "ai" as const };
+    installFetchMock({}, session); renderOnboarding(onboardingSnapshot(session));
+    fireEvent.click(screen.getByRole("button", { name: "添加资源" }));
+    expect(await screen.findByLabelText("资源名称")).toBeVisible();
+    expect(screen.getAllByLabelText("资源名称")).toHaveLength(1);
+    expect(screen.getByLabelText("首次设置步骤")).toBeVisible();
   });
 
   it("derives the untouched project name from the selected source and performs final validation", async () => {

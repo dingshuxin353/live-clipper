@@ -182,20 +182,50 @@ describe("Venus 1.0 result workbench", () => {
     expect(JSON.stringify(body)).not.toContain("selected_path");
   });
 
-  it("repairs an inline AI connection, tests it, then rechecks the issue", async () => {
+  it("repairs the frozen review resource after the project has switched models", async () => {
     const issueSummary = { issue_id: "issue-ai", issue_code: "ai_resource_unavailable", group_key: "ai", status: "action_required", impact_level: "blocking", title: "AI 审阅资源不可用", summary: "连接失败", next_step: "修复连接后重新检查", issue_revision: 5, available_actions: ["open_resource_repair", "recheck"] };
-    const issue = { ...issueSummary, category: "resource", scope: { type: "run", project_id: "project-1", run_id: "run-result", output_id: null, material_id: null }, impact: "AI 审阅暂停", preserved_content: "候选与转写已保留", safe_checkpoint: "arbitrate", reuse_stages: ["read_source", "transcribe", "analyze", "arbitrate"], redo_stages: ["review", "render"], automatic_attempt_count: 2, total_attempt_count: 2, next_retry_at: null, retry_exhausted: true, diagnostic: { diagnostic_id: "diag-ai", summary: "连接不可用" }, occurred_at: "2026-08-27T03:00:00Z", updated_at: "2026-08-27T03:00:00Z", resolved_at: null, events: [] };
+    const issue = { ...issueSummary, repair_resource_id: "original.review", category: "resource", scope: { type: "run", project_id: "project-1", run_id: "run-result", output_id: null, material_id: null }, impact: "AI 审阅暂停", preserved_content: "候选与转写已保留", safe_checkpoint: "arbitrate", reuse_stages: ["read_source", "transcribe", "analyze", "arbitrate"], redo_stages: ["review", "render"], automatic_attempt_count: 2, total_attempt_count: 2, next_retry_at: null, retry_exhausted: true, diagnostic: { diagnostic_id: "diag-ai", summary: "连接不可用" }, occurred_at: "2026-08-27T03:00:00Z", updated_at: "2026-08-27T03:00:00Z", resolved_at: null, events: [] };
     const ready = { ...issue, status: "ready_to_recover", issue_revision: 6, available_actions: ["continue_run"] };
-    const calls = resultMocks({ "/api/runs/run-result/result": { ...RESULT, issues: [issueSummary] }, "/api/issues/issue-ai": { ok: true, issue }, "/api/resources/analysis.main/repair-context": { ok: true, repair_context: { resource_id: "analysis.main", display_name: "AI 审阅资源", resource_type: "analysis", api_base: "https://api.example.com/v1", model: "review-model", credential_state: "missing", repair_capability: "inline_connection", settings_url: "/settings", issue_id: "issue-ai" } }, "/api/resources/analysis.main/connection": { ok: true, resource_id: "analysis.main", api_base: "https://api.example.com/v1", model: "review-model", credential_updated: true, reused: false }, "/api/resources/analysis.main/connection-test": { ok: true, resource_id: "analysis.main", success: true, tested_at: "2026-08-27T03:02:00Z", reused: false }, "/api/issues/issue-ai/recheck": { ok: true, issue: ready, reused: false } });
+    const original = { resource_id: "original.review", name: "原审阅资源", kind: "ai", revision: 1, config: { provider: "custom", endpoint: "https://original.test/v1", model: "original-model", purposes: ["review"] }, validation: {}, ready: false, deleted: false, projects: [], has_credential: true };
+    const calls = resultMocks({ "/api/runs/run-result/result": { ...RESULT, issues: [issueSummary] }, "/api/issues/issue-ai": { ok: true, issue },
+      "/api/resources/original.review/repair-context": { ok: true, repair_context: { revision: 1 } },
+      "/api/resources/original.review/revisions/1": { ok: true, resource: original },
+      "/api/resources/validate": { ok: true, validation_id: "original-proof", results: { review: { state: "ready" } } },
+      "/api/resources/original.review/repair": { ok: true, resource: original },
+      "/api/issues/issue-ai/recheck": { ok: true, issue: ready, reused: false } });
     route("/projects/project-1/runs/run-result?view=result&issue=issue-ai"); render(<App />);
     const drawer = await screen.findByRole("dialog", { name: "问题详情" }); fireEvent.click(await within(drawer).findByRole("button", { name: "修复资源连接" }));
-    const apiKey = await screen.findByLabelText("API Key（留空表示不更新）");
-    expect(apiKey.closest(".astryx-field")).not.toBeNull();
-    fireEvent.input(apiKey, { target: { value: "new-secret" } });
-    fireEvent.click(screen.getByRole("button", { name: "保存、测试并重新检查" }));
-    await waitFor(() => expect(calls.some(([path]) => path === "/api/resources/analysis.main/connection-test")).toBe(true));
-    const connectionBody = JSON.parse(String(calls.find(([path]) => path === "/api/resources/analysis.main/connection")?.[1]?.body));
-    expect(connectionBody).toMatchObject({ issue_id: "issue-ai", api_key: "new-secret" });
-    expect(calls.some(([path]) => path === "/api/issues/issue-ai/recheck")).toBe(true);
+    const apiKey = await screen.findByLabelText("原账号的新凭据");
+    expect(screen.getByText(/original-model/)).toBeVisible();
+    fireEvent.change(apiKey, { target: { value: "new-secret" } });
+    fireEvent.click(screen.getByLabelText("确认仍属于原供应商的同一账号和业务空间"));
+    fireEvent.click(screen.getByRole("button", { name: "验证并修复原凭据" }));
+    await waitFor(() => expect(calls.some(([path]) => path === "/api/issues/issue-ai/recheck")).toBe(true));
+    const body = JSON.parse(String(calls.find(([path]) => path === "/api/resources/original.review/repair")?.[1]?.body));
+    expect(body).toMatchObject({ revision: 1, credential: "new-secret", validation_id: "original-proof", confirm_same_account: true });
+    expect(calls.some(([path]) => path.includes('/connection'))).toBe(false);
+    expect(JSON.stringify(localStorage)).not.toContain('new-secret');
+  });});
+
+
+it('keeps project draft on revision conflict and saves only after comparing the latest project', async () => {
+  let updates = 0; let expected: number | undefined;
+  const newer = { ...PROJECT, name: '另一处保存的项目', current_config_revision: 2 };
+  const calls = installFetchMock({
+    '/api/projects/project-1': (options?: RequestInit) => {
+      if (options?.method !== 'PATCH') return jsonResponse({ ok: true, project: updates ? newer : PROJECT });
+      updates++; expected = JSON.parse(String(options.body)).expected_revision;
+      return updates === 1 ? jsonResponse({ ok: false, error: { code: 'revision_conflict', message: '修订已改变' } }, 409) : jsonResponse({ ok: true, project: newer });
+    },
   });
+  const originalFetch = globalThis.fetch;
+  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, options?: RequestInit) => String(input).startsWith('/api/projects/project-1/operations/') ? jsonResponse({ ok: true, project: null }) : originalFetch(input, options)));
+  route('/projects/project-1?dialog=project-settings'); render(<App />);
+  fireEvent.change(await screen.findByLabelText('项目名称'), { target: { value: '保留的草稿' } });
+  fireEvent.click(screen.getByRole('button', { name: '保存项目设置' }));
+  await screen.findByText(/项目已在其他位置修改/); expect(screen.getByLabelText('项目名称')).toHaveValue('保留的草稿');
+  expect(updates).toBe(1); fireEvent.click(screen.getByRole('button', { name: '已比较，继续编辑草稿' }));
+  fireEvent.click(screen.getByRole('button', { name: '保存项目设置' }));
+  await waitFor(() => expect(updates).toBe(2)); expect(expected).toBe(2);
+  expect(calls.some(([, options]) => options?.method === 'PATCH')).toBe(true);
 });

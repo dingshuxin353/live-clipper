@@ -9,6 +9,7 @@ from typing import Any
 from .config import Settings
 from .project_domain import Run
 from .project_storage import ProjectRepository, database_path
+from .utils import review_material_path
 
 
 @dataclass(frozen=True)
@@ -99,7 +100,7 @@ def dispatch_queued(
             }:
                 from .project_result_runtime import _functional_issue
 
-                _functional_issue(repository, run, error_code)
+                _functional_issue(repository, run, error_code, resource_purpose=(getattr(exc, 'detail', None) or {}).get('purpose', 'analysis'))
             failed.append(run.run_id)
             continue
         repository.append_stage_event(
@@ -149,15 +150,10 @@ def recover_processing(
 def _launch_with_existing_pipeline(settings: Settings, service_dir: Path) -> Callable[[Run, Path], int]:
     def launch(run: Run, target: Path) -> int:
         from . import service
+        from .resource_execution import settings_for_snapshot
 
-        if run.parameter_snapshot.get("schema_version") == 2:
-            asr = run.parameter_snapshot.get("resources", {}).get("asr", {})
-            if asr.get("backend") == "openai" and not settings.asr_api_key:
-                raise ProjectRuntimeStartError("asr_resource_unavailable", "ASR resource is unavailable")
-            if not settings.cheap_model_api_key:
-                raise ProjectRuntimeStartError("ai_resource_unavailable", "analysis resource is unavailable")
-        else:
-            service.require_pipeline_configuration(settings)
+        with ProjectRepository(service_dir) as repository:
+            settings_for_snapshot(repository, settings, run.parameter_snapshot)
         source = Path(run.latest_seen_path)
         if not source.is_file():
             raise FileNotFoundError(source)
@@ -166,6 +162,7 @@ def _launch_with_existing_pipeline(settings: Settings, service_dir: Path) -> Cal
             input_dir=target / "input",
             run_dir=target,
             log_path=service_dir / "runs" / f"{run.run_id}.log",
+            run_context=(str(service_dir.resolve()), run.run_id),
         )
 
     return launch
@@ -184,7 +181,7 @@ def reconcile_processing(repository: ProjectRepository, *, work_dir: str | Path,
             verified_stages.append("transcribe")
         if (target / "merged_candidates.json").is_file():
             verified_stages.append("analyze")
-        if (target / "codex_brief.json").is_file():
+        if (review_material_path(target, "review_brief.json")).is_file():
             verified_stages.append("arbitrate")
         stage_order = ["read_source", "transcribe", "analyze", "arbitrate"]
         current_index = stage_order.index(run.current_stage) if run.current_stage in stage_order else -1
@@ -204,7 +201,7 @@ def reconcile_processing(repository: ProjectRepository, *, work_dir: str | Path,
         if clips.is_dir() and any(clips.glob("*.mp4")):
             repository.transition_run(run.run_id, status="completed", stage="render", event_type="completed")
             changed.append(run.run_id)
-        elif (target / "codex_brief.json").is_file():
+        elif (review_material_path(target, "review_brief.json")).is_file():
             if run.parameter_snapshot.get("schema_version") == 2:
                 if run.current_stage != "review":
                     repository.transition_run(

@@ -4,10 +4,10 @@ import hashlib
 import sqlite3
 
 import pytest
+from resource_test_support import ready_project_config
 
 from live_clipper.config import PathsConfig, Settings
 from live_clipper.project_api import ProjectAPI
-from live_clipper.project_domain import default_project_config
 from live_clipper.project_resources import resolve_parameter_snapshot
 from live_clipper.project_runtime import dispatch_queued, run_work_dir
 
@@ -24,7 +24,7 @@ def _api_with_terminal_run(tmp_path):
     api = ProjectAPI(tmp_path / "service", settings, auth_context="bearer")
     project = api.manager.create_project(
         name="Project",
-        config=default_project_config(source, output),
+        config=ready_project_config(api.repository, source, output),
         activation_state="active",
     )
     revision = api.repository.get_config_revision(project.project_id)
@@ -35,7 +35,7 @@ def _api_with_terminal_run(tmp_path):
         trigger_source="manual",
         first_seen_path=str(source_file),
         latest_seen_path=str(source_file),
-        parameter_snapshot=resolve_parameter_snapshot(revision.config, settings),
+        parameter_snapshot=resolve_parameter_snapshot(revision.config, settings, repository=api.repository),
     ).run
     run = api.repository.transition_run(run.run_id, status="completed", stage="render", event_type="completed")
     return api, run, source_file, work

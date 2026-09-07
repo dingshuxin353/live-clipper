@@ -230,6 +230,10 @@ def transcribe_audio(audio_path: Path, output_json_path: Path, settings: Setting
         local_model = asr_models.local_path_for(model)
         if local_model is not None:
             model = str(local_model)
+        elif Path(model).is_absolute() and Path(model).is_dir():
+            model = str(Path(model).resolve())
+        else:
+            raise ValueError("model_not_installed")
         language = None if (settings.asr_language or "zh") == "auto" else (settings.asr_language or "zh")
         result = mlx_whisper.transcribe(
             str(audio_path),
@@ -252,31 +256,37 @@ def transcribe_audio(audio_path: Path, output_json_path: Path, settings: Setting
 
 
 def transcribe_audio_openai(audio_path: Path, settings: Settings) -> dict[str, Any]:
-    if not settings.asr_api_key:
-        raise ValueError("ASR_API_KEY is required when ASR_BACKEND=openai")
-    api_base = (settings.asr_api_base or "https://api.openai.com/v1").rstrip("/")
-    model = settings.asr_model or "whisper-1"
-    with audio_path.open("rb") as audio_file:
-        response = requests.post(
-            f"{api_base}/audio/transcriptions",
-            headers={"Authorization": f"Bearer {settings.asr_api_key}"},
-            data={
-                "model": model,
-                "response_format": "verbose_json",
-                "timestamp_granularities[]": "segment",
-                **(
-                    {"language": settings.asr_language}
-                    if settings.asr_language and settings.asr_language not in {"auto", DEFAULT_ASR_LANGUAGE}
-                    else {}
-                ),
-            },
-            files={"file": (audio_path.name, audio_file)},
-            timeout=300,
-        )
-    response.raise_for_status()
-    result = response.json()
+    from .cheap_model_client import CheapModelServiceError, request_error_code
+
+    if not settings.asr_api_key or not settings.asr_api_base or not settings.asr_model:
+        raise CheapModelServiceError('required_connection_fields')
+    try:
+        with audio_path.open("rb") as audio_file:
+            response = requests.post(
+                f"{settings.asr_api_base.rstrip('/')}/audio/transcriptions",
+                headers={"Authorization": f"Bearer {settings.asr_api_key}"},
+                data={"model": settings.asr_model, "response_format": "verbose_json",
+                      "timestamp_granularities[]": "segment",
+                      **({"language": settings.asr_language} if settings.asr_language and settings.asr_language != 'auto' else {})},
+                files={"file": (audio_path.name, audio_file)}, timeout=300, allow_redirects=False,
+            )
+            if 300 <= response.status_code < 400:
+                raise CheapModelServiceError('result_unknown')
+            response.raise_for_status()
+    except requests.RequestException as exc:
+        raise CheapModelServiceError(request_error_code(exc)) from None
+    try:
+        result = response.json()
+    except ValueError:
+        raise CheapModelServiceError('output_format_invalid') from None
     if not isinstance(result, dict):
-        raise ValueError("ASR transcription response must be a JSON object")
+        raise CheapModelServiceError('output_format_invalid')
+    if not isinstance(result.get('segments'), list) or not result['segments']:
+        raise ValueError('asr_timestamps_unavailable')
+    for segment in result['segments']:
+        times = _segment_times(segment)
+        if times is None or times[0] < 0 or times[0] >= times[1] or not _segment_text(segment):
+            raise ValueError('asr_timestamps_unavailable')
     return result
 
 

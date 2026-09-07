@@ -45,3 +45,12 @@ def write_json(path: Path, data: Any) -> Path:
 def write_failure_log(prefix: str, data: Any) -> Path:
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     return write_json(Path("work") / "logs" / f"{prefix}_{timestamp}.json", data)
+
+
+def review_material_path(run_dir: Path, file_name: str) -> Path:
+    """Read the known historical material when a neutral-name file does not exist."""
+    current = run_dir / file_name
+    previous = {"review_brief.json": "codex_brief.json", "review_notes.md": "codex_review.md", "review_task.md": "codex_task.md"}.get(file_name)
+    if previous and not current.exists() and (run_dir / previous).is_file():
+        return run_dir / previous
+    return current

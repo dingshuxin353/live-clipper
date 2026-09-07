@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from resource_test_support import onboarding_resource_patch
 
 from live_clipper import asr_models, onboarding_resources, service
 from live_clipper.config import Settings
@@ -54,7 +55,7 @@ def test_project_draft_only_accepts_m1_fields_and_builds_v2(tmp_path: Path) -> N
             "request_id": "draft",
             "expected_revision": 1,
             "current_step": "project",
-            "patch": {"project": _project_patch(source, tmp_path / "output")},
+            "patch": {**onboarding_resource_patch(coordinator), "project": _project_patch(source, tmp_path / "output")},
         }
     )
     assert patched["session"]["revision"] == 2
@@ -64,7 +65,7 @@ def test_project_draft_only_accepts_m1_fields_and_builds_v2(tmp_path: Path) -> N
                 "request_id": "advanced",
                 "expected_revision": 2,
                 "current_step": "project",
-                "patch": {"project": {"review_strategy": "manual"}},
+                "patch": {**onboarding_resource_patch(coordinator), "project": {"review_strategy": "manual"}},
             }
         )
     assert error.value.code == "validation_failed"
@@ -72,7 +73,7 @@ def test_project_draft_only_accepts_m1_fields_and_builds_v2(tmp_path: Path) -> N
     assert name == "首项目"
     assert config["schema_version"] == 2
     assert config["processing"]["review_strategy"] == "ai_auto"
-    assert config["resources"]["review_ref"] == config["resources"]["analysis_ref"]
+    assert config["resources"]["review_ref"] == "reuse_analysis"
 
 
 def test_finish_failure_keeps_single_project_for_retry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -84,7 +85,7 @@ def test_finish_failure_keeps_single_project_for_retry(tmp_path: Path, monkeypat
             "request_id": "draft",
             "expected_revision": 1,
             "current_step": "project",
-            "patch": {"project": _project_patch(source, tmp_path / "output")},
+            "patch": {**onboarding_resource_patch(coordinator), "project": _project_patch(source, tmp_path / "output")},
         }
     )
     monkeypatch.setattr(onboarding_resources, "test_ai_service", lambda *args, **kwargs: {"ok": True})

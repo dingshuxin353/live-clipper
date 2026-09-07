@@ -1,3 +1,4 @@
+import { RemixIcon } from "./ui/RemixIcon";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { Button } from "@astryxdesign/core/Button";
@@ -20,9 +21,8 @@ export interface ProjectDraft {
 }
 
 export function emptyDraft(options?: FormOptionsPayload): ProjectDraft {
-  const asr = options?.resources.find((item) => item.resource_type === "asr")?.resource_id ?? "";
-  const analysis = options?.resources.find((item) => item.resource_type === "analysis")?.resource_id ?? "";
-  return { name: "", description: "", sourceDirectory: "", outputDirectory: "", firstScanMode: options?.defaults.first_scan_mode ?? "new_only", lookbackDays: options?.defaults.lookback_days ?? 7, scheduleEnabled: options?.defaults.schedule_enabled ?? false, scheduleMode: options?.defaults.schedule_mode ?? "daily", dailyTime: options?.defaults.daily_time ?? "22:00", intervalMinutes: 60, asrRef: asr, analysisRef: analysis, reviewRef: analysis, retention: options?.defaults.intermediate_retention ?? "remind_after_7_days" };
+  const asr = ""; const analysis = "";
+  return { name: "", description: "", sourceDirectory: "", outputDirectory: "", firstScanMode: options?.defaults.first_scan_mode ?? "new_only", lookbackDays: options?.defaults.lookback_days ?? 7, scheduleEnabled: options?.defaults.schedule_enabled ?? false, scheduleMode: options?.defaults.schedule_mode ?? "daily", dailyTime: options?.defaults.daily_time ?? "22:00", intervalMinutes: 60, asrRef: asr, analysisRef: analysis, reviewRef: "reuse_analysis", retention: options?.defaults.intermediate_retention ?? "remind_after_7_days" };
 }
 
 export function configFromDraft(draft: ProjectDraft, timezone: string): ProjectConfig {
@@ -84,4 +84,4 @@ export function RunCard({ run, project }: { run: Run; project?: ProjectSummary }
 
 const PRIORITY: Record<ProjectMainStatus, number> = { blocked: 0, failed: 1, processing: 2, queued: 3, new_results: 4, paused: 5, inactive: 6, idle: 7 };
 export function sortProjects(projects: ProjectSummary[]) { return [...projects].sort((a, b) => (PRIORITY[a.main_status] ?? 99) - (PRIORITY[b.main_status] ?? 99) || b.updated_at.localeCompare(a.updated_at) || a.project_id.localeCompare(b.project_id)); }
-export function ProjectRow({ project, detailed = false }: { project: ProjectSummary; detailed?: boolean }) { const next = project.schedule?.enabled ? `下次扫描 ${time(project.schedule.next_scan_at)}` : "仅手动扫描"; return <Link className="project-row" to={`/projects/${project.project_id}`}><span className={`project-indicator tone-${statusTone(project.main_status)}`} /><div className="project-copy"><strong>{project.name}</strong><p>{project.description || "未填写项目描述"}</p>{detailed && <small>{next} · 更新于 {time(project.updated_at)}</small>}</div><div className="workload"><span>{project.workload.processing}<small>处理中</small></span><span>{project.workload.queued}<small>排队</small></span><span>{project.workload.failed}<small>失败</small></span><span>{project.workload.completed}<small>已完成</small></span><span>{project.workload.new_results}<small>新成片</small></span></div><StatusPill status={project.main_status} /><b>›</b></Link>; }
+export function ProjectRow({ project, detailed = false }: { project: ProjectSummary; detailed?: boolean }) { const next = project.schedule?.enabled ? `下次扫描 ${time(project.schedule.next_scan_at)}` : "仅手动扫描"; return <Link className="project-row" to={`/projects/${project.project_id}`}><span className={`project-indicator tone-${statusTone(project.main_status)}`} /><div className="project-copy"><strong>{project.name}</strong><p>{project.description || "未填写项目描述"}</p>{detailed && <small>{next} · 更新于 {time(project.updated_at)}</small>}</div><div className="workload"><span>{project.workload.processing}<small>处理中</small></span><span>{project.workload.queued}<small>排队</small></span><span>{project.workload.failed}<small>失败</small></span><span>{project.workload.completed}<small>已完成</small></span><span>{project.workload.new_results}<small>新成片</small></span></div><StatusPill status={project.main_status} /><b><RemixIcon name="chevronRight" /></b></Link>; }

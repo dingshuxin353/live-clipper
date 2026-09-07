@@ -14,11 +14,11 @@ from pathlib import Path
 from typing import Any
 
 from .cheap_model_client import CheapModelClient
-from .codex_selection import validate_selected_clips_file
 from .config import Settings
 from .models import ProjectReviewResult
 from .prompt_loader import load_prompt
-from .utils import ensure_dir, read_json, write_json
+from .review_selection import validate_selected_clips_file
+from .utils import ensure_dir, read_json, review_material_path, write_json
 
 Runner = Callable[..., dict[str, Any]]
 ClientFactory = Callable[..., Any]
@@ -100,20 +100,18 @@ def check_environment(
     command_resolver: CommandResolver | None = None,
 ) -> dict[str, Any]:
     command_resolver = command_resolver or shutil.which
-    codex_path = command_resolver("codex")
     claude_path = command_resolver("claude")
     llm_env = settings.llm.api_key_env if settings.llm else "CHEAP_MODEL_API_KEY"
     llm_configured = bool((settings.llm and settings.llm.api_key) or os.getenv(llm_env))
     mode = settings.review_automation.mode
     current_ok = (
-        (mode == "local_agent" and bool(codex_path if settings.review_automation.local_agent.provider == "codex_cli" else claude_path))
+        (mode == "local_agent" and bool(claude_path) and settings.review_automation.local_agent.provider == "claude_code")
         or (mode == "model" and llm_configured)
     )
     result = {
         "ok": True,
         "mode": mode,
         "current_mode_available": current_ok,
-        "codex_cli": {"available": bool(codex_path), "path": codex_path},
         "claude_code": {"available": bool(claude_path), "path": claude_path},
         "llm": {
             "provider": settings.llm.provider_label if settings.llm else "OpenAI-compatible LLM",
@@ -127,8 +125,8 @@ def check_environment(
 
 def build_review_payload(run: dict[str, Any], *, max_candidates: int = 40) -> dict[str, Any]:
     run_dir = Path(str(run["run_dir"]))
-    brief_path = run_dir / "codex_brief.json"
-    review_path = run_dir / "codex_review.md"
+    brief_path = review_material_path(run_dir, "review_brief.json")
+    review_path = review_material_path(run_dir, "review_notes.md")
     template_path = run_dir / "selected_clips.template.json"
     candidates_path = _candidates_path(run_dir)
     candidates = _read_json_list(candidates_path)
@@ -206,6 +204,8 @@ def run_structured_review_adapter(
     client_factory: ClientFactory | None = None,
 ) -> dict[str, Any]:
     """Invoke the configured model without granting it any project file access."""
+    if settings.review_automation.mode not in {"model", "local_agent"}:
+        raise ReviewAutomationError("ai_resource_unavailable", "原 AI 接入已移除，请选择处理资源。")
     prompt = _project_review_prompt(settings)
     if settings.review_automation.mode == "model":
         if not settings.cheap_model_api_key or not settings.cheap_model_name:
@@ -227,7 +227,9 @@ def run_structured_review_adapter(
             raise ReviewAutomationError("agent_file_writes_disabled", "项目审阅不允许 Agent 直接写文件。")
         runner = local_runner or _default_local_runner
         provider = settings.review_automation.local_agent.provider
-        command_name = "codex" if provider == "codex_cli" else "claude"
+        if provider != "claude_code":
+            raise ReviewAutomationError("ai_resource_unavailable", "不支持此本地审阅接入。")
+        command_name = "claude"
         if local_runner is None and shutil.which(command_name) is None:
             raise ReviewAutomationError("ai_resource_unavailable", "项目审阅命令资源尚未就绪。")
         with tempfile.TemporaryDirectory(prefix="live-clipper-project-review-") as isolated_dir:
@@ -263,15 +265,7 @@ def run_ai_review_for_run(
     if final_path.exists() and service.selected_clips_status(run_dir)["status"] != "empty":
         return _error("selected_clips_exists", "selected_clips.json 已存在，不重复执行 AI 审阅。")
 
-    append_review_event(service_dir, "ai_review_started", run_id=run_id, mode=settings.review_automation.mode)
-    try:
-        payload = build_review_payload(run, max_candidates=settings.review_automation.model.max_candidates)
-        selection = _run_adapter(settings, payload, run_dir=run_dir, local_runner=local_runner, client_factory=client_factory)
-        result = _write_validated_selection(run, selection, service_dir=service_dir)
-    except Exception as exc:  # noqa: BLE001 - convert adapter and validation errors into observable local state.
-        result = _handle_failure(run, settings, service_dir=service_dir, error=exc)
-    _write_summary(settings, service_dir, result, run_id=run_id)
-    return result
+    return _error("original_configuration_unknown", "原记录缺少冻结资源身份，请在项目中明确选择资源后新建重跑。")
 
 
 def run_due_ai_reviews(
@@ -319,6 +313,8 @@ def _run_adapter(
 ) -> list[dict[str, Any]]:
     if settings.review_automation.mode == "model":
         return _run_model_adapter(settings, payload, client_factory=client_factory)
+    if settings.review_automation.mode != "local_agent" or settings.review_automation.local_agent.provider != "claude_code":
+        raise ReviewAutomationError("ai_resource_unavailable", "请选择受支持的审阅资源。")
     return _run_local_agent_adapter(settings, payload, run_dir=run_dir, local_runner=local_runner)
 
 
@@ -335,6 +331,8 @@ def _run_local_agent_adapter(
             "P0 不允许本地 Agent 直接写文件，请关闭 allow_agent_file_writes。",
         )
     provider = settings.review_automation.local_agent.provider
+    if provider != "claude_code":
+        raise ReviewAutomationError("ai_resource_unavailable", "请选择受支持的审阅资源。")
     prompt = _review_prompt(_sanitize_payload_for_local_agent(payload, run_dir=run_dir))
     runner = local_runner or _default_local_runner
     with tempfile.TemporaryDirectory(prefix="live-clipper-ai-review-") as isolated_dir:
@@ -461,14 +459,9 @@ def _write_summary(settings: Settings, service_dir: Path, result: dict[str, Any]
 
 
 def _default_local_runner(prompt: str, *, provider: str, cwd: Path, timeout_seconds: int) -> dict[str, Any]:
-    if provider == "codex_cli":
-        # --skip-git-repo-check: 审阅在隔离的临时目录里执行，该目录不是 git 仓库，
-        # 缺少此参数 codex 会以 "Not inside a trusted directory" 拒绝执行。
-        command = ["codex", "exec", "--skip-git-repo-check", prompt]
-    elif provider == "claude_code":
-        command = ["claude", "-p", prompt]
-    else:
-        return {"ok": False, "error": f"Unsupported local Agent provider: {provider}"}
+    if provider != "claude_code":
+        return {"ok": False, "error": "Unsupported local Agent provider"}
+    command = ["claude", "-p", prompt]
     try:
         completed = subprocess.run(
             command,
@@ -478,7 +471,7 @@ def _default_local_runner(prompt: str, *, provider: str, cwd: Path, timeout_seco
             timeout=timeout_seconds,
             check=False,
             # stdin 必须关闭：常驻/后台服务的 stdin 是不会收到 EOF 的管道，
-            # codex/claude 会卡在 "Reading additional input from stdin..." 永久阻塞。
+            # Claude 会卡在 "Reading additional input from stdin..." 永久阻塞。
             stdin=subprocess.DEVNULL,
         )
     except FileNotFoundError as exc:

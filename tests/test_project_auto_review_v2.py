@@ -5,10 +5,11 @@ import json
 from datetime import UTC, datetime
 
 import pytest
+from resource_test_support import ready_project_config
 
+from live_clipper.cheap_model_client import CheapModelServiceError
 from live_clipper.config import Settings
 from live_clipper.media_probe import MediaMetadata
-from live_clipper.project_domain import default_project_config
 from live_clipper.project_resources import resolve_parameter_snapshot
 from live_clipper.project_result_runtime import (
     ProjectReviewError,
@@ -49,12 +50,12 @@ def _project_run(tmp_path, *, candidates: list[dict]):
     manager = ProjectManager(repository, settings)
     project = manager.create_project(
         name="项目",
-        config=default_project_config(source_dir, output_dir),
+        config=ready_project_config(repository, source_dir, output_dir),
         activation_state="active",
     )
     revision = repository.get_config_revision(project.project_id)
     assert revision is not None
-    snapshot = resolve_parameter_snapshot(revision.config, settings)
+    snapshot = resolve_parameter_snapshot(revision.config, settings, repository=repository)
     run = repository.create_normal_run(
         project_id=project.project_id,
         content_id=hashlib.sha256(source_path.read_bytes()).hexdigest(),
@@ -67,7 +68,7 @@ def _project_run(tmp_path, *, candidates: list[dict]):
     run_dir = work_dir / "projects" / project.project_id / "runs" / run.run_id
     run_dir.mkdir(parents=True)
     write_json(run_dir / "merged_candidates.json", candidates)
-    write_json(run_dir / "codex_brief.json", {"source_name": source_path.name, "candidates": candidates})
+    write_json(run_dir / "review_brief.json", {"source_name": source_path.name, "candidates": candidates})
     write_json(run_dir / "transcript.json", {"sentences": [], "corrections": []})
     repository.transition_run(run.run_id, status="processing", stage="review", event_type="review_ready")
     return repository, project, repository.get_run(run.run_id), run_dir, output_dir
@@ -281,7 +282,7 @@ def test_transient_ai_failure_records_bounded_retry_without_raw_error(tmp_path):
             repository,
             run.run_id,
             run_dir=run_dir,
-            adapter=lambda _payload: (_ for _ in ()).throw(TimeoutError("sk-secret timeout")),
+            adapter=lambda _payload: (_ for _ in ()).throw(CheapModelServiceError("connection_timeout")),
             clock=lambda: current,
         )
 

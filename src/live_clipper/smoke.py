@@ -5,10 +5,10 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from .build_codex_brief import build_codex_brief_file
+from .build_review_brief import build_review_brief_file
 from .models import ClipCandidate, CorrectedTranscript, SelectedClip, TranscriptSentence
 from .render_clips import render_selected_clips
-from .utils import ensure_dir, write_json
+from .utils import ensure_dir, review_material_path, write_json
 from .windows import write_windows_file
 
 
@@ -85,10 +85,10 @@ def run_local_smoke(output_dir: Path = Path("work") / "smoke") -> dict[str, obje
     candidate_data = [candidate.model_dump() for candidate in candidates]
     write_json(run_dir / "cheap_candidates.json", candidate_data)
     write_json(run_dir / "merged_candidates.json", candidate_data)
-    build_codex_brief_file(
+    build_review_brief_file(
         run_dir / "merged_candidates.json",
         run_dir / "transcript.json",
-        run_dir / "codex_brief.json",
+        review_material_path(run_dir, "review_brief.json"),
         source_name=source_video.name,
     )
 
@@ -107,7 +107,7 @@ def run_local_smoke(output_dir: Path = Path("work") / "smoke") -> dict[str, obje
         "ok": True,
         "run_dir": str(run_dir),
         "source_video": str(source_video),
-        "brief": str(run_dir / "codex_brief.json"),
+        "brief": str(review_material_path(run_dir, "review_brief.json")),
         "selection": str(selection_path),
         "rendered_clips": [str(path) for path in rendered],
     }

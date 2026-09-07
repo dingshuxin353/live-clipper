@@ -2,19 +2,19 @@ from __future__ import annotations
 
 import pytest
 
-from live_clipper.build_codex_brief import (
-    build_codex_brief_file,
-    build_codex_review_markdown,
+from live_clipper.build_review_brief import (
+    build_review_brief_file,
+    build_review_notes_markdown,
     build_selected_clips_template,
 )
 from live_clipper.models import ClipCandidate, CorrectedTranscript, TranscriptSentence
 from live_clipper.utils import read_json, write_json
 
 
-def test_build_codex_brief_includes_candidate_context_without_full_transcript(tmp_path):
+def test_build_review_brief_includes_candidate_context_without_full_transcript(tmp_path):
     candidates_path = tmp_path / "merged_candidates.json"
     transcript_path = tmp_path / "transcript.json"
-    output_path = tmp_path / "codex_brief.json"
+    output_path = tmp_path / "review_brief.json"
     write_json(candidates_path, [
         ClipCandidate(
             id="clip-1",
@@ -36,7 +36,7 @@ def test_build_codex_brief_includes_candidate_context_without_full_transcript(tm
         TranscriptSentence(start=100, end=105, text="太远"),
     ]).model_dump())
 
-    brief = build_codex_brief_file(candidates_path, transcript_path, output_path, source_name="sample.mp4")
+    brief = build_review_brief_file(candidates_path, transcript_path, output_path, source_name="sample.mp4")
 
     assert brief["source_name"] == "sample.mp4"
     assert brief["candidates"][0]["id"] == "clip-1"
@@ -49,14 +49,14 @@ def test_build_codex_brief_includes_candidate_context_without_full_transcript(tm
     assert read_json(output_path)["candidates"][0]["id"] == "clip-1"
 
 
-def test_build_codex_brief_includes_review_contract(tmp_path):
+def test_build_review_brief_includes_review_contract(tmp_path):
     candidates_path = tmp_path / "merged_candidates.json"
     transcript_path = tmp_path / "transcript.json"
-    output_path = tmp_path / "codex_brief.json"
+    output_path = tmp_path / "review_brief.json"
     write_json(candidates_path, [])
     write_json(transcript_path, CorrectedTranscript(sentences=[]).model_dump())
 
-    brief = build_codex_brief_file(candidates_path, transcript_path, output_path, source_name="sample.mp4")
+    brief = build_review_brief_file(candidates_path, transcript_path, output_path, source_name="sample.mp4")
 
     assert "strong opening hook" in brief["review_instructions"]
     assert brief["expected_output"]["path"] == "selected_clips.json"
@@ -69,10 +69,10 @@ def test_build_codex_brief_includes_review_contract(tmp_path):
     }
 
 
-def test_build_codex_brief_context_respects_candidate_suggested_context(tmp_path):
+def test_build_review_brief_context_respects_candidate_suggested_context(tmp_path):
     candidates_path = tmp_path / "merged_candidates.json"
     transcript_path = tmp_path / "transcript.json"
-    output_path = tmp_path / "codex_brief.json"
+    output_path = tmp_path / "review_brief.json"
     write_json(candidates_path, [
         ClipCandidate(
             id="clip-1",
@@ -95,7 +95,7 @@ def test_build_codex_brief_context_respects_candidate_suggested_context(tmp_path
         TranscriptSentence(start=135, end=136, text="刚好太晚"),
     ]).model_dump())
 
-    brief = build_codex_brief_file(candidates_path, transcript_path, output_path, source_name="sample.mp4")
+    brief = build_review_brief_file(candidates_path, transcript_path, output_path, source_name="sample.mp4")
 
     assert [item["text"] for item in brief["candidates"][0]["context"]] == [
         "建议前文",
@@ -104,10 +104,10 @@ def test_build_codex_brief_context_respects_candidate_suggested_context(tmp_path
     ]
 
 
-def test_build_codex_brief_preserves_refinement_metadata(tmp_path):
+def test_build_review_brief_preserves_refinement_metadata(tmp_path):
     candidates_path = tmp_path / "refined_candidates.json"
     transcript_path = tmp_path / "transcript.json"
-    output_path = tmp_path / "codex_brief.json"
+    output_path = tmp_path / "review_brief.json"
     write_json(candidates_path, [
         {
             **ClipCandidate(
@@ -131,16 +131,16 @@ def test_build_codex_brief_preserves_refinement_metadata(tmp_path):
         TranscriptSentence(start=12, end=15, text="核心内容"),
     ]).model_dump())
 
-    brief = build_codex_brief_file(candidates_path, transcript_path, output_path, source_name="sample.mp4")
+    brief = build_review_brief_file(candidates_path, transcript_path, output_path, source_name="sample.mp4")
 
     assert brief["candidates"][0]["agnes_refinement"]["commercial_fit"] == 9
     assert read_json(output_path)["candidates"][0]["agnes_refinement"]["refined_score"] == 8.8
 
 
-def test_build_codex_brief_rejects_duplicate_candidate_ids(tmp_path):
+def test_build_review_brief_rejects_duplicate_candidate_ids(tmp_path):
     candidates_path = tmp_path / "merged_candidates.json"
     transcript_path = tmp_path / "transcript.json"
-    output_path = tmp_path / "codex_brief.json"
+    output_path = tmp_path / "review_brief.json"
     candidate = ClipCandidate(
         id="clip-1",
         start=10,
@@ -158,12 +158,12 @@ def test_build_codex_brief_rejects_duplicate_candidate_ids(tmp_path):
     write_json(transcript_path, CorrectedTranscript(sentences=[]).model_dump())
 
     with pytest.raises(ValueError, match="Duplicate candidate id"):
-        build_codex_brief_file(candidates_path, transcript_path, output_path, source_name="sample.mp4")
+        build_review_brief_file(candidates_path, transcript_path, output_path, source_name="sample.mp4")
 
     assert not output_path.exists()
 
 
-def test_build_codex_review_markdown_points_to_brief_and_selection_output():
+def test_build_review_notes_markdown_points_to_brief_and_selection_output():
     brief = {
         "source_name": "sample.mp4",
         "candidate_count": 2,
@@ -173,15 +173,15 @@ def test_build_codex_review_markdown_points_to_brief_and_selection_output():
         },
     }
 
-    markdown = build_codex_review_markdown(
+    markdown = build_review_notes_markdown(
         brief,
-        brief_path="codex_brief.json",
+        brief_path="review_brief.json",
         selection_path="selected_clips.json",
     )
 
-    assert "# Codex Clip Review" in markdown
+    assert "# Clip Review" in markdown
     assert "sample.mp4" in markdown
-    assert "codex_brief.json" in markdown
+    assert "review_brief.json" in markdown
     assert "selected_clips.json" in markdown
     assert "clip_id" in markdown
     assert "2 candidates" in markdown

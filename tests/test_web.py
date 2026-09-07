@@ -133,7 +133,7 @@ def test_build_runs_index_merges_files_state_and_log(tmp_path, monkeypatch):
     write_json(run_dir / "cheap_candidates.json", [])
     write_json(run_dir / "merged_candidates.json", [])
     write_json(run_dir / "refined_candidates.json", {"candidates": [{"id": "c1"}]})
-    write_json(run_dir / "codex_brief.json", {"candidates": [{"id": "c1"}]})
+    write_json(run_dir / "review_brief.json", {"candidates": [{"id": "c1"}]})
     write_json(state_dir / "recording.json", {"pid": 4321, "log_path": str(log_path)})
     log_path.parent.mkdir(parents=True)
     log_path.write_text("first\nsecond\n", encoding="utf-8")
@@ -144,12 +144,12 @@ def test_build_runs_index_merges_files_state_and_log(tmp_path, monkeypatch):
     assert index["ok"] is True
     assert index["runs"][0]["run_id"] == "recording"
     assert index["runs"][0]["running"] is True
-    assert index["runs"][0]["requires_codex"] is True
+    assert index["runs"][0]["requires_review"] is True
     assert index["runs"][0]["candidate_count"] == 1
     assert index["runs"][0]["selected_count"] == 0
     assert index["runs"][0]["clip_count"] == 0
     assert index["runs"][0]["log_path"] == str(log_path)
-    assert index["runs"][0]["phase"] == "needs_codex_selection"
+    assert index["runs"][0]["phase"] == "needs_review_selection"
 
 
 def test_build_run_detail_includes_steps_files_actions_and_log_tail(tmp_path):
@@ -164,7 +164,7 @@ def test_build_run_detail_includes_steps_files_actions_and_log_tail(tmp_path):
     write_json(run_dir / "cheap_candidates.json", [])
     write_json(run_dir / "merged_candidates.json", [])
     write_json(run_dir / "refined_candidates.json", {"candidates": [{"id": "c1"}, {"id": "c2"}]})
-    write_json(run_dir / "codex_brief.json", {"candidates": [{"id": "c1"}, {"id": "c2"}]})
+    write_json(run_dir / "review_brief.json", {"candidates": [{"id": "c1"}, {"id": "c2"}]})
     log_path.parent.mkdir(parents=True)
     log_path.write_text("\n".join(f"line {index}" for index in range(5)), encoding="utf-8")
 
@@ -176,9 +176,9 @@ def test_build_run_detail_includes_steps_files_actions_and_log_tail(tmp_path):
 
     assert detail["ok"] is True
     assert detail["run"]["run_id"] == "recording"
-    assert detail["steps"][3]["label"] == "Agnes 扫描"
+    assert detail["steps"][3]["label"] == "AI 分析"
     assert detail["steps"][3]["done"] is True
-    assert detail["steps"][5]["label"] == "Codex 选择"
+    assert detail["steps"][5]["label"] == "审阅 Agent 选择"
     assert detail["steps"][5]["state"] == "waiting"
     assert detail["actions"]["can_render"] is False
     assert detail["actions"]["can_cleanup"] is False
@@ -376,11 +376,11 @@ def test_runs_api_uses_one_phase_group_contract_for_legacy_phases(tmp_path):
         "running",
         "ready_to_render",
         "needs_review",
-        "needs_codex_selection",
+        "needs_review_selection",
         "rendered",
         "cleanup_ready",
         "failed",
-        "failed_needs_codex",
+        "failed_needs_review",
         "waiting_or_manual",
         "missing",
         "unknown",
@@ -411,8 +411,8 @@ def test_runs_api_uses_one_phase_group_contract_for_legacy_phases(tmp_path):
         "failed": 2,
         "other": 4,
     }
-    assert {run["phase"] for run in review["runs"]} == {"needs_review", "needs_codex_selection"}
-    assert {run["phase"] for run in failed["runs"]} == {"failed", "failed_needs_codex"}
+    assert {run["phase"] for run in review["runs"]} == {"needs_review", "needs_review_selection"}
+    assert {run["phase"] for run in failed["runs"]} == {"failed", "failed_needs_review"}
     assert {run["run_id"] for run in all_runs["runs"]} == set(phases)
 
 
@@ -439,7 +439,7 @@ def test_runs_api_applies_the_same_contract_to_legacy_output_fallback(tmp_path):
     for index in range(25):
         run_dir = output_root / f"legacy-{index}"
         write_json(run_dir / "run_metadata.json", {"source_name": f"legacy-{index}.mkv"})
-        write_json(run_dir / "codex_brief.json", {"candidates": [{"id": f"clip-{index}"}]})
+        write_json(run_dir / "review_brief.json", {"candidates": [{"id": f"clip-{index}"}]})
 
     status, _headers, payload = handle_api_request(
         "GET",
@@ -453,7 +453,7 @@ def test_runs_api_applies_the_same_contract_to_legacy_output_fallback(tmp_path):
     assert payload["has_more"] is False
     assert payload["phase_counts"]["all"] == 25
     assert payload["phase_counts"]["needs_review"] == 25
-    assert {run["phase"] for run in payload["runs"]} == {"needs_codex_selection"}
+    assert {run["phase"] for run in payload["runs"]} == {"needs_review_selection"}
 
 
 def test_scan_and_retry_configuration_errors_use_http_409(tmp_path, monkeypatch):
@@ -487,7 +487,7 @@ def test_scan_and_retry_configuration_errors_use_http_409(tmp_path, monkeypatch)
 def test_empty_selection_disables_render_and_cleanup_and_returns_http_409(tmp_path):
     service_dir = tmp_path / "service"
     run_dir = tmp_path / "workspace" / "runs" / "run-empty" / "output"
-    write_json(run_dir / "codex_brief.json", {"candidates": []})
+    write_json(run_dir / "review_brief.json", {"candidates": []})
     write_json(run_dir / "merged_candidates.json", [])
     write_json(run_dir / "selected_clips.json", [])
     write_json(
@@ -513,7 +513,7 @@ def test_empty_selection_disables_render_and_cleanup_and_returns_http_409(tmp_pa
     assert detail["actions"]["can_render"] is False
     assert detail["actions"]["can_cleanup_preview"] is False
     assert detail["actions"]["can_cleanup"] is False
-    assert detail["actions"]["can_ai_review"] is True
+    assert detail["actions"]["can_ai_review"] is False
     assert status == 409
     assert payload["error_code"] == "selection_empty"
 
@@ -662,6 +662,9 @@ def test_http_recent_project_creation_completes_initial_scan(tmp_path, monkeypat
     class TestHandler(LiveClipperRequestHandler):
         paths = WebPaths(service_dir=tmp_path / "service", config_path=tmp_path / "missing.toml")
 
+    from resource_test_support import assign_test_resources
+    with open_project_repository(TestHandler.paths.service_dir) as repository:
+        config = assign_test_resources(repository, config)
     server = ThreadingHTTPServer(("127.0.0.1", 0), TestHandler)
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()

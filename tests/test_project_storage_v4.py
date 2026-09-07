@@ -44,6 +44,7 @@ def test_v3_empty_legacy_import_upgrades_to_single_v4_truth(tmp_path):
         (2,),
         (3,),
         (4,),
+        (5,),
     ]
     tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "migration_sessions" in tables

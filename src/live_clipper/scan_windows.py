@@ -75,6 +75,7 @@ def scan_windows_file(
     *,
     resume: bool = False,
     prompt_dir: Path | None = None,
+    request_parameters: dict[str, Any] | None = None,
 ) -> list[ClipCandidate]:
     system_prompt = load_prompt("cheap_scan_window.md", "cheap scan prompt", prompt_dir=prompt_dir)
     windows = [TranscriptWindow.model_validate(item) for item in read_json(windows_path)]
@@ -99,7 +100,7 @@ def scan_windows_file(
         payload = window.model_dump()
         before_count = len(candidates)
         emit_progress(f"[候选扫描] {window_index}/{total_windows} {window.id}: 正在请求 Agnes")
-        result = client.complete_json(system_prompt, payload, max_tokens=4096)
+        result = client.complete_json(system_prompt, payload, **(request_parameters or {"max_tokens": 4096, "temperature": 0.1}))
         if not isinstance(result, dict):
             write_failure_log(
                 "scan_windows_validation_failure",

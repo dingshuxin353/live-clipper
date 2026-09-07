@@ -16,11 +16,11 @@ from pathlib import Path
 from typing import Any
 
 from .automation import SUPPORTED_VIDEO_EXTENSIONS
-from .codex_selection import validate_selected_clips_file
 from .config import RecordingSourceDefaultConfig, Settings
 from .pipeline import cleanup_local_artifacts, cleanup_plan, stage_source_file
 from .render_clips import render_selected_clips
-from .utils import ensure_dir, read_json, self_command, write_json
+from .review_selection import validate_selected_clips_file
+from .utils import ensure_dir, read_json, review_material_path, self_command, write_json
 
 DEFAULT_SERVICE_DIR = Path("work") / "service"
 PIPELINE_CONFIGURATION_MESSAGE = "请先到「设置 → AI 服务」配置 AI API Key，再开始处理录播。"
@@ -59,6 +59,8 @@ def project_mode_active(service_dir: Path = DEFAULT_SERVICE_DIR) -> bool:
 
 
 def require_pipeline_configuration(settings: Settings) -> None:
+    if not settings.resource_execution_policy:
+        raise PipelineConfigurationError("原处理资源身份不明，请在项目中明确选择资源后新建处理记录。")
     if not settings.cheap_model_api_key:
         raise PipelineConfigurationError(PIPELINE_CONFIGURATION_MESSAGE)
 
@@ -128,7 +130,7 @@ def check_service_ready(
     App mode can prove the explicit configuration it is about to use without
     falling back to the process working directory.
     """
-    from .project_resources import resource_map
+    from .project_resources import effective_references, resource_map
     from .project_storage import ProjectRepository, database_path
 
     embedded = embedded_service_active()
@@ -166,11 +168,11 @@ def check_service_ready(
                 if settings is not None:
                     if config_revision is None or config_revision.config["processing"]["review_strategy"] != "ai_auto":
                         return {"ok": False, "error_code": "service_not_ready", "message": "首项目处理策略尚未就绪"}
-                    resources = resource_map(settings)
-                    refs = config_revision.config["resources"]
-                    for field in ("asr_ref", "analysis_ref", "review_ref"):
-                        resource = resources.get(str(refs[field]))
-                        if resource is None or not resource.ready:
+                    resources = resource_map(repository)
+                    refs = effective_references(config_revision.config)
+                    for purpose, identifier in refs.items():
+                        resource = resources.get(identifier)
+                        if resource is None or purpose not in resource.ready_purposes:
                             return {"ok": False, "error_code": "service_not_ready", "message": "首项目资源尚未就绪"}
                 try:
                     quick = repository.connection.execute("PRAGMA quick_check").fetchone()
@@ -506,7 +508,11 @@ def load_runs(service_dir: Path = DEFAULT_SERVICE_DIR) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     data = read_json(path)
-    return list(data.get("runs", []))
+    runs = list(data.get("runs", []))
+    for run in runs:
+        if run.get('phase') == 'needs_codex':
+            run['phase'] = 'needs_review'
+    return runs
 
 
 def save_runs(runs: list[dict[str, Any]], service_dir: Path = DEFAULT_SERVICE_DIR) -> None:
@@ -1003,6 +1009,7 @@ def _start_pipeline_process(
     input_dir: Path,
     run_dir: Path,
     log_path: Path,
+    run_context: tuple[str, str] | None = None,
 ) -> int:
     command = self_command(
         "pipeline",
@@ -1012,6 +1019,10 @@ def _start_pipeline_process(
         "--output-dir",
         str(run_dir),
     )
+    environment = dict(os.environ)
+    environment.pop("LIVE_CLIPPER_PROJECT_RUN", None)
+    if run_context is not None:
+        environment["LIVE_CLIPPER_PROJECT_RUN"] = json.dumps(run_context)
     ensure_dir(log_path.parent)
     with log_path.open("ab") as log_file:
         process = subprocess.Popen(
@@ -1019,6 +1030,7 @@ def _start_pipeline_process(
             stdout=log_file,
             stderr=subprocess.STDOUT,
             start_new_session=True,
+            env=environment,
         )
     return process.pid
 
@@ -1033,7 +1045,7 @@ def _phase_from_files(run_dir: Path) -> str | None:
         return "rendering"
     if selection["status"] == "invalid":
         raise ValueError(str(selection["error"]))
-    if (run_dir / "codex_brief.json").exists():
+    if (review_material_path(run_dir, "review_brief.json")).exists():
         return "needs_review"
     return None
 
@@ -1139,7 +1151,7 @@ def reconcile_run(run: dict[str, Any], settings: Settings, *, service_dir: Path 
         run["phase"] = inferred
     elif run.get("phase") == "processing":
         run["phase"] = "failed"
-        run["last_error"] = "Pipeline stopped before codex_brief.json was created"
+        run["last_error"] = "Pipeline stopped before review_brief.json was created"
 
     changed = (
         run.get("phase") != old_phase

@@ -6,14 +6,14 @@ from pathlib import Path
 from typing import Any
 
 from . import service
-from .codex_selection import validate_selected_clips_file
 from .config import Settings, load_settings
 from .pipeline import cleanup_plan
-from .utils import read_json, write_json
+from .review_selection import validate_selected_clips_file
+from .utils import read_json, review_material_path, write_json
 
 REVIEW_PACKAGE_FILES = [
-    "codex_brief.json",
-    "codex_review.md",
+    "review_brief.json",
+    "review_notes.md",
     "selected_clips.template.json",
     "refined_candidates.json",
 ]
@@ -291,8 +291,8 @@ def get_run_detail(run_id: str, *, service_dir: Path = service.DEFAULT_SERVICE_D
     files = {
         filename: _file_status(run_dir, filename)
         for filename in [
-            "codex_brief.json",
-            "codex_review.md",
+            "review_brief.json",
+            "review_notes.md",
             "selected_clips.template.json",
             "selected_clips.json",
             "merged_candidates.json",
@@ -302,7 +302,7 @@ def get_run_detail(run_id: str, *, service_dir: Path = service.DEFAULT_SERVICE_D
     return _ok(
         run=run,
         files=files,
-        candidates_count=_count_json_items(run_dir / "codex_brief.json"),
+        candidates_count=_count_json_items(review_material_path(run_dir, "review_brief.json")),
         selected_count=_count_json_items(run_dir / "selected_clips.json"),
         rendered_clip_count=len(rendered_clips),
         rendered_clips=[str(path) for path in rendered_clips],

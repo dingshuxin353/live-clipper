@@ -344,7 +344,7 @@ def _reuse_healthy_final_files(entry: dict[str, Any], target: Path, staging: Pat
         shutil.move(str(source), str(destination))
 
 
-def _download_huggingface_file(entry: dict[str, Any], source: str, file_spec: dict[str, Any], staging: Path) -> Path:
+def _download_huggingface_file(entry: dict[str, Any], source: str, file_spec: dict[str, Any], staging: Path, token: str | None = None) -> Path:
     source_spec = entry["sources"][source]
     downloaded = hf_hub_download(
         repo_id=source_spec["repo"],
@@ -353,7 +353,7 @@ def _download_huggingface_file(entry: dict[str, Any], source: str, file_spec: di
         repo_type="model",
         local_dir=staging,
         endpoint=source_spec["endpoint"],
-        token=os.getenv("HF_TOKEN") or None,
+        token=token or False,
     )
     return Path(downloaded)
 
@@ -373,14 +373,14 @@ def _download_modelscope_file(entry: dict[str, Any], file_spec: dict[str, Any], 
     )
 
 
-def _download_file(entry: dict[str, Any], source: str, file_spec: dict[str, Any], staging: Path) -> None:
+def _download_file(entry: dict[str, Any], source: str, file_spec: dict[str, Any], staging: Path, token: str | None = None) -> None:
     destination = staging / str(file_spec["path"])
     if destination.exists():
         destination.unlink()
     if source == "modelscope":
         downloaded = _download_modelscope_file(entry, file_spec, staging)
     else:
-        downloaded = _download_huggingface_file(entry, source, file_spec, staging)
+        downloaded = _download_huggingface_file(entry, source, file_spec, staging, token)
     if downloaded.resolve() != destination.resolve():
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(downloaded, destination)
@@ -436,7 +436,7 @@ def _atomic_install(staging: Path, target: Path) -> None:
     shutil.rmtree(backup)
 
 
-def download_model(model_id: str, source: str = DEFAULT_MODEL_SOURCE) -> dict[str, Any]:
+def download_model(model_id: str, source: str = DEFAULT_MODEL_SOURCE, *, token: str | None = None) -> dict[str, Any]:
     """下载或修复白名单模型；失败时保留 partial 与错误摘要。"""
     entry = model_entry(model_id)
     if source == "hf-mirror":
@@ -461,7 +461,7 @@ def download_model(model_id: str, source: str = DEFAULT_MODEL_SOURCE) -> dict[st
             path = staging / str(file_spec["path"])
             if _canonical_file_matches(path, file_spec):
                 continue
-            _download_file(entry, source, file_spec, staging)
+            _download_file(entry, source, file_spec, staging, token)
             if not _canonical_file_matches(path, file_spec):
                 raise ValueError(f"{file_spec['path']} SHA256 校验失败")
         for file_spec in entry["files"]:
@@ -471,9 +471,9 @@ def download_model(model_id: str, source: str = DEFAULT_MODEL_SOURCE) -> dict[st
         _clean_staging_for_install(staging, entry)
         _write_install_manifest(staging, entry, source)
         _atomic_install(staging, target)
-    except Exception as exc:
+    except Exception:
         staging.mkdir(parents=True, exist_ok=True)
-        _write_download_metadata(staging, entry, source, last_error=str(exc))
+        _write_download_metadata(staging, entry, source, last_error="model_download_or_integrity_failed")
         raise
 
     return {

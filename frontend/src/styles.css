@@ -142,14 +142,10 @@ h4 {
 }
 
 .page {
-  display: none;
   max-width: 900px;
   margin: 0 auto;
 }
 
-.page.active {
-  display: block;
-}
 
 .page-heading,
 .card-heading {
@@ -1342,3 +1338,21 @@ textarea.form-control { height: auto; min-height: 88px; padding: 8px; resize: ve
   .reprocess-compare-list > div { grid-template-columns: 1fr; }
   .reprocess-compare-list > div > b { text-align: left; }
 }
+
+.resource-filters { display: flex; flex-wrap: wrap; gap: 16px; margin: 20px 0; }
+.resource-filters label, .resource-form > label { display: grid; gap: 8px; min-width: 160px; }
+.resource-form { max-width: 760px; display: grid; gap: 20px; }
+.resource-form input, .resource-form select { max-width: 100%; }
+.resource-actions { display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0; }
+.resource-row { flex-wrap: wrap; overflow-wrap: anywhere; }
+.resource-editor { padding-bottom: 48px; }
+.resource-form fieldset { display: flex; gap: 18px; border: 1px solid #d6d3cc; padding: 12px; }
+
+.remix-icon { width: 1.15em; height: 1.15em; display: inline-block; vertical-align: -0.18em; flex-shrink: 0; }
+.resource-form, .resource-form label, .resource-row > div { min-width: 0; }
+.resource-form { max-width: 52rem; }
+.resource-form input, .resource-form select { max-width: 100%; }
+.resource-form fieldset { min-width: 0; }
+.onboarding-content .resource-editor { padding: 0; }
+.onboarding-content .resource-form { max-width: 100%; }
+@media (max-width: 1000px) { .resource-row { flex-wrap: wrap; } .resource-actions { flex-wrap: wrap; } .resource-editor .resource-form { grid-template-columns: 1fr; } }

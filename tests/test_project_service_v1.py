@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from resource_test_support import assign_test_resources
 
 from live_clipper.config import Settings
 from live_clipper.project_domain import default_project_config
@@ -34,7 +35,7 @@ def test_empty_directory_enters_projects_mode_but_legacy_metadata_does_not(tmp_p
 def test_validation_and_project_lifecycle(tmp_path):
     repo = open_project_repository(tmp_path / "service")
     manager = ProjectManager(repo, Settings(cheap_model_api_key="fake-key"))
-    config = _ready_config(tmp_path)
+    config = assign_test_resources(repo, _ready_config(tmp_path))
     validation = manager.validate_project(name="项目一", config=config, activation_state="active")
     assert validation.ok
     project = manager.create_project(name="项目一", config=config, activation_state="active", request_id="create-1")

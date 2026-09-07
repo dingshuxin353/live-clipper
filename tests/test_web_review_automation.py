@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import json
-import time
 from pathlib import Path
 
 from live_clipper import jobs, review_automation, web
-from live_clipper.utils import read_json, write_json
+from live_clipper.utils import write_json
 from live_clipper.web import WebPaths, handle_api_request
 
 
@@ -50,8 +49,8 @@ def _selection() -> list[dict]:
 def _write_run(paths: WebPaths, *, phase: str = "needs_review") -> Path:
     run_dir = paths.output_root / "default" / "run-1"
     run_dir.mkdir(parents=True)
-    write_json(run_dir / "codex_brief.json", {"summary": "brief"})
-    (run_dir / "codex_review.md").write_text("# Review\n", encoding="utf-8")
+    write_json(run_dir / "review_brief.json", {"summary": "brief"})
+    (run_dir / "review_notes.md").write_text("# Review\n", encoding="utf-8")
     write_json(run_dir / "selected_clips.template.json", _selection())
     write_json(run_dir / "merged_candidates.json", [_candidate()])
     write_json(
@@ -99,17 +98,6 @@ def _write_config(path: Path) -> None:
     )
 
 
-def _wait_job(paths: WebPaths, job_id: str, timeout: float = 2.0) -> dict:
-    deadline = time.time() + timeout
-    final_job = None
-    while time.time() < deadline:
-        status, _headers, payload = handle_api_request("GET", f"/api/jobs/{job_id}", paths)
-        assert status == 200
-        final_job = payload["job"]
-        if final_job["status"] in jobs.TERMINAL_STATUSES:
-            return final_job
-        time.sleep(0.02)
-    raise AssertionError(f"job did not reach terminal status: {final_job}")
 
 
 def test_get_api_review_automation_returns_status(tmp_path):
@@ -124,81 +112,14 @@ def test_get_api_review_automation_returns_status(tmp_path):
     assert "api_key" not in json.dumps(payload, ensure_ascii=False).replace("api_key_env", "").replace("api_key_configured", "")
 
 
-def test_post_api_review_automation_check_uses_environment_status(monkeypatch, tmp_path):
-    paths = _paths(tmp_path)
-    monkeypatch.setattr(review_automation, "check_environment", lambda settings: {"ok": True, "current_mode_available": True})
-
-    status, _headers, payload = handle_api_request("POST", "/api/review-automation/check", paths)
-
-    assert status == 200
-    assert payload["ok"] is True
-    assert payload["current_mode_available"] is True
 
 
-def test_post_api_run_ai_review_executes_and_writes_selection(monkeypatch, tmp_path):
-    paths = _paths(tmp_path)
-    _write_config(paths.config_path)
-    run_dir = _write_run(paths)
-
-    def fake_runner(_prompt: str, **_kwargs):
-        return {"ok": True, "stdout": json.dumps(_selection()), "stderr": ""}
-
-    monkeypatch.setattr(review_automation, "_default_local_runner", fake_runner)
-
-    status, _headers, payload = handle_api_request("POST", "/api/runs/run-1/ai-review", paths)
-
-    assert status == 202
-    assert payload["ok"] is True
-    final_job = _wait_job(paths, payload["job"]["id"])
-    assert final_job["status"] == "succeeded"
-    assert read_json(run_dir / "selected_clips.json")[0]["clip_id"] == "clip-1"
 
 
-def test_post_api_run_ai_review_rejects_invalid_phase_with_chinese_error(tmp_path):
-    paths = _paths(tmp_path)
-    _write_config(paths.config_path)
-    _write_run(paths, phase="processing")
-
-    status, _headers, payload = handle_api_request("POST", "/api/runs/run-1/ai-review", paths)
-
-    assert status == 202
-    assert payload["ok"] is True
-    final_job = _wait_job(paths, payload["job"]["id"])
-    assert final_job["status"] == "failed"
-    assert final_job["result"]["error_code"] == "invalid_phase"
-    assert "needs_review" in final_job["result"]["message"]
 
 
-def test_post_api_run_ai_review_rejects_existing_selection(tmp_path):
-    paths = _paths(tmp_path)
-    _write_config(paths.config_path)
-    run_dir = _write_run(paths)
-    write_json(run_dir / "selected_clips.json", _selection())
-
-    status, _headers, payload = handle_api_request("POST", "/api/runs/run-1/ai-review", paths)
-
-    assert status == 202
-    assert payload["ok"] is True
-    final_job = _wait_job(paths, payload["job"]["id"])
-    assert final_job["status"] == "failed"
-    assert final_job["result"]["error_code"] == "selected_clips_exists"
 
 
-def test_post_api_review_automation_run_due_delegates(monkeypatch, tmp_path):
-    paths = _paths(tmp_path)
-    _write_config(paths.config_path)
-
-    def fake_run_due(settings, service_dir):
-        assert service_dir == paths.service_dir
-        return {"ok": True, "processed_runs": ["run-1"], "results": []}
-
-    monkeypatch.setattr(review_automation, "run_due_ai_reviews", fake_run_due)
-
-    status, _headers, payload = handle_api_request("POST", "/api/review-automation/run-due", paths)
-
-    assert status == 200
-    assert payload["ok"] is True
-    assert payload["processed_runs"] == ["run-1"]
 
 
 def test_build_run_detail_includes_ai_review_failure_for_same_run(tmp_path):
@@ -228,37 +149,19 @@ def test_build_run_detail_includes_ai_review_failure_for_same_run(tmp_path):
     assert detail["ai_review"] is None
 
 
-def test_post_api_run_ai_review_starts_job_and_can_poll(monkeypatch, tmp_path):
+
+
+def test_retired_paid_review_routes_preserve_legacy_record_and_create_no_job(tmp_path, monkeypatch):
+    import pytest
+
     paths = _paths(tmp_path)
-    _write_config(paths.config_path)
-    _write_run(paths)
-
-    def fake_ai_review(run_id, settings, service_dir):
-        assert run_id == "run-1"
-        assert service_dir == paths.service_dir
-        return {"ok": True, "selected_count": 2}
-
-    monkeypatch.setattr(review_automation, "run_ai_review_for_run", fake_ai_review)
-
-    status, _headers, payload = handle_api_request("POST", "/api/runs/run-1/ai-review", paths)
-
-    assert status == 202
-    assert payload["ok"] is True
-    assert payload["job"]["status"] == "running"
-    assert payload["job"]["kind"] == "ai_review"
-    job_id = payload["job"]["id"]
-
-    deadline = time.time() + 2.0
-    final_job = None
-    while time.time() < deadline:
-        poll_status, _poll_headers, poll_payload = handle_api_request("GET", f"/api/jobs/{job_id}", paths)
-        assert poll_status == 200
-        final_job = poll_payload["job"]
-        if final_job["status"] in jobs.TERMINAL_STATUSES:
-            break
-        time.sleep(0.02)
-    assert final_job is not None
-    assert final_job["status"] == "succeeded"
-
-    missing_status, _missing_headers, _missing_payload = handle_api_request("POST", "/api/runs/missing-run/ai-review", paths)
-    assert missing_status == 404
+    run_dir = _write_run(paths)
+    before = (paths.service_dir / "runs.json").read_bytes()
+    monkeypatch.setattr(jobs, "start_job", lambda *a, **k: pytest.fail("must not schedule paid work"))
+    for route in ("check", "run-due"):
+        assert handle_api_request("POST", f"/api/review-automation/{route}", paths)[0] == 410
+    status, _, payload = handle_api_request("POST", "/api/runs/run-1/ai-review", paths)
+    assert status == 409
+    assert payload["error_code"] == "original_configuration_unknown"
+    assert (paths.service_dir / "runs.json").read_bytes() == before
+    assert not (run_dir / "selected_clips.json").exists()

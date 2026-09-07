@@ -1,3 +1,4 @@
+import { RemixIcon } from "./ui/RemixIcon";
 import { useEffect } from "react";
 import { Link } from "react-router-dom";
 
@@ -12,7 +13,7 @@ export function StudioPage({ notify, state, onboarding = null, resumeOnboarding 
   if (onboarding?.session?.state === "paused") {
     const steps = { welcome: "开始", asr: "语音识别", ai: "AI 服务", project: "第一个项目", complete: "完成" } as const;
     const current = steps[onboarding.session.current_step] ?? "首次设置";
-    const ready = [onboarding.resources.asr.ready ? "语音识别已准备" : null, onboarding.resources.ai.ready ? "AI 服务已准备" : null].filter(Boolean);
+    const ready = [onboarding.resources.asr.ready ? "语音识别已准备" : onboarding.session?.draft.asr?.resource_id ? "已选择语音识别资源，尚待准备" : null, onboarding.resources.ai.ready ? "AI 服务已准备" : onboarding.session?.draft.ai?.resource_id ? "已选择 AI 资源，尚待准备" : null].filter(Boolean);
     return <section className="page onboarding-paused-page"><PageHeading eyebrow="首次设置" title="工作室" description="完成设置后，Venus 才会开始发现和处理录像。" /><article className="onboarding-paused-card"><img src="/static/venus-mark.png" alt="" /><span>首次设置尚未完成</span><h1>继续首次设置</h1><p>已保存的设置和模型下载进度仍保留在本机。</p><div className="onboarding-paused-progress"><strong>将从“{current}”继续</strong><small>{ready.length ? ready.join(" · ") : "还没有提交资源配置"}</small></div><button ref={resumeTriggerRef} className="button primary" onClick={() => void resumeOnboarding()}>继续首次设置</button></article></section>;
   }
   if (state.loading && !studio) return <LoadingState />;
@@ -25,9 +26,9 @@ export function StudioPage({ notify, state, onboarding = null, resumeOnboarding 
     {state.error && <p className="stale-warning" role="alert">刷新失败：{state.error}。正在保留上次成功数据。</p>}
     <section className="attention-panel"><SectionHeading title="需要你处理" subtitle={`${studio.needs_attention.issue_groups.length} 组问题 · ${studio.needs_attention.failed_runs.length} 条失败 · ${blocked.length} 个项目受阻`} />
       {!studio.needs_attention.issue_groups.length && !studio.needs_attention.failed_runs.length && !blocked.length ? <p className="quiet-state">当前没有需要介入的事项。</p> : <div className="attention-list">
-        {studio.needs_attention.issue_groups.map((group) => <Link className="attention-item warning" to={`/projects/${studio.needs_attention.failed_runs.find((run) => run.active_issue_summary?.group_key === group.group_key)?.project_id ?? blocked[0]?.project_id ?? ""}`} key={group.group_key}><span>!</span><div><strong>{group.title}（{group.count}）</strong><p>打开相关项目或失败记录继续处理。</p></div><b>›</b></Link>)}
+        {studio.needs_attention.issue_groups.map((group) => <Link className="attention-item warning" to={`/projects/${studio.needs_attention.failed_runs.find((run) => run.active_issue_summary?.group_key === group.group_key)?.project_id ?? blocked[0]?.project_id ?? ""}`} key={group.group_key}><span><RemixIcon name="warning" /></span><div><strong>{group.title}（{group.count}）</strong><p>打开相关项目或失败记录继续处理。</p></div><b><RemixIcon name="chevronRight" /></b></Link>)}
         {studio.needs_attention.failed_runs.map((run) => <RunLink key={run.run_id} run={run} project={projectById.get(run.project_id)} />)}
-        {blocked.map((project) => { const issue = project.blocking_issues[0]; return <Link className="attention-item error" key={project.project_id} to={`/projects/${project.project_id}`}><span>!</span><div><strong>{project.name} 需要完成配置</strong><p>{issue ? ("summary" in issue ? issue.summary : issue.message) : "项目当前不可运行"}</p></div><b>›</b></Link>; })}
+        {blocked.map((project) => { const issue = project.blocking_issues[0]; return <Link className="attention-item error" key={project.project_id} to={`/projects/${project.project_id}`}><span><RemixIcon name="warning" /></span><div><strong>{project.name} 需要完成配置</strong><p>{issue ? ("summary" in issue ? issue.summary : issue.message) : "项目当前不可运行"}</p></div><b><RemixIcon name="chevronRight" /></b></Link>; })}
       </div>}
     </section>
     <section className="section-block"><SectionHeading title="正在处理" subtitle={`${studio.workload.processing} 条处理中 · ${studio.workload.queued} 条排队`} /><div className="run-grid">{studio.in_progress.processing.map((run) => <RunCard key={run.run_id} run={run} project={projectById.get(run.project_id)} />)}{studio.in_progress.queued.map((run) => <RunCard key={run.run_id} run={run} project={projectById.get(run.project_id)} />)}{!studio.in_progress.processing.length && !studio.in_progress.queued.length && <p className="quiet-state">当前没有正在处理或排队的剪辑记录。</p>}</div></section>
@@ -37,7 +38,7 @@ export function StudioPage({ notify, state, onboarding = null, resumeOnboarding 
   </section>;
 }
 
-function RunLink({ run, project }: { run: Run; project?: ProjectSummary }) { return <Link className="attention-item error" to={`/projects/${run.project_id}/runs/${run.run_id}`}><span>!</span><div><strong>{run.source_name} 处理失败</strong><p>{project?.name ?? run.project_id} · {run.error_summary ?? "查看失败详情"}</p></div><b>›</b></Link>; }
+function RunLink({ run, project }: { run: Run; project?: ProjectSummary }) { return <Link className="attention-item error" to={`/projects/${run.project_id}/runs/${run.run_id}`}><span><RemixIcon name="warning" /></span><div><strong>{run.source_name} 处理失败</strong><p>{project?.name ?? run.project_id} · {run.error_summary ?? "查看失败详情"}</p></div><b><RemixIcon name="chevronRight" /></b></Link>; }
 function ResultLink({ result }: { result: ResultSummary }) { return <Link className="run-card" to={`/projects/${result.project.project_id}/runs/${result.run_id}?view=result`}><div><span className="overline">{result.project.name}</span><strong>{result.source_name}</strong><small>{result.overall_summary || "查看剪辑结果"}</small></div>{!result.seen && <span className="nav-badge">新</span>}</Link>; }
 
 export function ProjectsPage() {

@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
+import pytest
+
 from live_clipper import service
-from live_clipper.config_editor import load_editable_config
-from live_clipper.utils import read_json, write_json
 from live_clipper.web import WebPaths, handle_api_request
 
 
@@ -62,197 +61,31 @@ def _paths(tmp_path: Path) -> WebPaths:
     )
 
 
-def test_get_api_config_redacts_secrets_and_returns_env_status(monkeypatch, tmp_path):
-    source_dir = tmp_path / "nas"
-    source_dir.mkdir()
-    config_path = tmp_path / "live-clipper.toml"
-    _write_config(config_path, source_dir)
-    monkeypatch.setenv("SECRET_LLM_KEY", "sk-secret")
-
-    status, _headers, payload = handle_api_request("GET", "/api/config", _paths(tmp_path))
-
+def test_application_api_excludes_model_configuration_and_rejects_legacy_write(tmp_path):
+    paths = _paths(tmp_path)
+    _write_config(paths.config_path, tmp_path / "nas")
+    before = paths.config_path.read_bytes()
+    status, _, payload = handle_api_request("GET", "/api/config", paths)
     assert status == 200
-    assert payload["ok"] is True
-    assert payload["config"]["llm"]["api_key_env"] == "SECRET_LLM_KEY"
-    assert payload["env_status"]["SECRET_LLM_KEY"] is True
-    assert "sk-secret" not in str(payload)
+    assert "llm" not in payload["config"]
+    assert "asr" not in payload["config"]
     assert "secret-token" not in str(payload)
-    assert payload["config"]["asr"]["model_source"] == "modelscope"
+    status, _, rejected = handle_api_request("POST", "/api/config", paths,
+        body={"expected_revision": payload["revision"], "config": {"llm": {"model": "legacy"}}})
+    assert status == 409
+    assert not rejected["ok"]
+    assert paths.config_path.read_bytes() == before
 
 
-def test_post_api_config_validate_returns_chinese_errors(tmp_path):
-    source_dir = tmp_path / "nas"
-    source_dir.mkdir()
-    _write_config(tmp_path / "live-clipper.toml", source_dir)
-    draft = load_editable_config(config_path=tmp_path / "live-clipper.toml")["config"]
-    draft["recording_source_default"]["source_dir"] = str(tmp_path / "missing")
-    draft["service"]["scan_interval_minutes"] = 0
-
-    status, _headers, payload = handle_api_request(
-        "POST",
-        "/api/config/validate",
-        _paths(tmp_path),
-        body={"config": draft},
-    )
-
-    assert status == 200
-    assert payload["ok"] is False
-    messages = "\n".join(error["message"] for error in payload["errors"])
-    assert "录播源目录不存在" in messages
-    assert "必须在 1 到 1440 之间" in messages
-
-
-def test_post_api_config_saves_backup_and_loadable_file(tmp_path):
-    source_dir = tmp_path / "nas"
-    source_dir.mkdir()
-    config_path = tmp_path / "live-clipper.toml"
-    _write_config(config_path, source_dir)
-    draft = load_editable_config(config_path=config_path)["config"]
-    draft["service"]["scan_interval_minutes"] = 15
-    draft["asr"]["model_source"] = "huggingface"
-    draft["paths"]["workspace_root"] = str(tmp_path / "workspace")
-
-    status, _headers, payload = handle_api_request(
-        "POST",
-        "/api/config",
-        _paths(tmp_path),
-        body={"config": draft},
-    )
-
-    assert status == 200
-    assert payload["ok"] is True
-    assert Path(payload["backup_path"]).exists()
-    assert "scan_interval_minutes = 15" in config_path.read_text(encoding="utf-8")
-    assert payload["requires_service_restart"] is True
-    assert load_editable_config(config_path=config_path)["config"]["asr"]["model_source"] == "huggingface"
-    assert load_editable_config(config_path=config_path)["config"]["paths"]["workspace_root"] == str(
-        tmp_path / "workspace"
-    )
-
-
-def test_post_api_config_llm_key_saves_to_env_without_echo(monkeypatch, tmp_path):
-    source_dir = tmp_path / "nas"
-    source_dir.mkdir()
-    config_path = tmp_path / "live-clipper.toml"
-    _write_config(config_path, source_dir)
+def test_retired_configuration_actions_do_not_write_or_restart(tmp_path, monkeypatch):
     paths = _paths(tmp_path)
-
-    status, _headers, payload = handle_api_request(
-        "POST",
-        "/api/config/llm-key",
-        paths,
-        body={"api_key": "  sk-settings-secret  "},
-    )
-
-    assert status == 200
-    assert payload["ok"] is True
-    assert payload["api_key_env"] == "SECRET_LLM_KEY"
-    assert "sk-settings-secret" not in str(payload)
-    assert (tmp_path / ".env").read_text(encoding="utf-8") == "SECRET_LLM_KEY=sk-settings-secret\n"
-    assert os.environ["SECRET_LLM_KEY"] == "sk-settings-secret"
-
-    status, _headers, config = handle_api_request("GET", "/api/config", paths)
-    assert status == 200
-    assert config["env_status"]["SECRET_LLM_KEY"] is True
-    assert "sk-settings-secret" not in str(config)
-
-
-def test_post_api_config_llm_key_rejects_empty_value(tmp_path):
-    source_dir = tmp_path / "nas"
-    source_dir.mkdir()
-    _write_config(tmp_path / "live-clipper.toml", source_dir)
-
-    status, _headers, payload = handle_api_request(
-        "POST",
-        "/api/config/llm-key",
-        _paths(tmp_path),
-        body={"api_key": "   "},
-    )
-
-    assert status == 400
-    assert payload["ok"] is False
-    assert payload["error_code"] == "empty_api_key"
+    _write_config(paths.config_path, tmp_path / "nas")
+    before = paths.config_path.read_bytes()
+    monkeypatch.setattr(service, "start_service", lambda *a, **k: pytest.fail("retired route started service"))
+    for action in ("validate", "llm-key", "asr-key", "restart-service"):
+        status, _, payload = handle_api_request("POST", f"/api/config/{action}", paths,
+            body={"api_key": "sentinel-secret"})
+        assert status == 410
+        assert "sentinel-secret" not in str(payload)
+    assert paths.config_path.read_bytes() == before
     assert not (tmp_path / ".env").exists()
-
-
-def test_config_api_migrates_legacy_hf_mirror_and_rejects_new_value(tmp_path):
-    source_dir = tmp_path / "nas"
-    source_dir.mkdir()
-    config_path = tmp_path / "live-clipper.toml"
-    _write_config(config_path, source_dir)
-    config_path.write_text(
-        config_path.read_text(encoding="utf-8").replace(
-            "[asr]\n",
-            '[asr]\nmodel_source = "hf-mirror"\n',
-        ),
-        encoding="utf-8",
-    )
-
-    status, _headers, payload = handle_api_request("GET", "/api/config", _paths(tmp_path))
-    assert status == 200
-    assert payload["config"]["asr"]["model_source"] == "modelscope"
-
-    draft = payload["config"]
-    draft["asr"]["model_source"] = "hf-mirror"
-    status, _headers, payload = handle_api_request(
-        "POST",
-        "/api/config",
-        _paths(tmp_path),
-        body={"config": draft},
-    )
-    assert status == 400
-    assert payload["ok"] is False
-    assert 'model_source = "hf-mirror"' in config_path.read_text(encoding="utf-8")
-
-
-def test_post_api_config_refuses_parse_error_without_overwrite(tmp_path):
-    config_path = tmp_path / "live-clipper.toml"
-    config_path.write_text("[service\nbroken = true", encoding="utf-8")
-
-    status, _headers, payload = handle_api_request(
-        "POST",
-        "/api/config",
-        _paths(tmp_path),
-        body={"config": {"service": {"scan_interval_minutes": 15}}},
-    )
-
-    assert status == 400
-    assert payload["ok"] is False
-    assert "配置文件解析失败" in payload["message"]
-    assert config_path.read_text(encoding="utf-8") == "[service\nbroken = true"
-
-
-def test_restart_service_api_returns_stopped_when_service_is_not_running(tmp_path):
-    status, _headers, payload = handle_api_request("POST", "/api/config/restart-service", _paths(tmp_path))
-
-    assert status == 200
-    assert payload["ok"] is True
-    assert payload["restarted"] is False
-    assert payload["reason"] == "service_not_running"
-
-
-def test_restart_service_api_stops_and_starts_running_service(monkeypatch, tmp_path):
-    source_dir = tmp_path / "nas"
-    source_dir.mkdir()
-    _write_config(tmp_path / "live-clipper.toml", source_dir)
-    paths = _paths(tmp_path)
-    service_dir = paths.service_dir
-    service_dir.mkdir(parents=True)
-    (service_dir / "service.pid").write_text("1234\n", encoding="utf-8")
-    (service_dir / "service.json").write_text('{"status":"running","pid":1234}', encoding="utf-8")
-    monkeypatch.setattr(service, "pid_is_running", lambda pid: pid == 1234)
-    monkeypatch.setattr(service.os, "kill", lambda pid, sig: None)
-    def fake_start_service(settings, service_dir):
-        write_json(service_dir / "service.json", {"status": "running", "pid": 5678})
-        return {"ok": True, "started": True, "pid": 5678, "service_dir": str(service_dir)}
-
-    monkeypatch.setattr(service, "start_service", fake_start_service)
-
-    status, _headers, payload = handle_api_request("POST", "/api/config/restart-service", paths)
-
-    assert status == 200
-    assert payload["ok"] is True
-    assert payload["restarted"] is True
-    assert payload["stop"]["stopped"] is True
-    assert payload["start"]["started"] is True
-    assert read_json(service_dir / "service.json")["status"] == "running"

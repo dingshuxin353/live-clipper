@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from live_clipper.codex_selection import validate_selected_clips_file
 from live_clipper.models import ClipCandidate, SelectedClip
+from live_clipper.review_selection import validate_selected_clips_file
 from live_clipper.utils import write_json
 
 

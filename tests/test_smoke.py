@@ -35,13 +35,13 @@ def test_run_local_smoke_writes_minimal_pipeline_artifacts(tmp_path, monkeypatch
         "windows.json",
         "cheap_candidates.json",
         "merged_candidates.json",
-        "codex_brief.json",
+        "review_brief.json",
         "selected_clips.json",
         "smoke_report.json",
     ]:
         assert (output_dir / name).exists()
 
-    brief = read_json(output_dir / "codex_brief.json")
+    brief = read_json(output_dir / "review_brief.json")
     assert brief["candidate_count"] == 1
     assert brief["candidates"][0]["id"] == "smoke-clip"
     assert read_json(output_dir / "selected_clips.json")[0]["remove_ranges"] == [[1.2, 1.5]]

@@ -17,7 +17,21 @@ DEFAULT_RETRY_DELAY_SECONDS = 3.0
 
 
 class CheapModelServiceError(RuntimeError):
-    """Raised when the cheap model service cannot complete a request."""
+    """A stable, secret-free failure category shared by probes and real calls."""
+
+    def __init__(self, code: str):
+        self.code = code
+        super().__init__(code)
+
+
+def request_error_code(exc: requests.RequestException) -> str:
+    if isinstance(exc, requests.exceptions.ConnectTimeout):
+        return 'connection_timeout'
+    if isinstance(exc, requests.exceptions.ReadTimeout):
+        return 'result_unknown'
+    status = exc.response.status_code if exc.response is not None else None
+    return {401: 'credential_invalid', 403: 'permission_or_quota', 402: 'permission_or_quota',
+            429: 'rate_limited', 404: 'model_not_found', 400: 'parameter_unsupported', 422: 'parameter_unsupported'}.get(status, 'result_unknown')
 
 
 def emit_progress(message: str) -> None:
@@ -46,7 +60,7 @@ def _loads_model_json(content: str) -> Any:
                 parsed, _ = decoder.raw_decode(stripped[index:])
                 return parsed
             except JSONDecodeError:
-                continue
+                break
         raise
 
 
@@ -61,27 +75,21 @@ def _extract_message_content(payload: Any) -> str:
 
 
 def _is_retryable_request_exception(exc: requests.RequestException) -> bool:
-    if isinstance(exc, requests.HTTPError):
-        status_code = exc.response.status_code if exc.response is not None else None
-        return status_code is None or status_code >= 500
-    return isinstance(
-        exc,
-        (
-            requests.exceptions.ConnectionError,
-            requests.exceptions.Timeout,
-            requests.exceptions.SSLError,
-        ),
-    )
+    # Only a failed connection establishment proves the request was never accepted.
+    return isinstance(exc, requests.exceptions.ConnectTimeout)
 
 
 class CheapModelClient:
     def __init__(
         self,
         settings: Settings,
-        timeout: int = 300,
-        request_attempts: int = DEFAULT_REQUEST_ATTEMPTS,
-        retry_delay_seconds: float = DEFAULT_RETRY_DELAY_SECONDS,
+        timeout: int | None = None,
+        request_attempts: int | None = None,
+        retry_delay_seconds: float | None = None,
     ) -> None:
+        timeout = settings.llm.timeout_seconds if timeout is None else timeout
+        request_attempts = settings.llm.request_attempts if request_attempts is None else request_attempts
+        retry_delay_seconds = settings.llm.retry_delay_seconds if retry_delay_seconds is None else retry_delay_seconds
         if not settings.cheap_model_api_base:
             raise ValueError("CHEAP_MODEL_API_BASE is required")
         if not settings.cheap_model_api_key:
@@ -93,6 +101,7 @@ class CheapModelClient:
         if retry_delay_seconds < 0:
             raise ValueError("retry_delay_seconds must be non-negative")
 
+        self.request_profile = settings.llm.request_profile
         self.api_base = settings.cheap_model_api_base.rstrip("/")
         self.api_key = settings.cheap_model_api_key
         self.model = settings.cheap_model_name
@@ -110,6 +119,8 @@ class CheapModelClient:
         max_tokens: int = 2048,
         temperature: float = 0.1,
     ) -> Any:
+        from .resource_providers import request_parameters
+
         request_payload = {
             "model": self.model,
             "messages": [
@@ -119,8 +130,7 @@ class CheapModelClient:
                     "content": json.dumps(user_payload, ensure_ascii=False, separators=(",", ":")),
                 },
             ],
-            "temperature": temperature,
-            "max_tokens": max_tokens,
+            **request_parameters(self.request_profile, temperature=temperature, max_tokens=max_tokens),
             "stream": False,
         }
         last_content = ""
@@ -134,7 +144,10 @@ class CheapModelClient:
                     },
                     json=request_payload,
                     timeout=self.timeout,
+                    allow_redirects=False,
                 )
+                if 300 <= response.status_code < 400:
+                    raise CheapModelServiceError("redirect_not_allowed")
                 response.raise_for_status()
             except requests.RequestException as exc:
                 retryable = _is_retryable_request_exception(exc)
@@ -148,10 +161,7 @@ class CheapModelClient:
                         time.sleep(delay)
                     continue
                 self._write_failure_log(system_prompt, user_payload, "", exc, attempt=attempt)
-                raise CheapModelServiceError(
-                    "Cheap model request failed after "
-                    f"{attempt}/{self.request_attempts} attempt(s): {type(exc).__name__}: {exc}"
-                ) from exc
+                raise CheapModelServiceError(request_error_code(exc)) from None
             try:
                 payload = response.json()
             except ValueError as exc:
@@ -161,18 +171,18 @@ class CheapModelClient:
                     getattr(response, "text", ""),
                     exc,
                 )
-                raise
+                raise CheapModelServiceError("output_format_invalid") from None
             try:
                 last_content = _extract_message_content(payload)
             except ValueError as exc:
                 self._write_failure_log(system_prompt, user_payload, "", exc, payload)
-                raise
+                raise CheapModelServiceError("output_format_invalid") from None
             try:
                 return _loads_model_json(last_content)
             except JSONDecodeError:
-                continue
+                break
         self._write_failure_log(system_prompt, user_payload, last_content)
-        raise ValueError(f"Cheap model returned non-JSON content: {last_content[:200]}")
+        raise CheapModelServiceError("output_format_invalid")
 
     def _write_failure_log(
         self,
@@ -185,30 +195,26 @@ class CheapModelClient:
     ) -> None:
         if self.failure_log_mode == "disabled":
             return
-        if self.failure_log_mode == "full":
-            payload = {
-                "model": self.model,
-                "system_prompt": system_prompt,
-                "user_payload": user_payload,
-                "content": content,
-            }
-        else:
-            payload = {
-                "model": self.model,
-                "system_prompt": "[redacted]",
-                "user_payload": "[redacted]",
-                "content": "[redacted]" if content else "",
-                "redaction": {
-                    "mode": self.failure_log_mode,
-                    "max_chars": self.failure_log_max_chars,
-                },
-            }
+        payload = {"model": self.model, "error_type": type(error).__name__ if error else "InvalidOutput",
+                   "error_code": request_error_code(error) if isinstance(error, requests.RequestException) else "output_format_invalid"}
         if attempt is not None:
             payload["attempt"] = attempt
             payload["request_attempts"] = self.request_attempts
-        if error is not None:
-            payload["error_type"] = type(error).__name__
-            payload["error"] = str(error)
-        if response_payload is not None:
-            payload["response_payload"] = response_payload
         write_failure_log("cheap_model_failure", payload)
+
+
+def discover_models(api_base: str, api_key: str, *, timeout: int = 30) -> list[str]:
+    """Explicit metadata lookup; results do not confer capability validation."""
+    try:
+        response = requests.get(f"{api_base.rstrip('/')}/models", headers={'Authorization': f'Bearer {api_key}'}, timeout=timeout, allow_redirects=False)
+        if 300 <= response.status_code < 400:
+            raise CheapModelServiceError('redirect_not_allowed')
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict) or not isinstance(payload.get('data'), list):
+            raise CheapModelServiceError('model_list_unavailable')
+        return sorted({item['id'] for item in payload['data'][:10000] if isinstance(item, dict) and isinstance(item.get('id'), str) and 0 < len(item['id']) <= 512 and not any(ord(c) < 32 for c in item['id'])})
+    except requests.RequestException as exc:
+        raise CheapModelServiceError(request_error_code(exc)) from None
+    except ValueError:
+        raise CheapModelServiceError('model_list_unavailable') from None

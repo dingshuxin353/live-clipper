@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import mimetypes
-import os
 import posixpath
 from dataclasses import dataclass
 from http import HTTPStatus
@@ -34,16 +33,16 @@ from .project_result_api import _error as _result_error
 from .project_storage import ProjectRepository, database_path
 from .render_clips import render_selected_clips
 from .status import build_run_status
-from .utils import read_json, write_json
+from .utils import read_json, review_material_path, write_json
 
 STATIC_DIR = Path(__file__).parent / "web_static"
 
 WEB_PHASE_GROUPS: dict[str, frozenset[str]] = {
     "queued": frozenset({"queued"}),
     "processing": frozenset({"processing", "rendering", "running", "ready_to_render"}),
-    "needs_review": frozenset({"needs_review", "needs_codex_selection"}),
+    "needs_review": frozenset({"needs_review", "needs_review_selection"}),
     "rendered": frozenset({"rendered", "cleanup_ready"}),
-    "failed": frozenset({"failed", "failed_needs_codex"}),
+    "failed": frozenset({"failed", "failed_needs_review"}),
 }
 WEB_PHASE_GROUP_ORDER = ("queued", "processing", "needs_review", "rendered", "failed", "other")
 WEB_PHASE_QUERY_VALUES = frozenset(WEB_PHASE_GROUPS)
@@ -100,6 +99,7 @@ def _settings_for_paths(paths: WebPaths) -> Settings:
     except Exception:
         loaded = Settings()
     return Settings(
+        legacy_review_removed=loaded.legacy_review_removed,
         cheap_model_api_key=loaded.cheap_model_api_key,
         asr_api_key=loaded.asr_api_key,
         hf_token=loaded.hf_token,
@@ -311,8 +311,8 @@ def _phase_for(status: dict[str, Any], running: bool) -> str:
         return "cleanup_ready"
     if files["selected_clips.json"]["exists"]:
         return "ready_to_render"
-    if files["codex_brief.json"]["exists"]:
-        return "needs_codex_selection"
+    if files["review_brief.json"]["exists"]:
+        return "needs_review_selection"
     if running:
         return "running"
     if status["exists"]:
@@ -330,7 +330,7 @@ def _legacy_index_status(run_dir: Path) -> dict[str, Any]:
         "exists": run_dir.exists(),
         "files": {
             "selected_clips.json": {"exists": selected_path.exists()},
-            "codex_brief.json": {"exists": (run_dir / "codex_brief.json").exists()},
+            "review_brief.json": {"exists": (review_material_path(run_dir, "review_brief.json")).exists()},
             "clips": {"exists": clips_dir.exists(), "count": clip_count},
         },
     }
@@ -340,7 +340,7 @@ def _legacy_next_step(phase: str) -> str:
     return {
         "cleanup_ready": "已完成",
         "ready_to_render": "运行 render 渲染 selected_clips.json",
-        "needs_codex_selection": "审阅 codex_brief.json，并写入 selected_clips.json",
+        "needs_review_selection": "审阅 review_brief.json，并写入 selected_clips.json",
         "running": "流水线处理中",
         "waiting_or_manual": "等待处理",
         "missing": "运行 scan 创建新的 run 目录",
@@ -355,8 +355,8 @@ def _web_phase_group(phase: Any) -> str:
     return "other"
 
 
-def _requires_codex(phase: Any) -> bool:
-    return str(phase or "") in {"needs_review", "needs_codex_selection", "cleanup_ready"}
+def _requires_review(phase: Any) -> bool:
+    return str(phase or "") in {"needs_review", "needs_review_selection", "cleanup_ready"}
 
 
 def _sort_timestamp(value: Any) -> float:
@@ -390,7 +390,7 @@ def _run_summary(run_dir: Path, paths: WebPaths, *, include_derived: bool = True
         "source_name": _source_name(run_dir),
         "phase": phase,
         "next_step": status.get("next_step") or _legacy_next_step(phase),
-        "requires_codex": _requires_codex(phase),
+        "requires_review": _requires_review(phase),
         "running": running,
         "pid": pid,
         "created_at": state.get("created_at"),
@@ -484,7 +484,7 @@ def _decorate_run(
                 or _count_candidates(run_dir / "merged_candidates.json")
             )
         else:
-            decorated["candidate_count"] = _count_candidates(run_dir / "codex_brief.json")
+            decorated["candidate_count"] = _count_candidates(review_material_path(run_dir, "review_brief.json"))
         decorated["selected_count"] = _count_candidates(run_dir / "selected_clips.json")
         clips_dir = run_dir / "clips"
         decorated["clip_count"] = len(list(clips_dir.glob("*.mp4"))) if clips_dir.exists() else 0
@@ -492,7 +492,7 @@ def _decorate_run(
         decorated.setdefault("candidate_count", 0)
         decorated.setdefault("selected_count", 0)
         decorated.setdefault("clip_count", 0)
-    decorated["requires_codex"] = _requires_codex(phase)
+    decorated["requires_review"] = _requires_review(phase)
     decorated["stuck"] = _run_looks_stuck(decorated, stuck_after_minutes)
     return decorated
 
@@ -532,7 +532,7 @@ def build_runs_index(
         "has_more": offset + len(page) < len(filtered),
         "phase": phase,
         "phase_counts": phase_counts,
-        "requires_codex": any(_requires_codex(run.get("phase")) for run in runs),
+        "requires_review": any(_requires_review(run.get("phase")) for run in runs),
     }
 
 
@@ -581,13 +581,13 @@ def _steps_from_status(status: dict[str, Any]) -> list[dict[str, Any]]:
         _step("NAS 录制检测", files["run_metadata.json"]),
         _step("本地复制", files["run_metadata.json"]),
         _step("ASR 语音识别", files["transcript.json"]),
-        _step("Agnes 扫描", files["merged_candidates.json"], agnes=True),
+        _step("AI 分析", files["merged_candidates.json"], agnes=True),
         _step("Agnes 精炼", files["refined_candidates.json"], agnes=True),
-        _step("Codex 选择", files["selected_clips.json"]),
+        _step("审阅 Agent 选择", files["selected_clips.json"]),
         _step("渲染导出", files["clips"]),
         _step("清理归档", files["run_metadata.json"]),
     ]
-    if not steps[5]["done"] and files["codex_brief.json"]["exists"]:
+    if not steps[5]["done"] and files["review_brief.json"]["exists"]:
         steps[5]["state"] = "waiting"
     if files["selected_clips.json"]["exists"] and not files["clips"].get("count", 0):
         steps[6]["state"] = "active"
@@ -619,7 +619,7 @@ def build_run_detail(run_id: str, paths: WebPaths | None = None, *, log_lines: i
         run["candidate_count"] = detail.get("candidates_count", 0)
         run["selected_count"] = detail.get("selected_count", 0)
         run["clip_count"] = detail.get("rendered_clip_count", 0)
-        run["requires_codex"] = run.get("phase") == "needs_review"
+        run["requires_review"] = run.get("phase") == "needs_review"
         selection = service.selected_clips_status(run_dir)
         cleanup = _cleanup_preview(
             run_dir,
@@ -643,7 +643,7 @@ def build_run_detail(run_id: str, paths: WebPaths | None = None, *, log_lines: i
                 "can_cleanup_preview": bool(detail.get("rendered_clip_count")),
                 "can_cleanup": bool(detail.get("rendered_clip_count")),
                 "can_delete_local_source": bool(service_run.get("local_source_path")) and bool(detail.get("rendered_clip_count")),
-                "can_ai_review": run.get("phase") == "needs_review" and selection["status"] in {"missing", "empty"},
+                "can_ai_review": False,
             },
             "selection": selection,
             "log": mcp_tools.get_run_log(run_id, lines=log_lines, service_dir=paths.service_dir),
@@ -678,7 +678,7 @@ def build_run_detail(run_id: str, paths: WebPaths | None = None, *, log_lines: i
             "can_cleanup_preview": files["clips"].get("count", 0) > 0,
             "can_cleanup": files["clips"].get("count", 0) > 0,
             "can_delete_local_source": can_delete_local_source and files["clips"].get("count", 0) > 0,
-            "can_ai_review": run.get("phase") == "needs_codex_selection" and selection["status"] in {"missing", "empty"},
+            "can_ai_review": False,
         },
         "selection": selection,
         "log": {
@@ -704,6 +704,12 @@ def handle_api_request(
     query = parse_qs(parsed.query, keep_blank_values=True)
     parts = [unquote(part) for part in parsed_path.split("/") if part]
     try:
+        if parts[:2] == ["api", "resources"] and parts[3:] not in (["repair-context"], ["connection"], ["connection-test"]):
+            from .resource_api import ResourceAPI
+
+            with ProjectRepository(paths.service_dir) as repository:
+                status, payload = ResourceAPI(repository, _settings_for_paths(paths), paths.config_path).dispatch(method, parts, body or {})
+            return _json_response(payload, status=status)
         if parts[:2] == ["api", "migration"]:
             coordinator = migration_coordinator.MigrationCoordinator(
                 service_dir=paths.service_dir,
@@ -939,185 +945,27 @@ def handle_api_request(
                     "models_root": str(asr_models.models_root()),
                 }
             )
-        if method == "POST" and parts == ["api", "asr", "models", "download"]:
-            model_id = str((body or {}).get("model") or "")
-            if model_id not in asr_models.registry_ids():
-                return _json_response(_structured_error("unknown_model", f"未知模型: {model_id}"), status=400)
-            requested_source = (body or {}).get("source")
-            if requested_source is None:
-                settings = _settings_for_paths(paths)
-                source = getattr(settings.asr, "model_source", asr_models.DEFAULT_MODEL_SOURCE) if settings.asr else asr_models.DEFAULT_MODEL_SOURCE
-            else:
-                source = str(requested_source)
-            if source == "hf-mirror":
-                return _json_response(
-                    _structured_error("unsupported_model_source", asr_models.HF_MIRROR_REMOVED_MESSAGE),
-                    status=400,
-                )
-            if source not in asr_models.source_ids():
-                return _json_response(_structured_error("unknown_model_source", f"未知模型下载源: {source}"), status=400)
-            # Fail before creating a background job when the model store cannot
-            # hold the verified staging copy and atomic install backup.
-            if asr_models.local_path_for(model_id) is None:
-                try:
-                    capacity = asr_models.download_capacity(model_id)
-                except ValueError as exc:
-                    parts_error = str(exc).split(":")
-                    if len(parts_error) == 3 and parts_error[0] == "insufficient_disk_space":
-                        try:
-                            required_bytes = int(parts_error[1])
-                            available_bytes = int(parts_error[2])
-                        except ValueError:
-                            required_bytes = available_bytes = None
-                        if required_bytes is not None and available_bytes is not None:
-                            return _json_response(
-                                {
-                                    **_structured_error("insufficient_disk_space", "磁盘空间不足，无法下载模型"),
-                                    "required_bytes": required_bytes,
-                                    "available_bytes": available_bytes,
-                                },
-                                status=409,
-                            )
-                    return _json_response(_structured_error("model_download_unavailable", "模型下载目录不可用"), status=409)
-                except OSError:
-                    return _json_response(_structured_error("model_download_unavailable", "模型下载目录不可用"), status=409)
-                del capacity
-            job = jobs.start_job(
-                paths.service_dir,
-                kind=asr_models.DOWNLOAD_JOB_KIND,
-                run_id=model_id,
-                fn=lambda: asr_models.download_model(model_id, source),
-            )
-            return _json_response({"ok": True, "job": job}, status=202)
-        if method == "POST" and parts == ["api", "asr", "models", "select"]:
-            model_id = str((body or {}).get("model") or "")
-            if model_id not in asr_models.registry_ids():
-                return _json_response(_structured_error("unknown_model", f"未知模型: {model_id}"), status=400)
-            entry = asr_models.model_entry(model_id)
-            settings = _settings_for_paths(paths)
-            current_backend = settings.asr.backend if settings.asr else None
-            current_model = settings.asr.model if settings.asr else None
-            if asr_models.local_path_for(model_id) is None:
-                return _json_response(
-                    _structured_error("model_not_ready", "模型尚未完整安装或已损坏"),
-                    status=409,
-                )
-            if os.getenv("ASR_MODEL") is not None or os.getenv("ASR_BACKEND") is not None:
-                return _json_response(
-                    _structured_error(
-                        "asr_overridden_by_environment",
-                        "ASR 配置正被环境变量覆盖，请先移除 ASR_MODEL / ASR_BACKEND",
-                    ),
-                    status=409,
-                )
-            saved = config_editor.save_asr_model_selection(
-                entry["backend"],
-                model_id,
-                config_path=paths.config_path,
-                backup_root=paths.config_path.parent / "work" / "config_backups",
-            )
-            if not saved.get("ok"):
-                return _json_response(
-                    {
-                        **_structured_error("config_save_failed", str(saved.get("message") or "配置保存失败")),
-                        "saved": False,
-                        "current_backend": current_backend,
-                        "current_model": current_model,
-                    },
-                    status=400,
-                )
-            try:
-                reload_result = _restart_service_from_config(paths)
-            except Exception:  # noqa: BLE001 - selection is saved even when service reload raises.
-                reload_result = {"ok": False, "error": "服务重载失败"}
-            response = {
-                "ok": bool(reload_result.get("ok")),
-                "saved": True,
-                "current_backend": entry["backend"],
-                "current_model": model_id,
-                "reload": reload_result,
-            }
-            if not reload_result.get("ok"):
-                return _json_response(
-                    {
-                        **response,
-                        "error_code": "service_reload_failed",
-                        "message": "模型已保存，但服务重载失败",
-                        "error": "模型已保存，但服务重载失败",
-                    },
-                    status=500,
-                )
-            return _json_response(response)
-        if method == "POST" and parts == ["api", "asr", "models", "delete"]:
-            model_id = str((body or {}).get("model") or "")
-            if model_id not in asr_models.registry_ids():
-                return _json_response(_structured_error("unknown_model", f"未知模型: {model_id}"), status=400)
-            if jobs.active_job_for(paths.service_dir, model_id, asr_models.DOWNLOAD_JOB_KIND):
-                return _json_response(
-                    _structured_error("model_download_active", "模型正在下载，不能删除"),
-                    status=409,
-                )
-            settings = _settings_for_paths(paths)
-            if (
-                settings.asr
-                and settings.asr.backend == asr_models.model_entry(model_id)["backend"]
-                and settings.asr.model == model_id
-            ):
-                return _json_response(
-                    _structured_error("current_model_in_use", "请先切换到另一款已安装模型"),
-                    status=409,
-                )
-            return _json_response({"ok": True, **asr_models.delete_model(model_id, service_dir=paths.service_dir)})
-        if method == "GET" and parts == ["api", "settings"]:
-            return _json_response(_build_settings_payload(paths))
-        if method == "GET" and parts == ["api", "config"]:
-            payload = config_editor.load_editable_config(config_path=paths.config_path)
-            return _json_response(payload, status=200 if payload.get("ok") else 400)
-        if method == "POST" and parts == ["api", "config", "validate"]:
-            payload = config_editor.validate_editable_config(
-                (body or {}).get("config", {}),
-                config_path=paths.config_path,
-                base_dir=paths.config_path.parent,
-            )
-            return _json_response(payload)
+        if method == "POST" and parts[:3] == ["api", "asr", "models"]:
+            return _json_response(_structured_error('resource_route_retired', '请从资源页准备或删除模型'), status=410)
+        if method == "GET" and parts in (["api", "config"], ["api", "settings"]):
+            payload = config_editor.application_config(paths.config_path)
+            return _json_response(payload, status=200 if payload['ok'] else 409)
         if method == "POST" and parts == ["api", "config"]:
-            payload = config_editor.save_editable_config(
-                (body or {}).get("config", {}),
-                config_path=paths.config_path,
-                backup_root=paths.config_path.parent / "work" / "config_backups",
-                base_dir=paths.config_path.parent,
-            )
-            return _json_response(payload, status=200 if payload.get("ok") else 400)
-        if method == "POST" and parts == ["api", "config", "llm-key"]:
-            config_payload = config_editor.load_editable_config(config_path=paths.config_path)
-            if not config_payload.get("ok"):
-                return _json_response(config_payload, status=400)
-            api_key_env = str(config_payload["config"].get("llm", {}).get("api_key_env") or "CHEAP_MODEL_API_KEY")
-            payload = onboarding.save_llm_api_key(
-                str((body or {}).get("api_key") or ""),
-                api_key_env=api_key_env,
-                env_path=paths.config_path.parent / ".env",
-            )
-            return _json_response(payload, status=200 if payload.get("ok") else 400)
-        if method == "POST" and parts == ["api", "config", "restart-service"]:
-            return _json_response(_restart_service_from_config(paths))
+            payload = config_editor.save_application_config(paths.config_path, body or {})
+            return _json_response(payload, status=200 if payload['ok'] else 409)
+        if method == "POST" and parts[:2] == ["api", "config"]:
+            return _json_response(_structured_error('resource_route_retired', '请在资源页提交模型配置'), status=410)
         if method == "GET" and parts == ["api", "scheduler"]:
             return _json_response(scheduler.get_scheduler_status(_settings_for_paths(paths), service_dir=paths.service_dir))
         if method == "GET" and parts == ["api", "scheduler", "events"]:
             return _json_response({"ok": True, "events": scheduler.read_scheduler_events(paths.service_dir)})
         if method == "GET" and parts == ["api", "review-automation"]:
             return _json_response(review_automation.get_review_automation_status(_settings_for_paths(paths), service_dir=paths.service_dir))
-        if method == "POST" and parts == ["api", "review-automation", "check"]:
-            return _json_response(review_automation.check_environment(_settings_for_paths(paths)))
-        if method == "POST" and parts == ["api", "review-automation", "run-due"]:
-            payload = review_automation.run_due_ai_reviews(_settings_for_paths(paths), service_dir=paths.service_dir)
-            return _json_response(payload, status=200 if payload.get("ok") else 400)
-        if method == "POST" and parts == ["api", "scheduler", "jobs"]:
-            payload = _upsert_scheduler_job(paths, (body or {}).get("job", {}))
-            return _json_response(payload, status=200 if payload.get("ok") else 400)
-        if method == "POST" and len(parts) == 5 and parts[:3] == ["api", "scheduler", "jobs"] and parts[4] == "run-now":
-            payload = _run_scheduler_job_now(paths, parts[3])
-            return _json_response(payload, status=200 if payload.get("ok") else 404)
+        if method == "POST" and parts[:2] == ["api", "review-automation"]:
+            return _json_response(_structured_error('resource_route_retired', '请在资源页验证用途，在项目中处理记录'), status=410)
+        if method == "POST" and parts[:3] == ["api", "scheduler", "jobs"]:
+            return _json_response(_structured_error('project_route_required', '请在项目中设置定时与处理规则'), status=410)
+
         if method == "POST" and len(parts) == 5 and parts[:3] == ["api", "scheduler", "jobs"] and parts[4] == "pause":
             return _json_response(scheduler.pause_job(parts[3], service_dir=paths.service_dir))
         if method == "POST" and len(parts) == 5 and parts[:3] == ["api", "scheduler", "jobs"] and parts[4] == "resume":
@@ -1134,18 +982,7 @@ def handle_api_request(
             payload = mcp_tools.retry_run(parts[2], settings=_settings_for_paths(paths), service_dir=paths.service_dir)
             return _json_response(payload, status=_action_status(payload))
         if method == "POST" and len(parts) == 4 and parts[:2] == ["api", "runs"] and parts[3] == "ai-review":
-            run_id = parts[2]
-            if service.find_run(run_id, paths.service_dir) is None:
-                return _json_response(_structured_error("run_not_found", f"任务不存在: {run_id}"), status=404)
-            settings = _settings_for_paths(paths)
-            service_dir = paths.service_dir
-            job = jobs.start_job(
-                service_dir,
-                kind="ai_review",
-                run_id=run_id,
-                fn=lambda: review_automation.run_ai_review_for_run(run_id, settings, service_dir=service_dir),
-            )
-            return _json_response({"ok": True, "job": job}, status=202)
+            return _json_response(_structured_error('original_configuration_unknown', '旧记录缺少冻结资源身份，请在项目中明确选择资源后新建重跑'), status=409)
         if method == "GET" and len(parts) == 3 and parts[:2] == ["api", "jobs"]:
             job = jobs.read_job(paths.service_dir, parts[2])
             if job is None:
@@ -1252,26 +1089,6 @@ def _restart_service_from_config(paths: WebPaths) -> dict[str, Any]:
     }
 
 
-def _upsert_scheduler_job(paths: WebPaths, job_payload: dict[str, Any]) -> dict[str, Any]:
-    validation = scheduler.validate_scheduler_job(job_payload)
-    if not validation.get("ok"):
-        return validation
-    editable = config_editor.load_editable_config(config_path=paths.config_path)
-    if not editable.get("ok"):
-        return editable
-    config = editable["config"]
-    jobs = [job for job in config.get("scheduler_jobs", []) if job.get("id") != job_payload.get("id")]
-    jobs.append(job_payload)
-    config["scheduler_jobs"] = jobs
-    saved = config_editor.save_editable_config(
-        config,
-        config_path=paths.config_path,
-        backup_root=paths.config_path.parent / "work" / "config_backups",
-        base_dir=paths.config_path.parent,
-    )
-    if not saved.get("ok"):
-        return saved
-    return scheduler.get_scheduler_status(load_settings(paths.config_path), service_dir=paths.service_dir)
 
 
 def _run_scheduler_job_now(paths: WebPaths, job_id: str) -> dict[str, Any]:
@@ -1593,6 +1410,10 @@ def run_web_server(
     paths = paths or WebPaths()
     if restricted_startup is None:
         jobs.sweep_interrupted(paths.service_dir)
+        if database_path(paths.service_dir).exists():
+            with ProjectRepository(paths.service_dir) as repository:
+                with repository.transaction():
+                    repository.connection.execute("UPDATE resource_tasks SET state='interrupted',finished_at=datetime('now') WHERE state='running'")
     elif restricted_startup == "migration_required":
         migration_coordinator.MigrationCoordinator(
             service_dir=paths.service_dir,

@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values
 
 from .utils import ensure_dir
 
@@ -94,9 +94,9 @@ port = 8765
 access_token = ""
 
 [review]
-reviewer_label = "Codex"
-brief_filename = "codex_brief.json"
-task_filename = "codex_task.md"
+reviewer_label = "审阅"
+brief_filename = "review_brief.json"
+task_filename = "review_task.md"
 selection_filename = "selected_clips.json"
 
 [render]
@@ -132,7 +132,7 @@ skip_if_running = true
 
 [review_automation]
 enabled = false
-mode = "local_agent"
+mode = "model"
 max_runs_per_tick = 1
 auto_render_after_selection = true
 on_failure = "keep_needs_review"
@@ -140,7 +140,7 @@ timeout_minutes = 60
 prompt_template = "default_clip_review"
 
 [review_automation.local_agent]
-provider = "codex_cli"
+provider = "claude_code"
 command_timeout_minutes = 60
 include_review_package_inline = true
 allow_agent_file_writes = false
@@ -210,6 +210,7 @@ class ASRConfig:
 
 @dataclass(frozen=True)
 class LLMConfig:
+    request_profile: str = "chat-completions-v1"
     provider_label: str = "OpenAI-compatible LLM"
     api_base: str = DEFAULT_LLM_API_BASE
     api_key_env: str = "CHEAP_MODEL_API_KEY"
@@ -241,9 +242,9 @@ class WebConfig:
 
 @dataclass(frozen=True)
 class ReviewConfig:
-    reviewer_label: str = "Codex"
-    brief_filename: str = "codex_brief.json"
-    task_filename: str = "codex_task.md"
+    reviewer_label: str = "审阅"
+    brief_filename: str = "review_brief.json"
+    task_filename: str = "review_task.md"
     selection_filename: str = "selected_clips.json"
 
 
@@ -303,7 +304,7 @@ class SchedulerConfig:
 
 @dataclass(frozen=True)
 class ReviewAutomationLocalAgentConfig:
-    provider: str = "codex_cli"
+    provider: str = "claude_code"
     command_timeout_minutes: int = 60
     include_review_package_inline: bool = True
     allow_agent_file_writes: bool = False
@@ -323,7 +324,7 @@ class ReviewAutomationModelConfig:
 @dataclass(frozen=True)
 class ReviewAutomationConfig:
     enabled: bool = False
-    mode: str = "local_agent"
+    mode: str = "model"
     max_runs_per_tick: int = 1
     auto_render_after_selection: bool = True
     on_failure: str = "keep_needs_review"
@@ -335,6 +336,8 @@ class ReviewAutomationConfig:
 
 @dataclass(frozen=True)
 class Settings:
+    resource_execution_policy: dict = field(default_factory=dict)
+    legacy_review_removed: bool = False
     cheap_model_api_base: str | None = None
     cheap_model_api_key: str | None = None
     cheap_model_name: str | None = None
@@ -386,6 +389,7 @@ class Settings:
             model_source=self.asr.model_source if self.asr else "modelscope",
         )
         llm = LLMConfig(
+            request_profile=self.llm.request_profile if self.llm else "chat-completions-v1",
             provider_label=self.llm.provider_label if self.llm else "OpenAI-compatible LLM",
             api_base=llm_api_base,
             api_key_env=self.llm.api_key_env if self.llm else "CHEAP_MODEL_API_KEY",
@@ -428,8 +432,11 @@ def _load_config_data(config_path: Path | None) -> dict[str, Any]:
     return tomllib.loads(path.read_text(encoding="utf-8"))
 
 
-def load_settings(config_path: Path | None = None) -> Settings:
-    load_dotenv(dotenv_path=Path.cwd() / ".env", override=True)
+def load_settings(config_path: Path | None = None, *, env_path: Path | None = None) -> Settings:
+    # Read credentials into this call, never into process-global environment state.
+    values = {key: value for key, value in dotenv_values(env_path or Path.cwd() / ".env", interpolate=False).items() if value is not None}
+    environment = dict(os.environ) if env_path is None else {}
+    environment.update(values)
     config = _load_config_data(config_path)
 
     paths_data = config.get("paths", {})
@@ -458,8 +465,12 @@ def load_settings(config_path: Path | None = None) -> Settings:
         else {}
     )
 
-    asr_backend = os.getenv("ASR_BACKEND", str(asr_data.get("backend", DEFAULT_ASR_BACKEND)))
-    asr_model = os.getenv("ASR_MODEL", str(asr_data.get("model", "")) or None)
+    # Old implicit defaults are interpreted only for upgrade identification, never execution.
+    old_mode = review_automation_data.get("mode", "local_agent" if config else "model")
+    old_provider = local_agent_data.get("provider", "codex_cli" if config else "claude_code")
+    removed_review = old_mode == "local_agent" and old_provider != "claude_code"
+    asr_backend = environment.get("ASR_BACKEND", str(asr_data.get("backend", DEFAULT_ASR_BACKEND)))
+    asr_model = environment.get("ASR_MODEL", str(asr_data.get("model", "")) or None)
     if asr_model is None:
         asr_model = DEFAULT_OPENAI_ASR_MODEL if asr_backend == "openai" else DEFAULT_ASR_MODEL
     asr_api_key_env = str(asr_data.get("api_key_env", "ASR_API_KEY"))
@@ -471,28 +482,29 @@ def load_settings(config_path: Path | None = None) -> Settings:
     asr = ASRConfig(
         backend=asr_backend,
         model=asr_model,
-        language=os.getenv("ASR_LANGUAGE", str(asr_data.get("language", DEFAULT_ASR_LANGUAGE))),
-        api_base=os.getenv("ASR_API_BASE", str(asr_data.get("api_base") or asr_api_base_default or "")) or None,
+        language=environment.get("ASR_LANGUAGE", str(asr_data.get("language", DEFAULT_ASR_LANGUAGE))),
+        api_base=environment.get("ASR_API_BASE", str(asr_data.get("api_base") or asr_api_base_default or "")) or None,
         api_key_env=asr_api_key_env,
-        api_key=os.getenv(asr_api_key_env) or os.getenv("ASR_API_KEY"),
+        api_key=environment.get(asr_api_key_env) or environment.get("ASR_API_KEY"),
         hf_token_env=hf_token_env,
-        hf_token=os.getenv(hf_token_env) or os.getenv("HF_TOKEN"),
+        hf_token=environment.get(hf_token_env) or environment.get("HF_TOKEN"),
         model_source=model_source,
     )
 
     llm_api_key_env = str(llm_data.get("api_key_env", "CHEAP_MODEL_API_KEY"))
     llm = LLMConfig(
         provider_label=str(llm_data.get("provider_label", "OpenAI-compatible LLM")),
-        api_base=os.getenv("LLM_API_BASE", os.getenv("CHEAP_MODEL_API_BASE", str(llm_data.get("api_base", DEFAULT_LLM_API_BASE)))),
+        api_base=environment.get("LLM_API_BASE", environment.get("CHEAP_MODEL_API_BASE", str(llm_data.get("api_base", DEFAULT_LLM_API_BASE)))),
         api_key_env=llm_api_key_env,
-        api_key=os.getenv(llm_api_key_env) or os.getenv("CHEAP_MODEL_API_KEY"),
-        model=os.getenv("LLM_MODEL", os.getenv("CHEAP_MODEL_NAME", str(llm_data.get("model", DEFAULT_LLM_MODEL)))),
+        api_key=environment.get(llm_api_key_env) or environment.get("CHEAP_MODEL_API_KEY"),
+        model=environment.get("LLM_MODEL", environment.get("CHEAP_MODEL_NAME", str(llm_data.get("model", DEFAULT_LLM_MODEL)))),
         timeout_seconds=int(llm_data.get("timeout_seconds", 300)),
         request_attempts=int(llm_data.get("request_attempts", 5)),
         retry_delay_seconds=float(llm_data.get("retry_delay_seconds", 3.0)),
     )
 
     return Settings(
+        legacy_review_removed=removed_review,
         paths=PathsConfig(
             workspace_root=_path_or_none(paths_data.get("workspace_root"), expand_user=True),
             input_dir=_path_value(paths_data, "input_dir", Path("input")),
@@ -531,8 +543,8 @@ def load_settings(config_path: Path | None = None) -> Settings:
             profile=str(prompts_data.get("profile", "default")),
         ),
         privacy=PrivacyConfig(
-            failure_log_mode=os.getenv("FAILURE_LOG_MODE", str(privacy_data.get("failure_log_mode", "redacted"))),
-            failure_log_max_chars=int(os.getenv("FAILURE_LOG_MAX_CHARS", str(privacy_data.get("failure_log_max_chars", 2000)))),
+            failure_log_mode=environment.get("FAILURE_LOG_MODE", str(privacy_data.get("failure_log_mode", "redacted"))),
+            failure_log_max_chars=int(environment.get("FAILURE_LOG_MAX_CHARS", str(privacy_data.get("failure_log_max_chars", 2000)))),
         ),
         web=WebConfig(
             host=str(web_data.get("host", "127.0.0.1")),
@@ -540,9 +552,9 @@ def load_settings(config_path: Path | None = None) -> Settings:
             access_token=str(web_data.get("access_token") or "") or None,
         ),
         review=ReviewConfig(
-            reviewer_label=str(review_data.get("reviewer_label", "Codex")),
-            brief_filename=str(review_data.get("brief_filename", "codex_brief.json")),
-            task_filename=str(review_data.get("task_filename", "codex_task.md")),
+            reviewer_label=str(review_data.get("reviewer_label", "审阅")),
+            brief_filename=str(review_data.get("brief_filename", "review_brief.json")),
+            task_filename=str(review_data.get("task_filename", "review_task.md")),
             selection_filename=str(review_data.get("selection_filename", "selected_clips.json")),
         ),
         render=RenderConfig(
@@ -559,14 +571,14 @@ def load_settings(config_path: Path | None = None) -> Settings:
         ),
         review_automation=ReviewAutomationConfig(
             enabled=bool(review_automation_data.get("enabled", False)),
-            mode=str(review_automation_data.get("mode", "local_agent")),
+            mode="unavailable" if removed_review else str(old_mode),
             max_runs_per_tick=int(review_automation_data.get("max_runs_per_tick", 1)),
             auto_render_after_selection=bool(review_automation_data.get("auto_render_after_selection", True)),
-            on_failure=str(review_automation_data.get("on_failure", "keep_needs_review")),
+            on_failure="keep_needs_review" if review_automation_data.get("on_failure", "keep_needs_review") == "keep_needs_codex" else str(review_automation_data.get("on_failure", "keep_needs_review")),
             timeout_minutes=int(review_automation_data.get("timeout_minutes", 60)),
             prompt_template=str(review_automation_data.get("prompt_template", "default_clip_review")),
             local_agent=ReviewAutomationLocalAgentConfig(
-                provider=str(local_agent_data.get("provider", "codex_cli")),
+                provider="claude_code",
                 command_timeout_minutes=int(local_agent_data.get("command_timeout_minutes", 60)),
                 include_review_package_inline=bool(local_agent_data.get("include_review_package_inline", True)),
                 allow_agent_file_writes=bool(local_agent_data.get("allow_agent_file_writes", False)),

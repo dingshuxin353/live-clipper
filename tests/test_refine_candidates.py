@@ -9,7 +9,7 @@ class FakeRefineClient:
     def __init__(self):
         self.payloads = []
 
-    def complete_json(self, system_prompt, user_payload, max_tokens=2048):
+    def complete_json(self, system_prompt, user_payload, max_tokens=2048, temperature=0.1):
         self.payloads.append(user_payload)
         candidate_id = user_payload["candidate"]["id"]
         if candidate_id == "clip-drop":

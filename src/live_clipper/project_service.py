@@ -15,7 +15,7 @@ from .project_domain import (
     stable_json,
     validate_project_config,
 )
-from .project_resources import compatibility_resources, resource_map
+from .project_resources import effective_references, resource_map, resource_options
 from .project_storage import ProjectRepository, database_path
 
 
@@ -156,7 +156,7 @@ class ProjectManager:
     def form_options(self) -> dict[str, Any]:
         return {
             "data_mode": self.repository.get_data_mode(),
-            "resources": [resource.__dict__ for resource in compatibility_resources(self.settings)],
+            "resources": [resource.__dict__ for resource in resource_options(self.repository)],
             "first_scan_modes": ["new_only", "recent", "choose_existing"],
             "lookback_days": [3, 7, 30],
             "schedule_modes": ["daily", "interval"],
@@ -235,12 +235,17 @@ class ProjectManager:
         elif source == output:
             blockers.append(ValidationIssue("output.directory", "output_inside_source", "输出目录不能与录像目录相同"))
 
-        resources = resource_map(self.settings)
-        refs = normalized["resources"]
-        for field in ("asr_ref", "analysis_ref", "review_ref"):
-            resource_id = str(refs[field])
+        migration = self.repository.connection.execute("SELECT value FROM system_state WHERE key='named_resources_migration'").fetchone()
+        if migration and migration[0] != 'completed':
+            blockers.append(ValidationIssue('resources', 'migration_pending', '资源转换尚未完成，请先处理资源页提示'))
+        resources = resource_map(self.repository)
+        refs = effective_references(normalized)
+        for purpose, resource_id in refs.items():
+            field = purpose + "_ref"
             resource = resources.get(resource_id)
-            if resource is None or not resource.ready:
+            if resource_id and (resource is None or purpose not in resource.purposes):
+                fatal.append(ValidationIssue(f"resources.{field}", "incompatible_resource", "资源已删除或用途不兼容，请重新选择"))
+            if resource is None or purpose not in resource.ready_purposes:
                 blockers.append(ValidationIssue(f"resources.{field}", "resource_unavailable", "项目使用的处理资源不可用，请检查项目设置"))
         for project in self.repository.list_projects():
             if project.project_id == exclude_project_id:
@@ -307,38 +312,39 @@ class ProjectManager:
         description: str = "",
         request_id: str | None = None,
     ) -> Project:
-        self._require_projects_mode()
-        payload = {"name": name, "description": description, "config": config, "activation_state": activation_state}
-        existing = self._idempotent_project("project.create", request_id, payload)
-        if existing is not None:
-            return existing
-        validation = self.validate_project(name=name, config=config, activation_state=activation_state)
-        if validation.fatal or (activation_state == "active" and validation.blockers):
-            fields = {issue.field: issue.message for issue in (*validation.fatal, *validation.blockers)}
-            raise ProjectError("validation_failed", "项目配置未通过校验", status=422, fields=fields)
-        assert validation.normalized_config is not None
-        runtime = self._runtime_values(activation_state, validation.normalized_config, validation=validation)
-        project = self.repository.create_project_bundle(
-            name.strip(),
-            validation.normalized_config,
-            description=description.strip(),
-            activation_state=activation_state,
-            runtime=runtime,
-            event_payload={"activation_state": activation_state},
-            idempotency=(
-                {
-                    "scope": "project.create",
-                    "request_id": request_id,
-                    "request_hash": _request_hash(payload),
-                    "object_type": "project",
-                }
-                if request_id
-                else None
-            ),
-        )
-        result = self.repository.get_project(project.project_id)
-        assert result is not None
-        return result
+        with self.repository.transaction():
+            self._require_projects_mode()
+            payload = {"name": name, "description": description, "config": config, "activation_state": activation_state}
+            existing = self._idempotent_project("project.create", request_id, payload)
+            if existing is not None:
+                return existing
+            validation = self.validate_project(name=name, config=config, activation_state=activation_state)
+            if validation.fatal or (activation_state == "active" and validation.blockers):
+                fields = {issue.field: issue.message for issue in (*validation.fatal, *validation.blockers)}
+                raise ProjectError("validation_failed", "项目配置未通过校验", status=422, fields=fields)
+            assert validation.normalized_config is not None
+            runtime = self._runtime_values(activation_state, validation.normalized_config, validation=validation)
+            project = self.repository.create_project_bundle(
+                name.strip(),
+                validation.normalized_config,
+                description=description.strip(),
+                activation_state=activation_state,
+                runtime=runtime,
+                event_payload={"activation_state": activation_state},
+                idempotency=(
+                    {
+                        "scope": "project.create",
+                        "request_id": request_id,
+                        "request_hash": _request_hash(payload),
+                        "object_type": "project",
+                    }
+                    if request_id
+                    else None
+                ),
+            )
+            result = self.repository.get_project(project.project_id)
+            assert result is not None
+            return result
 
     def _runtime_values(
         self,
@@ -385,71 +391,72 @@ class ProjectManager:
         expected_revision: int,
         request_id: str | None = None,
     ) -> Project:
-        self._require_projects_mode()
-        project = self.repository.get_project(project_id)
-        if project is None:
-            raise ProjectError("project_not_found", "项目不存在", status=404)
-        payload = {
-            "project_id": project_id,
-            "name": name,
-            "description": description,
-            "config": config,
-            "expected_revision": expected_revision,
-        }
-        existing = self._idempotent_project(f"project.update:{project_id}", request_id, payload)
-        if existing is not None:
-            return existing
-        validation = self.validate_project(
-            name=name,
-            config=config,
-            activation_state="active" if project.activation_state == "active" else "inactive",
-            exclude_project_id=project_id,
-        )
-        if validation.fatal or (project.activation_state == "active" and validation.blockers):
-            raise ProjectError(
-                "validation_failed",
-                "项目配置未通过校验",
-                status=422,
-                fields={issue.field: issue.message for issue in (*validation.fatal, *validation.blockers)},
+        with self.repository.transaction():
+            self._require_projects_mode()
+            project = self.repository.get_project(project_id)
+            if project is None:
+                raise ProjectError("project_not_found", "项目不存在", status=404)
+            payload = {
+                "project_id": project_id,
+                "name": name,
+                "description": description,
+                "config": config,
+                "expected_revision": expected_revision,
+            }
+            existing = self._idempotent_project(f"project.update:{project_id}", request_id, payload)
+            if existing is not None:
+                return existing
+            validation = self.validate_project(
+                name=name,
+                config=config,
+                activation_state="active" if project.activation_state == "active" else "inactive",
+                exclude_project_id=project_id,
             )
-        assert validation.normalized_config is not None
-        try:
-            self.repository.add_config_revision(
-                project_id,
-                validation.normalized_config,
-                expected_revision=expected_revision,
-            )
-        except ValueError as exc:
-            if str(exc) == "revision_conflict":
-                current = self.repository.get_project(project_id)
+            if validation.fatal:
                 raise ProjectError(
-                    "revision_conflict",
-                    "项目设置已在其他位置更新，请重新打开后再保存",
-                    status=409,
-                    fields={"current_revision": str(current.current_config_revision if current else "")},
-                ) from exc
-            raise
-        result = self.repository.update_project_identity(project_id, name=name.strip(), description=description.strip())
-        runtime_changes: dict[str, Any] = {
-            "readiness_state": "blocked" if validation.blockers else "ready",
-            "failure_code": validation.blockers[0].code if validation.blockers else None,
-            "failure_summary": validation.blockers[0].message if validation.blockers else None,
-        }
-        if result.activation_state == "active":
-            schedule = validation.normalized_config["schedule"]
-            if schedule["enabled"]:
-                from .project_scheduler import next_project_scan_at
-
-                runtime_changes.update(
-                    auto_scan_state="scheduled",
-                    next_scan_at=next_project_scan_at(validation.normalized_config),
+                    "validation_failed",
+                    "项目配置未通过校验",
+                    status=422,
+                    fields={issue.field: issue.message for issue in (*validation.fatal, *validation.blockers)},
                 )
-            else:
-                runtime_changes.update(auto_scan_state="off", next_scan_at=None)
-        self.repository.update_runtime(project_id, **runtime_changes)
-        self.repository.append_workspace_event("project_updated", project_id=project_id, payload={"revision": expected_revision + 1})
-        self._save_idempotency(f"project.update:{project_id}", request_id, payload, project_id)
-        return result
+            assert validation.normalized_config is not None
+            try:
+                self.repository.add_config_revision(
+                    project_id,
+                    validation.normalized_config,
+                    expected_revision=expected_revision,
+                )
+            except ValueError as exc:
+                if str(exc) == "revision_conflict":
+                    current = self.repository.get_project(project_id)
+                    raise ProjectError(
+                        "revision_conflict",
+                        "项目设置已在其他位置更新，请重新打开后再保存",
+                        status=409,
+                        fields={"current_revision": str(current.current_config_revision if current else "")},
+                    ) from exc
+                raise
+            result = self.repository.update_project_identity(project_id, name=name.strip(), description=description.strip())
+            runtime_changes: dict[str, Any] = {
+                "readiness_state": "blocked" if validation.blockers else "ready",
+                "failure_code": validation.blockers[0].code if validation.blockers else None,
+                "failure_summary": validation.blockers[0].message if validation.blockers else None,
+            }
+            if result.activation_state == "active":
+                schedule = validation.normalized_config["schedule"]
+                if schedule["enabled"]:
+                    from .project_scheduler import next_project_scan_at
+
+                    runtime_changes.update(
+                        auto_scan_state="scheduled",
+                        next_scan_at=next_project_scan_at(validation.normalized_config),
+                    )
+                else:
+                    runtime_changes.update(auto_scan_state="off", next_scan_at=None)
+            self.repository.update_runtime(project_id, **runtime_changes)
+            self.repository.append_workspace_event("project_updated", project_id=project_id, payload={"revision": expected_revision + 1})
+            self._save_idempotency(f"project.update:{project_id}", request_id, payload, project_id)
+            return result
 
     def enable_project(self, project_id: str, *, request_id: str | None = None) -> Project:
         return self._activate(project_id, "active", request_id=request_id)

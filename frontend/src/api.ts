@@ -1,6 +1,7 @@
 export type JsonObject = Record<string, unknown>;
 
 export type ApiErrorCode =
+  | "validation_result_unknown"
   | "network_error"
   | "invalid_response"
   | "unknown_error"
@@ -49,7 +50,7 @@ export type ApiErrorCode =
   | "service_not_ready";
 
 const API_ERROR_CODES: ReadonlySet<ApiErrorCode> = new Set([
-  "network_error", "invalid_response", "unknown_error", "validation_failed", "migration_required",
+  "validation_result_unknown", "network_error", "invalid_response", "unknown_error", "validation_failed", "migration_required",
   "migration_source_changed", "migration_plan_changed", "migration_space_insufficient",
   "migration_choices_required", "migration_conflict", "migration_not_found", "migration_interrupted",
   "diagnostic_required",

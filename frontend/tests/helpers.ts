@@ -1,4 +1,4 @@
-import { defaultConfig } from "../src/config";
+
 
 export const MODELS = [
   {
@@ -176,7 +176,9 @@ export function installFetchMock(overrides: Record<string, unknown> = {}) {
     "/api/events": { ok: true, events: [] },
     "/api/config": {
       ok: true,
-      config: defaultConfig(),
+      revision: 'app-revision',
+      config: { paths: { glossary_path: '/glossary.json' }, scheduler: { timezone: 'Asia/Tokyo', tick_seconds: 30 }, service: { stuck_after_minutes: 60 }, review_automation: { timeout_minutes: 60 }, review_automation_model: { max_candidates: 40 } },
+      storage: { work_dir: '/work', workspace_root: '/workspace' }, connection: { host: '127.0.0.1', port: 8765 },
       config_path: "live-clipper.toml",
       exists: true,
       env_status: {},
@@ -188,6 +190,8 @@ export function installFetchMock(overrides: Record<string, unknown> = {}) {
       review_automation: { enabled: false },
       environment: {},
     },
+    "/api/resources": { ok: true, resources: [], migration_pending: false, cleanups: [] },
+    "/api/resources/providers": { ok: true, providers: [{ id: "custom", name: "自定义兼容服务", help: "手动填写" }], regions: {} },
     "/api/asr/models": { ok: true, models: MODELS, download_source: "modelscope" },
     "/api/projects": { ok: true, projects: [PROJECT] },
     "/api/projects/project-1": { ok: true, project: PROJECT },
@@ -211,8 +215,8 @@ export function installFetchMock(overrides: Record<string, unknown> = {}) {
       ok: true,
       data_mode: "projects",
       resources: [
-        { resource_id: "asr.local", display_name: "本地 ASR", resource_type: "asr", ready: true, problem: null, version: "small" },
-        { resource_id: "analysis.main", display_name: "主分析模型", resource_type: "analysis", ready: true, problem: null, version: "review-model" },
+        { resource_id: "asr.local", display_name: "本地 ASR", resource_type: "asr", purposes: ["asr"], ready_purposes: ["asr"], ready: true, problem: null, version: "small" },
+        { resource_id: "analysis.main", display_name: "主分析模型", resource_type: "analysis", purposes: ["analysis", "review"], ready_purposes: ["analysis", "review"], ready: true, problem: null, version: "review-model" },
       ],
       first_scan_modes: ["new_only", "recent", "choose_existing"],
       lookback_days: [3, 7, 30],

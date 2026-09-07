@@ -26,6 +26,7 @@ def test_schema_connection_contract_and_reopen(tmp_path):
         (2,),
         (3,),
         (4,),
+        (5,),
     ]
     repo.close()
 

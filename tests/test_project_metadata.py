@@ -161,7 +161,7 @@ def test_astryx_stone_theme_is_generated_offline_and_not_recompiled():
     ]
     assert [main.index(item) for item in imports] == sorted(main.index(item) for item in imports)
     assert 'stoneTheme } from "@astryxdesign/theme-stone/built"' in main
-    assert '<Theme theme={stoneTheme} mode="light">' in main
+    assert '<Theme theme={{ ...stoneTheme, icons: remixIcons }} mode="light">' in main
     assert 'from "@astryxdesign/core/theme"' in script
     assert 'accent: "#4A3A72"' in script
     assert "defineTheme" not in script

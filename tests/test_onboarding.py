@@ -5,6 +5,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
+from resource_test_support import onboarding_resource_patch
 
 from live_clipper import asr_models, onboarding_resources, service
 from live_clipper.config import Settings
@@ -109,7 +110,7 @@ def test_first_run_api_session_and_finish_is_idempotent(tmp_path, monkeypatch):
     status, started = coordinator.start({})
     assert status == 201
     assert started["session"]["revision"] == 1
-    status, patched = coordinator.patch_session({"request_id": "draft-1", "expected_revision": 1, "current_step": "project", "patch": {"project": {"name": "第一个项目", "source_directory": str(source), "output_directory": str(tmp_path / "output"), "trigger_mode": "manual"}}})
+    status, patched = coordinator.patch_session({"request_id": "draft-1", "expected_revision": 1, "current_step": "project", "patch": {**onboarding_resource_patch(coordinator), "project": {"name": "第一个项目", "source_directory": str(source), "output_directory": str(tmp_path / "output"), "trigger_mode": "manual"}}})
     assert status == 200
     monkeypatch.setattr(onboarding_resources, "test_ai_service", lambda *args, **kwargs: {"ok": True})
     monkeypatch.setattr(service, "ensure_service_ready", lambda *args, **kwargs: {"ok": True, "ready": True})
@@ -128,7 +129,7 @@ def test_first_run_api_session_and_finish_is_idempotent(tmp_path, monkeypatch):
 def test_finish_service_failure_is_activation_pending_then_retry(tmp_path, monkeypatch):
     coordinator, source = _coordinator(tmp_path, monkeypatch)
     coordinator.start({})
-    _status, patched = coordinator.patch_session({"request_id": "draft-1", "expected_revision": 1, "current_step": "project", "patch": {"project": {"name": "项目", "source_directory": str(source), "output_directory": str(tmp_path / "out"), "trigger_mode": "manual"}}})
+    _status, patched = coordinator.patch_session({"request_id": "draft-1", "expected_revision": 1, "current_step": "project", "patch": {**onboarding_resource_patch(coordinator), "project": {"name": "项目", "source_directory": str(source), "output_directory": str(tmp_path / "out"), "trigger_mode": "manual"}}})
     monkeypatch.setattr(onboarding_resources, "test_ai_service", lambda *args, **kwargs: {"ok": True})
     monkeypatch.setattr(service, "ensure_service_ready", lambda *args, **kwargs: {"ok": False, "error_code": "service_not_ready", "message": "服务未启动"})
     status, pending = coordinator.finish({"request_id": "finish-1", "expected_revision": patched["session"]["revision"]})
@@ -144,7 +145,7 @@ def test_finish_service_failure_is_activation_pending_then_retry(tmp_path, monke
 def test_project_validation_reports_creatable_output_without_creating_it(tmp_path, monkeypatch):
     coordinator, source = _coordinator(tmp_path, monkeypatch)
     coordinator.start({})
-    _status, patched = coordinator.patch_session({"request_id": "draft-1", "expected_revision": 1, "current_step": "project", "patch": {"project": {"name": "项目", "source_directory": str(source), "output_directory": str(tmp_path / "new-output"), "trigger_mode": "manual"}}})
+    _status, patched = coordinator.patch_session({"request_id": "draft-1", "expected_revision": 1, "current_step": "project", "patch": {**onboarding_resource_patch(coordinator), "project": {"name": "项目", "source_directory": str(source), "output_directory": str(tmp_path / "new-output"), "trigger_mode": "manual"}}})
     status, result = coordinator.validate_project({"request_id": "validate-1", "expected_revision": patched["session"]["revision"]})
     assert status == 200
     assert result["checks"]["output_directory"]["status"] == "creatable"

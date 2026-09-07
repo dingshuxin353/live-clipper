@@ -1,4 +1,4 @@
-"""Codex automation helpers for scheduled NAS recording workflows."""
+"""审阅 Agent automation helpers for scheduled NAS recording workflows."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .status import build_run_status
-from .utils import ensure_dir, read_json, self_command, write_json
+from .utils import ensure_dir, read_json, review_material_path, self_command, write_json
 
 DEFAULT_NAS_DIR = Path("recordings")
 DEFAULT_STATE_DIR = Path("work") / "automation_state"
@@ -113,7 +113,7 @@ def start_latest_recording_job(
             }
 
     status = build_run_status(run_dir, write_report=False)
-    if status["exists"] and status["files"]["codex_brief.json"]["exists"]:
+    if status["exists"] and status["files"]["review_brief.json"]["exists"]:
         return {
             "ok": True,
             "started": False,
@@ -148,7 +148,7 @@ def start_latest_recording_job(
     state = {
         "run_id": run_id,
         "phase": "running",
-        "requires_codex": False,
+        "requires_review": False,
         "source_path": str(source_path),
         "run_dir": str(run_dir),
         "log_path": str(log_path),
@@ -168,12 +168,12 @@ def start_latest_recording_job(
     }
 
 
-def _write_codex_task(run_dir: Path, *, phase: str, log_path: Path | None = None) -> Path:
-    if phase == "needs_codex_selection":
+def _write_review_task(run_dir: Path, *, phase: str, log_path: Path | None = None) -> Path:
+    if phase == "needs_review_selection":
         body = "\n".join([
-            "# Codex 任务：审阅直播切片候选",
+            "# 审阅 Agent 任务：审阅直播切片候选",
             "",
-            "请读取本目录下的 `codex_brief.json` 和 `refined_candidates.json`，选择适合发布的直播切片。",
+            "请读取本目录下的 `review_brief.json` 和 `refined_candidates.json`，选择适合发布的直播切片。",
             "",
             "输出要求：",
             "- 写入 `selected_clips.json`。",
@@ -186,11 +186,11 @@ def _write_codex_task(run_dir: Path, *, phase: str, log_path: Path | None = None
             f".venv/bin/live-clipper render {run_dir / 'selected_clips.json'}",
             "```",
         ])
-    elif phase == "failed_needs_codex":
+    elif phase == "failed_needs_review":
         body = "\n".join([
-            "# Codex 任务：诊断流水线失败",
+            "# 审阅 Agent 任务：诊断流水线失败",
             "",
-            "后台流水线没有生成 `codex_brief.json`，请检查日志和断点文件，判断能否 resume。",
+            "后台流水线没有生成 `review_brief.json`，请检查日志和断点文件，判断能否 resume。",
             "",
             f"- 任务目录：`{run_dir}`",
             f"- 日志文件：`{log_path}`" if log_path else "- 日志文件：未记录",
@@ -202,7 +202,7 @@ def _write_codex_task(run_dir: Path, *, phase: str, log_path: Path | None = None
         ])
     elif phase == "cleanup_ready":
         body = "\n".join([
-            "# Codex 任务：确认本地大文件清理",
+            "# 审阅 Agent 任务：确认本地大文件清理",
             "",
             "成片已经渲染完成，请先执行 cleanup 预演，确认只会删除本地 input 副本和中间音频。",
             "",
@@ -212,9 +212,9 @@ def _write_codex_task(run_dir: Path, *, phase: str, log_path: Path | None = None
             "```",
         ])
     else:
-        body = f"# Codex 任务\n\n当前阶段：`{phase}`\n"
+        body = f"# 审阅 Agent 任务\n\n当前阶段：`{phase}`\n"
 
-    task_path = run_dir / "codex_task.md"
+    task_path = review_material_path(run_dir, "review_task.md")
     task_path.write_text(body, encoding="utf-8")
     return task_path
 
@@ -225,11 +225,11 @@ def check_automation_runs(
     state_dir: Path = DEFAULT_STATE_DIR,
 ) -> dict[str, Any]:
     runs: list[dict[str, Any]] = []
-    requires_codex = []
+    requires_review = []
     if not output_root.exists():
         return {
             "ok": True,
-            "requires_codex": False,
+            "requires_review": False,
             "message": "output 目录不存在，暂无任务",
             "runs": runs,
         }
@@ -250,21 +250,21 @@ def check_automation_runs(
         running = isinstance(pid, int) and _pid_is_running(pid)
         files = status["files"]
         phase = "running" if running else "unknown"
-        needs_codex = False
+        needs_review = False
         task_path = None
 
         if files["selected_clips.json"]["exists"] and files["clips"]["count"] > 0:
             phase = "cleanup_ready"
-            needs_codex = True
-            task_path = _write_codex_task(run_dir, phase=phase, log_path=log_path)
-        elif files["codex_brief.json"]["exists"] and not files["selected_clips.json"]["exists"]:
-            phase = "needs_codex_selection"
-            needs_codex = True
-            task_path = _write_codex_task(run_dir, phase=phase, log_path=log_path)
-        elif not running and state and not files["codex_brief.json"]["exists"]:
-            phase = "failed_needs_codex"
-            needs_codex = True
-            task_path = _write_codex_task(run_dir, phase=phase, log_path=log_path)
+            needs_review = True
+            task_path = _write_review_task(run_dir, phase=phase, log_path=log_path)
+        elif files["review_brief.json"]["exists"] and not files["selected_clips.json"]["exists"]:
+            phase = "needs_review_selection"
+            needs_review = True
+            task_path = _write_review_task(run_dir, phase=phase, log_path=log_path)
+        elif not running and state and not files["review_brief.json"]["exists"]:
+            phase = "failed_needs_review"
+            needs_review = True
+            task_path = _write_review_task(run_dir, phase=phase, log_path=log_path)
         elif not running and files["selected_clips.json"]["exists"]:
             phase = "ready_to_render"
         elif not running:
@@ -274,31 +274,31 @@ def check_automation_runs(
             "run_id": run_dir.name,
             "run_dir": str(run_dir),
             "phase": phase,
-            "requires_codex": needs_codex,
+            "requires_review": needs_review,
             "next_step": status["next_step"],
             "pid": pid,
             "running": running,
             "log_path": str(log_path) if log_path else None,
-            "codex_task_file": str(task_path) if task_path else None,
-            "log_tail": _tail_text(log_path) if log_path and needs_codex and phase == "failed_needs_codex" else "",
+            "review_task_file": str(task_path) if task_path else None,
+            "log_tail": _tail_text(log_path) if log_path and needs_review and phase == "failed_needs_review" else "",
         }
         runs.append(run_report)
-        if needs_codex:
-            requires_codex.append(run_report)
+        if needs_review:
+            requires_review.append(run_report)
 
         if state:
             state.update({
                 "phase": phase,
-                "requires_codex": needs_codex,
-                "codex_task_file": str(task_path) if task_path else None,
+                "requires_review": needs_review,
+                "review_task_file": str(task_path) if task_path else None,
                 "updated_at": _now_utc(),
             })
             write_json(state_dir / f"{run_dir.name}.json", state)
 
     return {
         "ok": True,
-        "requires_codex": bool(requires_codex),
-        "message": "发现需要 Codex 处理的任务" if requires_codex else "暂无需要 Codex 处理的任务",
+        "requires_review": bool(requires_review),
+        "message": "发现需要 审阅 Agent 处理的任务" if requires_review else "暂无需要 审阅 Agent 处理的任务",
         "runs": runs,
-        "codex_tasks": requires_codex,
+        "review_tasks": requires_review,
     }

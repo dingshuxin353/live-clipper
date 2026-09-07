@@ -84,7 +84,7 @@ class ProjectReprocess:
             blockers.append(_blocker("project_not_ready", "project_settings", project.project_id))
 
         try:
-            snapshot = resolve_parameter_snapshot(revision.config, self.settings)
+            snapshot = resolve_parameter_snapshot(revision.config, self.settings, repository=self.repository)
         except ResourceUnavailableError as exc:
             snapshot = {"schema_version": revision.config["schema_version"], "resources": {}, "processing": {}, "output": revision.config["output"]}
             action = "asr_settings" if exc.resource_id == revision.config["resources"]["asr_ref"] else "ai_settings"

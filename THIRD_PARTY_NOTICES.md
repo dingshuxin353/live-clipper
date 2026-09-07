@@ -40,3 +40,7 @@ Venus 的 React 界面使用以下精确版本：
 - `react`、`react-dom` — MIT License
 
 这些第三方组件分别遵循其上游许可证，不适用 Venus 自身代码的许可证声明。
+
+## Remix Icon
+
+界面使用 Remix Icon 4.9.0 的离线 SVG 路径子集，遵循 Remix Icon License v1.0（2026 年 1 月）。原始许可保存在 [remix-license.txt](frontend/src/ui/remix-license.txt)，随前端包分发，并可从应用设置打开。该图标许可不适用 Venus 自身代码的许可证声明。

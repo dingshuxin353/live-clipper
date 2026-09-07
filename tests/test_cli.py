@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from resource_test_support import bind_cli_test_run
 
 from live_clipper import cli
 from live_clipper.config import Settings
@@ -24,7 +25,7 @@ def test_run_scan_wires_pipeline_and_writes_metadata(tmp_path, monkeypatch):
         write_json(output, {"segments": [{"start": 0, "end": 1, "text": "原文"}]})
         return {"segments": [{"start": 0, "end": 1, "text": "原文"}]}
 
-    def fake_correct(raw, glossary, output, client, *, resume=False):
+    def fake_correct(raw, glossary, output, client, *, resume=False, request_parameters=None):
         calls.append(("correct", raw, glossary, output, resume))
         from live_clipper.models import CorrectedTranscript, TranscriptSentence
         corrected = CorrectedTranscript(sentences=[TranscriptSentence(start=0, end=1, text="正文")])
@@ -36,7 +37,7 @@ def test_run_scan_wires_pipeline_and_writes_metadata(tmp_path, monkeypatch):
         write_json(output, [])
         return []
 
-    def fake_scan(windows, output, client, *, resume=False):
+    def fake_scan(windows, output, client, *, resume=False, request_parameters=None):
         calls.append(("scan_windows", windows, output, resume))
         write_json(output, [])
         return []
@@ -61,6 +62,7 @@ def test_run_scan_wires_pipeline_and_writes_metadata(tmp_path, monkeypatch):
         asr_model="mlx-community/whisper-large-v3-turbo",
     ))
 
+    bind_cli_test_run(monkeypatch, tmp_path, cli.load_settings(), correction=True)
     cli.run_scan(video_path, output_dir)
 
     metadata = read_json(output_dir / "run_metadata.json")
@@ -74,11 +76,11 @@ def test_run_scan_wires_pipeline_and_writes_metadata(tmp_path, monkeypatch):
         "api_base": "https://apihub.agnes-ai.com/v1",
         "model": "agnes-2.0-flash",
     }
-    assert metadata["glossary_path"] == "glossary/common_terms.example.json"
+    assert metadata["glossary_path"] == str(cli.resolve_glossary_path().resolve())
     assert "secret" not in str(metadata)
     assert "api_key" not in str(metadata).lower()
     assert calls[0][0] == "extract"
-    assert calls[2][2] == cli.resolve_glossary_path()
+    assert calls[2][2] == cli.resolve_glossary_path().resolve()
     assert calls[-1][0] == "merge"
 
 
@@ -95,9 +97,9 @@ def test_run_scan_resume_skips_existing_intermediate_files(tmp_path, monkeypatch
 
     monkeypatch.setattr(cli, "extract_audio", lambda source, output: calls.append(("extract", source, output)))
     monkeypatch.setattr(cli, "transcribe_audio", lambda audio, output, settings: calls.append(("transcribe", audio, output)))
-    monkeypatch.setattr(cli, "correct_transcript_file", lambda raw, glossary, output, client, *, resume=False: calls.append(("correct", raw, glossary, output, resume)))
+    monkeypatch.setattr(cli, "correct_transcript_file", lambda raw, glossary, output, client, *, resume=False, request_parameters=None: calls.append(("correct", raw, glossary, output, resume)))
     monkeypatch.setattr(cli, "write_windows_file", lambda transcript, output: calls.append(("windows", output)))
-    monkeypatch.setattr(cli, "scan_windows_file", lambda windows, output, client, *, resume=False: calls.append(("scan_windows", windows, output, resume)))
+    monkeypatch.setattr(cli, "scan_windows_file", lambda windows, output, client, *, resume=False, request_parameters=None: calls.append(("scan_windows", windows, output, resume)))
 
     def fake_merge(input_path, output):
         calls.append(("merge", input_path, output))
@@ -114,13 +116,14 @@ def test_run_scan_resume_skips_existing_intermediate_files(tmp_path, monkeypatch
         asr_model="mlx-community/whisper-large-v3-turbo",
     ))
 
+    bind_cli_test_run(monkeypatch, tmp_path, cli.load_settings(), correction=True)
     cli.run_scan(video_path, output_dir, resume=True)
 
     assert calls == [("merge", output_dir / "cheap_candidates.json", output_dir / "merged_candidates.json")]
     assert read_json(output_dir / "run_metadata.json")["resume"] is True
 
 
-def test_run_scan_resume_can_merge_existing_candidates_without_model_key_or_asr(tmp_path, monkeypatch):
+def test_run_scan_resume_can_merge_existing_candidates_without_calling_model_or_asr(tmp_path, monkeypatch):
     video_path = tmp_path / "source.mp4"
     output_dir = tmp_path / "run"
     video_path.write_bytes(b"video")
@@ -134,9 +137,9 @@ def test_run_scan_resume_can_merge_existing_candidates_without_model_key_or_asr(
 
     monkeypatch.setattr(cli, "extract_audio", lambda source, output: calls.append(("extract", source, output)))
     monkeypatch.setattr(cli, "transcribe_audio", lambda audio, output, settings: calls.append(("transcribe", audio, output)))
-    monkeypatch.setattr(cli, "correct_transcript_file", lambda raw, glossary, output, client, *, resume=False: calls.append(("correct", raw, glossary, output, resume)))
+    monkeypatch.setattr(cli, "correct_transcript_file", lambda raw, glossary, output, client, *, resume=False, request_parameters=None: calls.append(("correct", raw, glossary, output, resume)))
     monkeypatch.setattr(cli, "write_windows_file", lambda transcript, output: calls.append(("windows", output)))
-    monkeypatch.setattr(cli, "scan_windows_file", lambda windows, output, client, *, resume=False: calls.append(("scan_windows", windows, output, resume)))
+    monkeypatch.setattr(cli, "scan_windows_file", lambda windows, output, client, *, resume=False, request_parameters=None: calls.append(("scan_windows", windows, output, resume)))
 
     def fake_merge(input_path, output):
         calls.append(("merge", input_path, output))
@@ -150,12 +153,13 @@ def test_run_scan_resume_can_merge_existing_candidates_without_model_key_or_asr(
     monkeypatch.setattr(cli, "CheapModelClient", fail_client)
     monkeypatch.setattr(cli, "load_settings", lambda: Settings(
         cheap_model_api_base="https://apihub.agnes-ai.com/v1",
-        cheap_model_api_key=None,
+        cheap_model_api_key="unit-key",
         cheap_model_name="agnes-2.0-flash",
         asr_backend="mlx_whisper",
         asr_model="mlx-community/whisper-large-v3-turbo",
     ))
 
+    bind_cli_test_run(monkeypatch, tmp_path, cli.load_settings(), correction=True)
     cli.run_scan(video_path, output_dir, resume=True)
 
     assert calls == [("merge", output_dir / "cheap_candidates.json", output_dir / "merged_candidates.json")]
@@ -180,12 +184,13 @@ def test_run_scan_reports_stage_progress_for_resumed_run(tmp_path, monkeypatch, 
     monkeypatch.setattr(cli, "merge_candidates_file", fake_merge)
     monkeypatch.setattr(cli, "load_settings", lambda: Settings(
         cheap_model_api_base="https://apihub.agnes-ai.com/v1",
-        cheap_model_api_key=None,
+        cheap_model_api_key="unit-key",
         cheap_model_name="agnes-2.0-flash",
         asr_backend="mlx_whisper",
         asr_model="mlx-community/whisper-large-v3-turbo",
     ))
 
+    bind_cli_test_run(monkeypatch, tmp_path, cli.load_settings(), correction=True)
     cli.run_scan(video_path, output_dir, resume=True)
 
     output = capsys.readouterr().out
@@ -225,7 +230,7 @@ def test_prompts_export_writes_prompt_files(tmp_path):
     exported = cli.run_prompts_export(output_dir)
 
     assert output_dir / "cheap_scan_window.md" in exported
-    assert (output_dir / "codex_select_clips.md").exists()
+    assert (output_dir / "review_select_clips.md").exists()
 
 
 def test_guide_ai_parser_accepts_output_path(tmp_path):
@@ -238,16 +243,14 @@ def test_guide_ai_parser_accepts_output_path(tmp_path):
     assert args.output == output_path
 
 
-def test_run_ai_guide_outputs_chinese_safety_and_codex_tasks(tmp_path, capsys):
+def test_run_ai_guide_outputs_chinese_safety_and_review_tasks(tmp_path, capsys):
     output_path = tmp_path / "my-ai-guide.md"
 
     text = cli.run_ai_guide(output_path)
 
     assert output_path.read_text(encoding="utf-8") == text
-    assert "不要把 API key" in text
-    assert "录制检测任务" in text
-    assert "选片与收尾任务" in text
-    assert "一次只问" in text
+    from live_clipper.ai_guide import AI_ASSISTANT_GUIDE
+    assert text == AI_ASSISTANT_GUIDE
     assert str(output_path) in capsys.readouterr().out
 
 
@@ -272,7 +275,7 @@ def test_run_setup_creates_beginner_files_without_collecting_secrets(tmp_path, m
     assert (tmp_path / "input").is_dir()
     assert (tmp_path / "output").is_dir()
     assert (tmp_path / "work" / "logs").is_dir()
-    assert (tmp_path / "prompts.local" / "codex_select_clips.md").exists()
+    assert (tmp_path / "prompts.local" / "review_select_clips.md").exists()
     assert "不要把 API key 粘贴到聊天窗口" in capsys.readouterr().out
 
 
@@ -311,7 +314,7 @@ def test_follow_service_logs_prints_existing_content(tmp_path, monkeypatch, caps
     assert capsys.readouterr().out == "one\ntwo\n"
 
 
-def test_run_next_reports_codex_selection_step(tmp_path, capsys):
+def test_run_next_reports_review_selection_step(tmp_path, capsys):
     run_dir = tmp_path / "output" / "week_023"
     write_json(run_dir / "run_metadata.json", {"source_name": "week_023.mp4"})
     write_json(run_dir / "transcript_raw.json", {"segments": []})
@@ -320,14 +323,14 @@ def test_run_next_reports_codex_selection_step(tmp_path, capsys):
     write_json(run_dir / "cheap_candidates.json", [])
     write_json(run_dir / "merged_candidates.json", [])
     write_json(run_dir / "refined_candidates.json", [])
-    write_json(run_dir / "codex_brief.json", {"candidates": []})
+    write_json(run_dir / "review_brief.json", {"candidates": []})
 
     report = cli.run_next(tmp_path / "output")
 
     assert report["actionable_count"] == 1
     assert report["runs"][0]["run_dir"] == str(run_dir)
     output = capsys.readouterr().out
-    assert "等待 Codex 或人工选片" in output
+    assert "等待审阅 Agent 或人工选片" in output
     assert "selected_clips.json" in output
 
 
@@ -344,10 +347,10 @@ def test_run_scan_resume_passes_resume_to_window_scan(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cli, "extract_audio", lambda source, output: calls.append(("extract", source, output)))
     monkeypatch.setattr(cli, "transcribe_audio", lambda audio, output, settings: calls.append(("transcribe", audio, output)))
-    monkeypatch.setattr(cli, "correct_transcript_file", lambda raw, glossary, output, client, *, resume=False: calls.append(("correct", raw, glossary, output, resume)))
+    monkeypatch.setattr(cli, "correct_transcript_file", lambda raw, glossary, output, client, *, resume=False, request_parameters=None: calls.append(("correct", raw, glossary, output, resume)))
     monkeypatch.setattr(cli, "write_windows_file", lambda transcript, output: calls.append(("windows", output)))
 
-    def fake_scan(windows, output, client, *, resume=False):
+    def fake_scan(windows, output, client, *, resume=False, request_parameters=None):
         calls.append(("scan_windows", windows, output, resume))
         write_json(output, [])
         return []
@@ -368,6 +371,7 @@ def test_run_scan_resume_passes_resume_to_window_scan(tmp_path, monkeypatch):
         asr_model="mlx-community/whisper-large-v3-turbo",
     ))
 
+    bind_cli_test_run(monkeypatch, tmp_path, cli.load_settings(), correction=True)
     cli.run_scan(video_path, output_dir, resume=True)
 
     assert calls == [
@@ -389,7 +393,7 @@ def test_run_scan_resume_passes_resume_to_transcript_correction(tmp_path, monkey
     monkeypatch.setattr(cli, "extract_audio", lambda source, output: calls.append(("extract", source, output)))
     monkeypatch.setattr(cli, "transcribe_audio", lambda audio, output, settings: calls.append(("transcribe", audio, output)))
 
-    def fake_correct(raw, glossary, output, client, *, resume=False):
+    def fake_correct(raw, glossary, output, client, *, resume=False, request_parameters=None):
         calls.append(("correct", raw, output, resume))
         from live_clipper.models import CorrectedTranscript, TranscriptSentence
         corrected = CorrectedTranscript(sentences=[TranscriptSentence(start=0, end=1, text="正文")])
@@ -408,7 +412,7 @@ def test_run_scan_resume_passes_resume_to_transcript_correction(tmp_path, monkey
 
     monkeypatch.setattr(cli, "correct_transcript_file", fake_correct)
     monkeypatch.setattr(cli, "write_windows_file", fake_windows)
-    monkeypatch.setattr(cli, "scan_windows_file", lambda windows, output, client, *, resume=False: calls.append(("scan_windows", windows, output, resume)))
+    monkeypatch.setattr(cli, "scan_windows_file", lambda windows, output, client, *, resume=False, request_parameters=None: calls.append(("scan_windows", windows, output, resume)))
     monkeypatch.setattr(cli, "merge_candidates_file", fake_merge)
     monkeypatch.setattr(cli, "CheapModelClient", lambda settings: object())
     monkeypatch.setattr(cli, "load_settings", lambda: Settings(
@@ -419,13 +423,14 @@ def test_run_scan_resume_passes_resume_to_transcript_correction(tmp_path, monkey
         asr_model="mlx-community/whisper-large-v3-turbo",
     ))
 
+    bind_cli_test_run(monkeypatch, tmp_path, cli.load_settings(), correction=True)
     cli.run_scan(video_path, output_dir, resume=True)
 
     assert ("correct", output_dir / "transcript_raw.json", output_dir / "transcript.json", True) in calls
     assert ("scan_windows", output_dir / "windows.json", output_dir / "cheap_candidates.json", True) not in calls
 
 
-def test_run_scan_skip_transcript_correction_writes_raw_transcript_without_model_key(tmp_path, monkeypatch):
+def test_run_scan_skip_transcript_correction_writes_raw_transcript_without_calling_model(tmp_path, monkeypatch):
     video_path = tmp_path / "source.mp4"
     output_dir = tmp_path / "run"
     video_path.write_bytes(b"video")
@@ -441,7 +446,7 @@ def test_run_scan_skip_transcript_correction_writes_raw_transcript_without_model
 
     monkeypatch.setattr(cli, "extract_audio", lambda source, output: calls.append(("extract", source, output)))
     monkeypatch.setattr(cli, "transcribe_audio", lambda audio, output, settings: calls.append(("transcribe", audio, output)))
-    monkeypatch.setattr(cli, "correct_transcript_file", lambda raw, glossary, output, client, *, resume=False: calls.append(("correct", raw, output, resume)))
+    monkeypatch.setattr(cli, "correct_transcript_file", lambda raw, glossary, output, client, *, resume=False, request_parameters=None: calls.append(("correct", raw, output, resume)))
 
     def fake_windows(transcript, output):
         calls.append(("windows", output, len(transcript.sentences)))
@@ -457,17 +462,18 @@ def test_run_scan_skip_transcript_correction_writes_raw_transcript_without_model
         raise AssertionError("cheap model client should not be created")
 
     monkeypatch.setattr(cli, "write_windows_file", fake_windows)
-    monkeypatch.setattr(cli, "scan_windows_file", lambda windows, output, client, *, resume=False: calls.append(("scan_windows", windows, output, resume)))
+    monkeypatch.setattr(cli, "scan_windows_file", lambda windows, output, client, *, resume=False, request_parameters=None: calls.append(("scan_windows", windows, output, resume)))
     monkeypatch.setattr(cli, "merge_candidates_file", fake_merge)
     monkeypatch.setattr(cli, "CheapModelClient", fail_client)
     monkeypatch.setattr(cli, "load_settings", lambda: Settings(
         cheap_model_api_base="https://apihub.agnes-ai.com/v1",
-        cheap_model_api_key=None,
+        cheap_model_api_key="unit-key",
         cheap_model_name="agnes-2.0-flash",
         asr_backend="mlx_whisper",
         asr_model="mlx-community/whisper-large-v3-turbo",
     ))
 
+    bind_cli_test_run(monkeypatch, tmp_path, cli.load_settings(), correction=False)
     cli.run_scan(video_path, output_dir, resume=True, skip_transcript_correction=True)
 
     assert read_json(output_dir / "transcript.json") == {
@@ -493,8 +499,8 @@ def test_run_brief_uses_run_files(tmp_path, monkeypatch):
         write_json(output, {"source_name": source_name, "candidates": []})
         return {"source_name": source_name, "candidates": []}
 
-    monkeypatch.setattr(cli, "build_codex_brief_file", fake_build)
-    monkeypatch.setattr(cli, "build_codex_review_markdown", lambda brief, brief_path, selection_path: "review")
+    monkeypatch.setattr(cli, "build_review_brief_file", fake_build)
+    monkeypatch.setattr(cli, "build_review_notes_markdown", lambda brief, brief_path, selection_path: "review")
     monkeypatch.setattr(cli, "build_selected_clips_template", lambda brief: [{"clip_id": "clip-1"}])
 
     cli.run_brief(run_dir)
@@ -502,10 +508,10 @@ def test_run_brief_uses_run_files(tmp_path, monkeypatch):
     assert calls == [(
         run_dir / "merged_candidates.json",
         run_dir / "transcript.json",
-        run_dir / "codex_brief.json",
+        run_dir / "review_brief.json",
         "source.mp4",
     )]
-    assert (run_dir / "codex_review.md").read_text(encoding="utf-8") == "review"
+    assert (run_dir / "review_notes.md").read_text(encoding="utf-8") == "review"
     assert read_json(run_dir / "selected_clips.template.json") == [{"clip_id": "clip-1"}]
 
 
@@ -521,8 +527,8 @@ def test_run_brief_can_use_refined_candidates(tmp_path, monkeypatch):
         write_json(output, {"source_name": source_name, "candidates": []})
         return {"source_name": source_name, "candidates": []}
 
-    monkeypatch.setattr(cli, "build_codex_brief_file", fake_build)
-    monkeypatch.setattr(cli, "build_codex_review_markdown", lambda brief, brief_path, selection_path: "review")
+    monkeypatch.setattr(cli, "build_review_brief_file", fake_build)
+    monkeypatch.setattr(cli, "build_review_notes_markdown", lambda brief, brief_path, selection_path: "review")
     monkeypatch.setattr(cli, "build_selected_clips_template", lambda brief: [])
 
     cli.run_brief(run_dir, source="refined")
@@ -530,7 +536,7 @@ def test_run_brief_can_use_refined_candidates(tmp_path, monkeypatch):
     assert calls == [(
         run_dir / "refined_candidates.json",
         run_dir / "transcript.json",
-        run_dir / "codex_brief.json",
+        run_dir / "review_brief.json",
         "source.mp4",
     )]
 
@@ -539,7 +545,7 @@ def test_run_brief_reports_missing_required_files(tmp_path, monkeypatch):
     run_dir = tmp_path / "run"
     write_json(run_dir / "run_metadata.json", {"source_name": "source.mp4"})
     calls = []
-    monkeypatch.setattr(cli, "build_codex_brief_file", lambda *args, **kwargs: calls.append(args))
+    monkeypatch.setattr(cli, "build_review_brief_file", lambda *args, **kwargs: calls.append(args))
 
     with pytest.raises(FileNotFoundError, match="merged_candidates.json"):
         cli.run_brief(run_dir)
@@ -568,7 +574,7 @@ def test_run_refine_uses_agnes_client_and_writes_refined_candidates(tmp_path, mo
     monkeypatch.setattr(
         cli,
         "refine_candidates_file",
-        lambda candidates, transcript, output, client, *, top_n=25: calls.append((
+        lambda candidates, transcript, output, client, *, top_n=25, request_parameters=None: calls.append((
             candidates,
             transcript,
             output,
@@ -577,6 +583,7 @@ def test_run_refine_uses_agnes_client_and_writes_refined_candidates(tmp_path, mo
         )) or write_json(output, []),
     )
 
+    bind_cli_test_run(monkeypatch, tmp_path, cli.load_settings(), correction=True, refine=True, top_n=7)
     output_path = cli.run_refine(run_dir, top_n=7)
 
     assert output_path == run_dir / "refined_candidates.json"
@@ -615,6 +622,7 @@ def test_run_pipeline_stages_source_scans_refines_and_builds_brief(tmp_path, mon
     monkeypatch.setattr(cli, "run_brief", lambda run, source="merged": calls.append(("brief", run, source)))
     monkeypatch.setattr(cli, "build_run_status", lambda run: calls.append(("status", run)))
 
+    bind_cli_test_run(monkeypatch, tmp_path, cli.load_settings(), correction=False, refine=True, top_n=9)
     result = cli.run_pipeline(source, input_dir=input_dir, output_dir=run_dir, correct_transcript=False, refine=True, top_n=9)
 
     assert result == run_dir
@@ -668,7 +676,7 @@ def test_run_render_validates_then_renders(tmp_path, monkeypatch):
     ]
 
 
-def test_run_scan_fails_before_audio_extraction_when_cheap_model_key_missing(tmp_path, monkeypatch):
+def test_run_scan_fails_before_audio_extraction_without_frozen_project_identity(tmp_path, monkeypatch):
     video_path = tmp_path / "source.mp4"
     video_path.write_bytes(b"video")
     calls = []
@@ -682,19 +690,19 @@ def test_run_scan_fails_before_audio_extraction_when_cheap_model_key_missing(tmp
     ))
     monkeypatch.setattr(cli, "extract_audio", lambda source, output: calls.append("extract"))
 
-    with pytest.raises(ValueError, match="CHEAP_MODEL_API_KEY"):
+    with pytest.raises(ValueError, match="project_run_context_required"):
         cli.run_scan(video_path, tmp_path / "run")
 
     assert calls == []
 
 
-def test_run_pipeline_fails_before_staging_when_cheap_model_key_missing(tmp_path, monkeypatch):
+def test_run_pipeline_fails_before_staging_without_frozen_project_identity(tmp_path, monkeypatch):
     source = tmp_path / "source.mkv"
     source.write_bytes(b"video")
     monkeypatch.setattr(cli, "load_settings", lambda: Settings(cheap_model_api_key=None))
     monkeypatch.setattr(cli, "stage_source_file", lambda *args, **kwargs: pytest.fail("must not stage"))
 
-    with pytest.raises(ValueError, match="设置 → AI 服务"):
+    with pytest.raises(ValueError, match="project_run_context_required"):
         cli.run_pipeline(source, input_dir=tmp_path / "input", output_dir=tmp_path / "output")
 
     assert not (tmp_path / "input").exists()
@@ -715,6 +723,7 @@ def test_run_scan_fails_before_creating_run_dir_when_video_is_missing(tmp_path, 
     monkeypatch.setattr(cli, "extract_audio", lambda source, output: calls.append("extract"))
 
     with pytest.raises(FileNotFoundError, match="missing.mp4"):
+        bind_cli_test_run(monkeypatch, tmp_path, cli.load_settings(), correction=True)
         cli.run_scan(video_path, output_dir)
 
     assert calls == []
@@ -893,7 +902,7 @@ def test_main_dispatches_scan_brief_and_render(tmp_path, monkeypatch):
         ("smoke", tmp_path / "smoke"),
         ("status", run_dir),
         ("pipeline", video_path, tmp_path / "input", run_dir, False, True, 7),
-        ("scan", video_path, run_dir, True, False),
+        ("scan", video_path, run_dir, True, None),
         ("refine", run_dir, 7),
         ("brief", run_dir, "refined"),
         ("render", selection_path),
@@ -1046,6 +1055,9 @@ def test_run_app_restores_workbench_without_rewriting_current_config_or_database
     service_dir = home / "work" / "service"
     repository = open_project_repository(service_dir, config_path=config_path, env_path=env_path)
     repository.create_project("已有项目", default_project_config(source, output))
+    from live_clipper.config import load_settings
+    from live_clipper.resource_migration import migrate_resources
+    migrate_resources(repository, load_settings(config_path, env_path=env_path))
     repository.close()
     config_before = config_path.read_bytes()
     database_before = database_path(service_dir).read_bytes()

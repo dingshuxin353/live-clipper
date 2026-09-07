@@ -400,7 +400,7 @@ def _history_summary(inspection: LegacyInspection) -> Mapping[str, Any]:
             reason = "source_identity_unsupported"
         elif created is None or updated is None or updated < created:
             reason = "timestamp_untrusted"
-        elif phase in {"needs_review", "ready_to_render", "awaiting_review"}:
+        elif phase in {"needs_review", "needs_codex", "ready_to_render", "awaiting_review"}:
             category = "compatibility"
             target_state = "failed"
         elif phase in {"queued", "staging", "processing", "rendering"}:

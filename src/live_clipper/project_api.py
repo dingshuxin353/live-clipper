@@ -123,6 +123,12 @@ class ProjectAPI:
                     "project": self._project_summary(project.project_id),
                     "initial_scan": initial_scan,
                 }
+            if method == 'GET' and len(parts) == 5 and parts[:2] == ['api', 'projects'] and parts[3] == 'operations':
+                operation = self.repository.get_idempotency_key(f'project.update:{parts[2]}', parts[4])
+                return 200, {'ok': True, 'project': self._project_summary(parts[2]) if operation else None}
+            if method == 'GET' and len(parts) == 4 and parts[:3] == ['api', 'projects', 'operations']:
+                operation = self.repository.get_idempotency_key('project.create', parts[3])
+                return 200, {'ok': True, 'project': self._project_summary(operation['object_id']) if operation else None}
             if method == "GET" and parts == ["api", "projects"]:
                 return 200, {
                     "ok": True,

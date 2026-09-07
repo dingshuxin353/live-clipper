@@ -69,7 +69,7 @@ def test_start_latest_recording_job_launches_background_pipeline(tmp_path, monke
     assert "--refine" in command
     state = read_json(state_dir / "recording.json")
     assert state["phase"] == "running"
-    assert state["requires_codex"] is False
+    assert state["requires_review"] is False
     assert state["run_dir"] == str(output_root / "recording")
 
 
@@ -101,13 +101,13 @@ def test_check_automation_runs_marks_selection_task(tmp_path):
     write_json(run_dir / "cheap_candidates.json", [])
     write_json(run_dir / "merged_candidates.json", [])
     write_json(run_dir / "refined_candidates.json", [])
-    write_json(run_dir / "codex_brief.json", {"candidates": []})
+    write_json(run_dir / "review_brief.json", {"candidates": []})
 
     report = check_automation_runs(output_root, state_dir=tmp_path / "state")
 
-    assert report["requires_codex"] is True
-    assert report["codex_tasks"][0]["phase"] == "needs_codex_selection"
-    task_path = run_dir / "codex_task.md"
+    assert report["requires_review"] is True
+    assert report["review_tasks"][0]["phase"] == "needs_review_selection"
+    task_path = run_dir / "review_task.md"
     assert task_path.exists()
     assert "审阅直播切片候选" in task_path.read_text(encoding="utf-8")
 
@@ -125,8 +125,8 @@ def test_check_automation_runs_marks_failed_stopped_job(tmp_path, monkeypatch):
 
     report = check_automation_runs(output_root, state_dir=state_dir)
 
-    assert report["requires_codex"] is True
-    task = report["codex_tasks"][0]
-    assert task["phase"] == "failed_needs_codex"
+    assert report["requires_review"] is True
+    task = report["review_tasks"][0]
+    assert task["phase"] == "failed_needs_review"
     assert "Agnes SSL error" in task["log_tail"]
-    assert "诊断流水线失败" in (run_dir / "codex_task.md").read_text(encoding="utf-8")
+    assert "诊断流水线失败" in (run_dir / "review_task.md").read_text(encoding="utf-8")

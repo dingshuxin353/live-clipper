@@ -1,4 +1,4 @@
-"""Helpers for validating Codex-produced clip selections."""
+"""Helpers for validating 审阅 Agent-produced clip selections."""
 
 from __future__ import annotations
 

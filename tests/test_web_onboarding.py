@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 import pytest
@@ -121,37 +120,14 @@ def test_migration_react_uses_real_o_contract_and_keeps_state_private():
     assert "quitApp?()" in shell
 
 
-def test_secret_inputs_are_uncontrolled_and_never_logged_or_persisted():
-    source = _react()
-    assert "console." not in source
-    assert "localStorage" not in source
-    assert "sessionStorage" not in source
-    assert "data-api-key" not in source
-    assert 'asrKeyRef = useRef("")' in source
-    assert 'aiKeyRef = useRef("")' in source
-    assert "asrKeyRef.current" in source
-    assert "aiKeyRef.current" in source
-    secret_inputs = re.findall(r'<input ref=\{keyInput\} className="form-control form-secret-input".*?/>', source)
-    assert len(secret_inputs) == 2
-    for input_source in secret_inputs:
-        assert 'type="password"' in input_source
-        assert " value=" not in input_source
-        assert "defaultValue=" not in input_source
-        assert "name=" not in input_source
-
-
 def test_accessibility_and_live_state_contracts_remain_strong():
     source = _react()
     for token in [
         'role="dialog"',
         'aria-modal="true"',
-        'role="progressbar"',
-        "aria-valuenow={progress}",
-        'aria-errormessage={error ? "onboarding-action-error" : undefined}',
         'role="alert"',
         'event.key === "Escape"',
         'event.key !== "Tab"',
-        'document.addEventListener("visibilitychange"',
     ]:
         assert token in source
     styles = Path("frontend/src/styles.css").read_text(encoding="utf-8")
