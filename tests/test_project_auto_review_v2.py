@@ -443,3 +443,51 @@ def test_interrupted_review_without_evidence_does_not_repeat_paid_request(tmp_pa
     assert repository.get_run(run.run_id).status == "failed"
     issues = repository.list_issues(run_id=run.run_id, active_only=True)
     assert issues and all(issue.status == "action_required" and not issue.next_retry_at for issue in issues)
+
+
+def test_invalid_registered_outputs_preserved_and_stuck_registration_stops(tmp_path):
+    repository, _project, run, run_dir, _output = _project_run(tmp_path, candidates=[_candidate("one")])
+    original = run_project_review(repository, run.run_id, run_dir=run_dir, adapter=lambda _: {
+        "format_version": 1, "overall_summary": "one", "warnings": [], "decisions": [_selected("one")],
+    })
+    outputs = repository.list_run_outputs(run.run_id)
+    evidence_path = run_dir / "review_result.json"
+    evidence_path.write_text(evidence_path.read_text() + "\n")
+    assert reconcile_review_evidence(repository, run.run_id, run_dir=run_dir) == "invalid"
+    issue = repository.list_issues(run_id=run.run_id, active_only=True)[0]
+    assert issue.recovery_capability == "none"
+    assert "重新处理" in issue.next_step
+    # Reproduce a recovery already accepted by the previous version.
+    repository.transition_run(run.run_id, status="processing", stage="review", event_type="recovery_queued")
+    repository.create_ai_review_session(
+        run.run_id, attempt_number=2, resource_ref=original.resource_ref, model_name=original.model_name,
+        strategy_version=original.strategy_version, parameter_snapshot={}, evidence_relative_path="review_result.json",
+    )
+    before = evidence_path.read_bytes()
+    with pytest.raises(ProjectReviewError, match="create a new run"):
+        run_project_review(repository, run.run_id, run_dir=run_dir, adapter=lambda _: pytest.fail("must not call provider"))
+    assert repository.get_run(run.run_id).status == "failed"
+    assert repository.list_run_outputs(run.run_id) == outputs
+    assert evidence_path.read_bytes() == before
+    assert all(session.status == "invalid" for session in repository.list_ai_review_sessions(run.run_id))
+
+
+def test_stale_continue_request_cannot_reregister_existing_outputs(tmp_path):
+    from live_clipper.project_recovery import continue_run
+    from live_clipper.resource_store import ResourceError
+
+    repository, project, run, run_dir, _output = _project_run(tmp_path, candidates=[_candidate("one")])
+    run_project_review(repository, run.run_id, run_dir=run_dir, adapter=lambda _: {
+        "format_version": 1, "overall_summary": "one", "warnings": [], "decisions": [_selected("one")],
+    })
+    repository.transition_run(run.run_id, status="failed", stage="review", event_type="failed")
+    issue = repository.discover_issue(
+        issue_code="ai_review_invalid", category="ai", scope_type="run", project_id=project.project_id,
+        run_id=run.run_id, issue_group_key="stale-review", status="ready_to_recover",
+        recovery_capability="continue_run", redo_stages=("review",),
+    )
+    with pytest.raises(ResourceError, match="review_reprocess_required"):
+        continue_run(repository, issue.issue_id, expected_issue_revision=issue.issue_revision,
+                     request_id="stale-continue", requested_by="test")
+    assert repository.get_run(run.run_id).status == "failed"
+    assert not repository.list_recovery_attempts(issue.issue_id)

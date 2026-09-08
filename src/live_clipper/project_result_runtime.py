@@ -348,6 +348,10 @@ def _functional_issue(
         ),
     }
     category, title, preserved, next_step, capability = details[code]
+    if code == "ai_review_invalid" and repository.list_run_outputs(run.run_id):
+        preserved = "原审阅证据和已登记输出保持不变"
+        next_step = "原审阅证据已失效，请使用重新处理创建新记录"
+        capability = "none"
     if code == 'ai_resource_unavailable' and resource_purpose == 'analysis':
         title, preserved, next_step = '内容分析资源不可用', '来源录像和已有产物保持不变', '修复原内容分析资源后重新检查'
     issue = repository.discover_issue(
@@ -392,19 +396,25 @@ def _functional_issue(
         or issue.automatic_attempt_count != automatic_attempt_count
         or issue.next_retry_at != next_retry_at
         or issue.retry_exhausted != retry_exhausted
+        or issue.recovery_capability != capability
+        or issue.next_step != next_step
     ):
         from .project_domain import normalize_utc
 
         with repository.transaction():
             repository.connection.execute(
                 """UPDATE issues SET status = ?, automatic_attempt_count = ?, next_retry_at = ?,
-                     retry_exhausted = ?, updated_at = ?, issue_revision = issue_revision + 1
+                     retry_exhausted = ?, recovery_capability = ?, next_step = ?, preserved_content = ?,
+                     updated_at = ?, issue_revision = issue_revision + 1
                    WHERE issue_id = ?""",
                 (
                     status,
                     automatic_attempt_count,
                     next_retry_at,
                     int(retry_exhausted),
+                    capability,
+                    next_step,
+                    preserved,
                     normalize_utc(),
                     issue.issue_id,
                 ),
@@ -567,6 +577,9 @@ def run_project_review(
             if reconcile_review_evidence(repository, run_id, run_dir=run_dir) != "verified":
                 raise ProjectReviewError("ai_review_invalid", "registered review evidence changed")
             return sessions[-1]
+        if sessions and repository.list_run_outputs(run_id):
+            _mark_review_failure(repository, run, sessions[-1], code="ai_review_invalid")
+            raise ProjectReviewError("ai_review_invalid", "registered outputs belong to an invalid review; create a new run")
         evidence = Path(run_dir) / "review_result.json"
         if sessions and sessions[-1].status == "running":
             if not evidence.is_file():

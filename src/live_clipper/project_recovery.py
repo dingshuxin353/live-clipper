@@ -224,6 +224,8 @@ def _accepted_attempt(
             failed_run = repository.get_run(str(issue.run_id))
             if failed_run is None:
                 raise KeyError(str(issue.run_id))
+            if "review" in issue.redo_stages and repository.list_run_outputs(failed_run.run_id):
+                raise ResourceError("review_reprocess_required")
             _check_frozen_resources(repository, failed_run)
             active = repository.find_active_run(
                 failed_run.project_id,
