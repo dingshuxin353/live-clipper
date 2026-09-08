@@ -8,8 +8,7 @@ import { ErrorState, LoadingState, PageHeading, usePolling } from "./workbench-s
 
 export function SettingsPage({ notify }: { notify(message: string): void }) {
   const state = usePolling(signal => api<ApplicationSettings>('/api/config', {}, signal), 15000, 'application-settings');
-  if (!state.data) return state.loading ? <LoadingState /> : <ErrorState message={state.error} retry={() => void state.refresh()} />;
-  return <Settings initial={state.data} notify={notify} />;
+  return <Settings initial={state.data ?? undefined} loading={state.loading} error={state.error} retry={() => void state.refresh()} notify={notify} />;
 }
 
 export function ReviewCompatibilityPage() {

@@ -400,22 +400,6 @@ h4 {
   grid-column: 1 / -1;
 }
 
-.settings-section {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(240px, 1fr));
-  gap: 12px 14px;
-  padding-top: 4px;
-}
-
-.settings-section h4 {
-  grid-column: 1 / -1;
-}
-
-.settings-section > .settings-field-grid {
-  grid-column: 1 / -1;
-  min-width: 0;
-}
-
 .advanced-grid {
   display: grid;
   gap: 20px;
@@ -618,7 +602,6 @@ h4 {
   .health-grid,
   .env-grid,
   .config-form fieldset,
-  .settings-section,
   .settings-field-grid,
   .scheduler-form {
     grid-template-columns: minmax(0, 1fr);
@@ -751,7 +734,6 @@ button, input, textarea, select { font: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: .55; }
 .form-surface,
-.settings-section,
 .scheduler-editor { container-type: inline-size; }
 .form-layout { grid-template-columns: minmax(0, 1fr) !important; gap: 16px; }
 .form-pair { display: grid !important; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
@@ -1342,3 +1324,19 @@ textarea.form-control { height: auto; min-height: 88px; padding: 8px; resize: ve
 
 .project-dialog-header > div { min-width: 0; }
 .project-dialog-header > button { flex-shrink: 0; }
+
+.settings-page { max-width: 960px; }
+.settings-section { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; padding: 24px 0; border-bottom: 1px solid var(--line); min-width: 0; }
+.settings-section h2, .settings-section h3, .settings-section p { margin: 0; }
+.settings-section h2, .settings-section summary { font-size: 18px; font-weight: 600; }
+.settings-section h3 { font-size: 14px; font-weight: 600; }
+.settings-section > div { min-width: 0; }
+.settings-directory { display: grid; gap: 12px; }
+.settings-path { overflow-wrap: anywhere; user-select: text; }
+.settings-section > button { justify-self: start; }
+.settings-section summary { cursor: pointer; }
+.settings-section[open] summary { margin-bottom: 20px; }
+.settings-section .summary-list { margin-bottom: 20px; }
+.settings-section dd { overflow-wrap: anywhere; }
+
+.settings-directory .resource-actions { margin: 0; }

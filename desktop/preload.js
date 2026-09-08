@@ -2,6 +2,9 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("liveClipperShell", {
+  getApplicationInfo: () => ipcRenderer.invoke("lc:application-info"),
+  openDataDirectory: (id) => ipcRenderer.invoke("lc:open-data-directory", id),
+  checkForUpdates: () => ipcRenderer.invoke("lc:check-for-updates"),
   selectFolder: (title) => ipcRenderer.invoke("lc:select-folder", title),
   readClipboardText: () => ipcRenderer.invoke("lc:read-clipboard-text"),
   openOutput: (outputId) => ipcRenderer.invoke("lc:open-output", outputId),

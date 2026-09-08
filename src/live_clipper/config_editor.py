@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import tempfile
 import tomllib
@@ -9,12 +8,10 @@ from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .config import DEFAULT_CONFIG_TEMPLATE, load_settings
 from .utils import ensure_dir
 
-NUMBER_RANGES = {('scheduler', 'tick_seconds'): (5, 300), ('review_automation', 'timeout_minutes'): (1, 240), ('review_automation_model', 'max_candidates'): (1, 200)}
 
 def ensure_workspace_root(
     *,
@@ -148,80 +145,10 @@ def _toml_value(value: Any) -> str:
     return json.dumps(str(value), ensure_ascii=False)
 
 
-APPLICATION_FIELDS = {
-    'paths': {'glossary_path'},
-    'scheduler': {'timezone', 'tick_seconds'},
-    'service': {'stuck_after_minutes'},
-    'review_automation': {'timeout_minutes'},
-    'review_automation_model': {'max_candidates'},
-}
-
-
 def application_config(config_path: Path) -> dict[str, Any]:
-    import hashlib
-
-    raw = _load_raw_config(config_path)
-    if not raw['ok']:
-        return {'ok': False, 'message': '应用配置无法读取，请先处理配置文件'}
-    settings = load_settings(config_path)
-    sections = {'paths': settings.paths, 'scheduler': settings.scheduler, 'service': settings.service,
-                'review_automation': settings.review_automation, 'review_automation_model': settings.review_automation.model}
-    return {'ok': True, 'revision': hashlib.sha256(config_path.read_bytes() if config_path.exists() else b'').hexdigest(),
-            'config': {section: {field: str(getattr(sections[section], field)) if isinstance(getattr(sections[section], field), Path) else getattr(sections[section], field) for field in fields} for section, fields in APPLICATION_FIELDS.items()},
-            'storage': {'workspace_root': str(settings.paths.workspace_root or ''), 'work_dir': str(settings.paths.work_dir)},
-            'connection': {'host': settings.web.host, 'port': settings.web.port}}
-
-
-def save_application_config(config_path: Path, body: dict[str, Any]) -> dict[str, Any]:
-    import fcntl
-
-    if set(body) != {'config', 'expected_revision'} or not isinstance(body['config'], dict):
-        return {'ok': False, 'message': '应用配置字段无效'}
-    draft = body['config']
-    if set(draft) != set(APPLICATION_FIELDS) or any(not isinstance(draft[s], dict) or set(draft[s]) != fields for s, fields in APPLICATION_FIELDS.items()):
-        return {'ok': False, 'message': '模型与项目字段请在资源或项目中修改'}
+    """Expose runtime storage only; reading this endpoint never writes configuration."""
     try:
-        for (section, name), (minimum, maximum) in NUMBER_RANGES.items():
-            if name in draft.get(section, {}):
-                number = draft[section][name]
-                if isinstance(number, bool) or not isinstance(number, int) or not minimum <= number <= maximum:
-                    raise ValueError
-        ZoneInfo(draft['scheduler']['timezone'])
-        stuck = draft['service']['stuck_after_minutes']
-        if isinstance(stuck, bool) or not isinstance(stuck, int) or not 1 <= stuck <= 1440:
-            raise ValueError
-        glossary = draft['paths']['glossary_path']
-        if not isinstance(glossary, str) or '\0' in glossary or not glossary.strip():
-            raise ValueError
-    except (ValueError, TypeError, ZoneInfoNotFoundError):
-        return {'ok': False, 'message': '应用参数无效，请检查范围、时区和术语表路径'}
-    ensure_dir(config_path.parent)
-    with (config_path.parent / '.application-config.lock').open('a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        current = application_config(config_path)
-        if not current['ok'] or current['revision'] != body['expected_revision']:
-            return {'ok': False, 'message': '应用设置已更新，请重新读取后比较'}
-        raw = _load_raw_config(config_path)['config']
-        for section, fields in draft.items():
-            target = raw.setdefault('review_automation', {}).setdefault('model', {}) if section == 'review_automation_model' else raw.setdefault(section, {})
-            target.update(fields)
-        rendered = _dump_toml(raw)
-        # Parse before replacement. Failed writes leave the original file intact.
-        tomllib.loads(rendered)
-        temporary = None
-        try:
-            if config_path.exists():
-                _backup_config(config_path, config_path.parent / 'work' / 'config_backups')
-            with tempfile.NamedTemporaryFile('w', dir=config_path.parent, delete=False, encoding='utf-8') as stream:
-                temporary = Path(stream.name)
-                stream.write(rendered)
-                stream.flush()
-                os.fsync(stream.fileno())
-            load_settings(temporary)
-            temporary.replace(config_path)
-        except (OSError, ValueError):
-            return {'ok': False, 'message': '应用设置未写入，原配置已保留'}
-        finally:
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
-    return application_config(config_path)
+        settings = load_settings(config_path)
+        return {"ok": True, "storage": {"work_dir": str(settings.paths.work_dir.resolve())}}
+    except (OSError, ValueError, TypeError, KeyError):
+        return {"ok": False, "message": "数据位置未获取，请检查服务后重试"}

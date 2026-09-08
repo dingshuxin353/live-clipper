@@ -192,8 +192,8 @@ describe("Venus 1.0 core workbench", () => {
 
   it("keeps application settings separate from the resource workspace", async () => {
     installFetchMock(); route("/settings"); const view = render(<App />);
-    expect(await screen.findByRole("heading", { name: "应用设置" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "保存应用设置" })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "设置" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "保存应用设置" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("录像目录")).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/API Key/)).not.toBeInTheDocument();
     view.unmount(); route("/resources"); render(<App />);

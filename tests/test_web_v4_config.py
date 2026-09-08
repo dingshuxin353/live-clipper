@@ -67,12 +67,12 @@ def test_application_api_excludes_model_configuration_and_rejects_legacy_write(t
     before = paths.config_path.read_bytes()
     status, _, payload = handle_api_request("GET", "/api/config", paths)
     assert status == 200
-    assert "llm" not in payload["config"]
-    assert "asr" not in payload["config"]
+    assert set(payload) == {"ok", "storage"}
+    assert Path(payload["storage"]["work_dir"]).is_absolute()
     assert "secret-token" not in str(payload)
     status, _, rejected = handle_api_request("POST", "/api/config", paths,
-        body={"expected_revision": payload["revision"], "config": {"llm": {"model": "legacy"}}})
-    assert status == 409
+        body={"expected_revision": "retired-revision", "config": {"llm": {"model": "legacy"}}})
+    assert status == 410
     assert not rejected["ok"]
     assert paths.config_path.read_bytes() == before
 

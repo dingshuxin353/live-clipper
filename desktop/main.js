@@ -9,6 +9,7 @@ const { checkMediaTools } = require("./media-runtime");
 const {
   appUrl,
   createBadgePoller,
+  createDataDirectoryActions,
   createFileSelections,
   createFolderSelection,
   createMigrationActions,
@@ -30,6 +31,7 @@ let outputActions = null;
 let fileSelections = null;
 let folderSelection = null;
 let migrationActions = null;
+let dataDirectoryActions = null;
 let appHome = null;
 let startupRefresh = null;
 let updateCheckTimer = null;
@@ -109,6 +111,21 @@ function assertTrustedRenderer(event) {
     throw new Error("桌面操作来源无效");
   }
 }
+
+ipcMain.handle("lc:application-info", (event) => {
+  assertTrustedRenderer(event);
+  if (!runtime.canStart()) throw new Error("Venus 正在退出");
+  return { version: app.getVersion(), app_home: appHome, platform: process.platform, arch: process.arch };
+});
+ipcMain.handle("lc:open-data-directory", (event, id) => {
+  assertTrustedRenderer(event);
+  if (!dataDirectoryActions) throw new Error("Venus 服务尚未启动，请稍后重试");
+  return dataDirectoryActions.open(id);
+});
+ipcMain.handle("lc:check-for-updates", (event) => {
+  assertTrustedRenderer(event);
+  return checkForUpdates(true);
+});
 
 ipcMain.handle("lc:select-folder", async (event, title) => {
   assertTrustedRenderer(event);
@@ -192,26 +209,35 @@ function createApplicationMenu() {
 
 let updater = null;
 let updateDownloaded = false;
+let updateCheckPromise = null;
+let interactiveUpdatePromise = null;
+let updateConfirmation = null;
 
 function setupAutoUpdater() {
   ({ autoUpdater: updater } = require("electron-updater"));
   updater.autoDownload = true;
   updater.autoInstallOnAppQuit = false;
-  updater.on("update-downloaded", async (info) => {
-    if (runtime.isRestricted()) return;
+  updater.on("update-downloaded", () => {
     updateDownloaded = true;
-    const { response } = await dialog.showMessageBox({
-      type: "info",
-      message: `新版本 ${info.version} 已下载完成`,
-      detail: "重启 Venus 即可完成更新。",
-      buttons: ["立即重启更新", "以后再说"],
-      defaultId: 0,
+    if (runtime.canUseProjectFeatures()) void confirmDownloadedUpdate().catch(() => {
+      dialog.showErrorBox("更新", "暂时无法重启更新，请稍后重试。");
     });
-    if (response === 0) installDownloadedUpdate();
   });
   updater.on("error", () => {
     // Silent: update failures must never disturb normal usage.
   });
+}
+
+function confirmDownloadedUpdate() {
+  if (updateConfirmation) return updateConfirmation;
+  updateConfirmation = (async () => {
+    const { response } = await dialog.showMessageBox({
+      type: "info", message: "新版本已下载完成", detail: "重启 Venus 即可完成更新。",
+      buttons: ["重启并更新", "稍后"], defaultId: 1, cancelId: 1,
+    });
+    if (response === 0) await installDownloadedUpdate();
+  })().finally(() => { updateConfirmation = null; });
+  return updateConfirmation;
 }
 
 async function installDownloadedUpdate() {
@@ -269,44 +295,51 @@ function isNewerVersion(latest, current) {
   return false;
 }
 
-async function checkForUpdates(interactive) {
-  if (!runtime.canUseProjectFeatures()) return false;
-  if (app.isPackaged) {
-    if (!updater) setupAutoUpdater();
-    if (updateDownloaded) {
-      installDownloadedUpdate();
-      return;
-    }
-    try {
-      const result = await updater.checkForUpdates();
-      const latestVersion = result?.updateInfo?.version;
-      if (interactive && latestVersion && !isNewerVersion(latestVersion, app.getVersion())) {
-        dialog.showMessageBox({ type: "info", message: "已是最新版本", detail: `当前版本 ${app.getVersion()}。` });
-      }
-    } catch (error) {
-      if (interactive) dialog.showErrorBox("检查更新", `暂时无法检查更新：${error.message}`);
-    }
-    return;
-  }
-  let latest;
+function checkForUpdates(interactive) {
+  if (!runtime.canUseProjectFeatures()) return Promise.resolve({ ok: false });
+  if (interactive && interactiveUpdatePromise) return interactiveUpdatePromise;
+  if (!updateCheckPromise) updateCheckPromise = readUpdateInfo().finally(() => { updateCheckPromise = null; });
+  if (!interactive) return updateCheckPromise;
+  interactiveUpdatePromise = updateCheckPromise.then(showUpdateResult).finally(() => { interactiveUpdatePromise = null; });
+  return interactiveUpdatePromise;
+}
+
+async function readUpdateInfo() {
   try {
-    latest = await fetchLatestVersion();
-  } catch (error) {
-    if (interactive) dialog.showErrorBox("检查更新", `暂时无法检查更新：${error.message}`);
-    return;
+    if (app.isPackaged && !updater) setupAutoUpdater();
+    if (updateDownloaded) return { ok: true, downloaded: true };
+    const latest = app.isPackaged ? (await updater.checkForUpdates())?.updateInfo?.version : await fetchLatestVersion();
+    if (typeof latest !== "string" || !/^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(latest)) throw new Error("invalid version");
+    return { ok: true, latest };
+  } catch {
+    return { ok: false };
   }
-  if (!latest) return;
-  if (isNewerVersion(latest, app.getVersion())) {
-    const { response } = await dialog.showMessageBox({
-      type: "info",
-      message: `发现新版本 ${latest}`,
-      detail: `当前版本 ${app.getVersion()}。前往下载页获取更新。`,
-      buttons: ["去下载", "以后再说"],
-      defaultId: 0,
-    });
-    if (response === 0) shell.openExternal(UPDATE_RELEASES_PAGE);
-  } else if (interactive) {
-    dialog.showMessageBox({ type: "info", message: "已是最新版本", detail: `当前版本 ${app.getVersion()}。` });
+}
+
+async function showUpdateResult(result) {
+  if (!runtime.canUseProjectFeatures()) return { ok: false };
+  try {
+    if (!result.ok) throw new Error("check failed");
+    if (result.downloaded || updateDownloaded) {
+      await confirmDownloadedUpdate();
+    } else if (isNewerVersion(result.latest, app.getVersion())) {
+      if (!app.isPackaged) {
+        const { response } = await dialog.showMessageBox({
+          type: "info", message: `发现新版本 ${result.latest}`,
+          detail: `当前版本 ${app.getVersion()}。前往下载页获取更新。`,
+          buttons: ["去下载", "稍后"], defaultId: 1, cancelId: 1,
+        });
+        if (response === 0) await shell.openExternal(UPDATE_RELEASES_PAGE);
+      } else {
+        await dialog.showMessageBox({ type: "info", message: `发现新版本 ${result.latest}`, detail: "下载完成后将提示你确认重启更新。" });
+      }
+    } else {
+      await dialog.showMessageBox({ type: "info", message: "已是最新版本", detail: `当前版本 ${app.getVersion()}。` });
+    }
+    return { ok: true };
+  } catch {
+    dialog.showErrorBox("检查更新", "暂时无法检查更新，请稍后重试。");
+    return { ok: false };
   }
 }
 
@@ -443,6 +476,7 @@ async function shutdownBackend() {
     fileSelections = null;
     folderSelection = null;
     migrationActions = null;
+    dataDirectoryActions = null;
     return;
   }
   const proc = backendProcess;
@@ -467,6 +501,7 @@ async function shutdownBackend() {
   fileSelections = null;
   folderSelection = null;
   migrationActions = null;
+  dataDirectoryActions = null;
 }
 
 async function prepareForQuit() {
@@ -493,6 +528,7 @@ if (!app.requestSingleInstanceLock()) {
       if (app.isPackaged) checkMediaTools(process.resourcesPath);
       backendPort = await findFreePort();
       backendClient = new BackendClient({ port: backendPort, token: backendToken });
+      dataDirectoryActions = createDataDirectoryActions({ client: backendClient, shell, runtime, appHome });
       outputActions = createOutputActions({ client: backendClient, shell, runtime });
       fileSelections = createFileSelections({
         client: backendClient,

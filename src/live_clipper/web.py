@@ -947,12 +947,13 @@ def handle_api_request(
             )
         if method == "POST" and parts[:3] == ["api", "asr", "models"]:
             return _json_response(_structured_error('resource_route_retired', '请从资源页准备或删除模型'), status=410)
-        if method == "GET" and parts in (["api", "config"], ["api", "settings"]):
+        if method == "GET" and parts == ["api", "config"]:
             payload = config_editor.application_config(paths.config_path)
             return _json_response(payload, status=200 if payload['ok'] else 409)
         if method == "POST" and parts == ["api", "config"]:
-            payload = config_editor.save_application_config(paths.config_path, body or {})
-            return _json_response(payload, status=200 if payload['ok'] else 409)
+            return _json_response(_structured_error('settings_read_only', '设置已改为只读，应用参数编辑入口已退出'), status=410)
+        if method == "GET" and parts == ["api", "settings"]:
+            return _json_response(_structured_error('settings_route_retired', '此入口已退出，请使用 /api/config 查看数据位置'), status=410)
         if method == "POST" and parts[:2] == ["api", "config"]:
             return _json_response(_structured_error('resource_route_retired', '请在资源页提交模型配置'), status=410)
         if method == "GET" and parts == ["api", "scheduler"]:

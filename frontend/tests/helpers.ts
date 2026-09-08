@@ -174,16 +174,7 @@ export function installFetchMock(overrides: Record<string, unknown> = {}) {
     "/api/runs": { ok: true, runs: [] },
     "/api/confirmations": { ok: true, confirmations: [] },
     "/api/events": { ok: true, events: [] },
-    "/api/config": {
-      ok: true,
-      revision: 'app-revision',
-      config: { paths: { glossary_path: '/glossary.json' }, scheduler: { timezone: 'Asia/Tokyo', tick_seconds: 30 }, service: { stuck_after_minutes: 60 }, review_automation: { timeout_minutes: 60 }, review_automation_model: { max_candidates: 40 } },
-      storage: { work_dir: '/work', workspace_root: '/workspace' }, connection: { host: '127.0.0.1', port: 8765 },
-      config_path: "live-clipper.toml",
-      exists: true,
-      env_status: {},
-      warnings: [],
-    },
+    "/api/config": { ok: true, storage: { work_dir: '/work' } },
     "/api/scheduler": { ok: true, scheduler: { enabled: true }, jobs: [] },
     "/api/review-automation": {
       ok: true,

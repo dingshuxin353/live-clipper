@@ -1,6 +1,30 @@
 const nodeFs = require("fs");
 const path = require("path");
 
+function createDataDirectoryActions({ client, shell, runtime, appHome, fs = nodeFs }) {
+  const inFlight = new Map();
+  return {
+    open(id) {
+      if (id !== "app" && id !== "work") throw new Error("数据目录标识无效");
+      if (!runtime.canStart()) throw new Error("Venus 正在退出");
+      return reuseInFlight(inFlight, id, async () => {
+        try {
+          const target = id === "app" ? appHome : (await client.request("/api/config"))?.storage?.work_dir;
+          if (typeof target !== "string" || !path.isAbsolute(target) || !fs.statSync(target).isDirectory()) {
+            throw new Error("unavailable");
+          }
+          if (!runtime.canStart()) throw new Error("quitting");
+          const error = await shell.openPath(target);
+          if (error) throw new Error("open failed");
+          return { ok: true };
+        } catch {
+          throw new Error("目录不可用或打开失败，请检查目录后重试");
+        }
+      });
+    },
+  };
+}
+
 function formatBadgeCount(value) {
   const count = Number(value);
   return Number.isFinite(count) && count > 0 ? String(Math.floor(count)) : "";
@@ -358,6 +382,7 @@ function isInternalAppUrl(value, port) {
 }
 
 module.exports = {
+  createDataDirectoryActions,
   appUrl,
   createBadgePoller,
   createFileSelections,
