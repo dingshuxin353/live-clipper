@@ -60,7 +60,7 @@ describe("Venus 1.0 core workbench", () => {
       "/api/onboarding": { ...WORKBENCH_ONBOARDING, entry: { mode: "onboarding", onboarding: "new", reason_code: null, evidence_codes: [] }, session: null },
       "/api/onboarding/start": { ok: true, session },
     });
-    render(<App />); expect(await screen.findByRole("dialog", { name: "开始" })).toBeVisible();
+    render(<App />); await waitFor(() => expect(screen.getByRole("dialog", { name: "开始" })).toBeVisible());
     expect(calls.some(([path]) => path === "/api/onboarding/start")).toBe(true);
   });
 
@@ -81,7 +81,7 @@ describe("Venus 1.0 core workbench", () => {
       "/api/onboarding/pause": { ok: true, session: paused },
     });
     render(<App />); const dialog = await screen.findByRole("dialog", { name: "开始" });
-    const pauseButton = within(dialog).getAllByRole("button", { name: "稍后继续" })[0]; await waitFor(() => expect(pauseButton).toBeEnabled()); fireEvent.keyDown(document, { key: "Escape" });
+    const pauseButton = within(dialog).getAllByRole("button", { name: "稍后继续" })[0]; await waitFor(() => expect(pauseButton).toBeEnabled()); fireEvent.keyDown(dialog, { key: "Escape" });
     const pausedCard = (await screen.findByText("首次设置尚未完成")).closest("article"); expect(pausedCard).not.toBeNull();
     const resume = within(pausedCard!).getByRole("button", { name: "继续首次设置" }); await waitFor(() => expect(resume).toHaveFocus());
   });

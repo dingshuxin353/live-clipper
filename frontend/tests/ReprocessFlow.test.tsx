@@ -165,15 +165,16 @@ describe("Spec T reprocess and version flow", () => {
   });
 
   it("traps initial focus and restores it after Escape", async () => {
-    mocks(); render(<App />);
+    const calls = mocks(); render(<App />);
     const trigger = await screen.findByRole("button", { name: "重新处理" });
     trigger.focus();
     fireEvent.click(trigger);
     const dialog = await screen.findByRole("dialog", { name: "重新处理这条录像" });
     await waitFor(() => expect(within(dialog).getByRole("button", { name: "关闭" })).toHaveFocus());
-    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "重新处理这条录像" })).not.toBeInTheDocument());
     expect(trigger).toHaveFocus();
+    expect(calls.filter(([path]) => path.endsWith("/reprocess-preflight"))).toHaveLength(1);
   });
 
   it("uses API order for versions, navigates real runs, and compares only backend-marked fields", async () => {

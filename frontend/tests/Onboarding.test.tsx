@@ -53,11 +53,11 @@ function renderOnboarding(snapshot = onboardingSnapshot(), handlers: Partial<Rea
 }
 
 describe("five-step first-run setup", () => {
-  it("renders the confirmed five-step structure and never exposes the workbench", () => {
+  it("renders the confirmed five-step structure and never exposes the workbench", async () => {
     installFetchMock(); renderOnboarding();
     expect(screen.getByLabelText("首次设置步骤")).toBeVisible();
     for (const label of ["开始", "语音识别", "AI 服务", "第一个项目", "完成"]) expect(screen.getAllByText(label).length).toBeGreaterThan(0);
-    expect(screen.getByRole("dialog", { name: "开始" })).toHaveAttribute("aria-modal", "true");
+    expect(await screen.findByRole("dialog", { name: "开始" })).toHaveAttribute("aria-modal", "true");
     expect(screen.queryByText("新建项目")).not.toBeInTheDocument();
   });
 
@@ -105,8 +105,8 @@ describe("five-step first-run setup", () => {
     const calls = installFetchMock({ "/api/resources": { resources: [{ resource_id: "speech", name: "课程识别", ready: true, config: { purposes: ["asr"] }, validation: { asr: { state: "ready" } } }] } }, session);
     renderOnboarding(onboardingSnapshot(session));
     expect(screen.getByRole("button", { name: "继续" })).toBeDisabled();
-    await screen.findByRole("option", { name: /课程识别/ });
-    fireEvent.change(screen.getByLabelText("资源"), { target: { value: "speech" } });
+    fireEvent.click(screen.getByRole("combobox", { name: "资源" }));
+    fireEvent.click(await screen.findByRole("option", { name: /课程识别/ }));
     expect(screen.getByRole("button", { name: "继续" })).toBeEnabled();
     fireEvent.click(screen.getByRole("button", { name: "继续" }));
     await waitFor(() => expect(calls.some(([path]) => path === "/api/onboarding/session")).toBe(true));
@@ -118,17 +118,30 @@ describe("five-step first-run setup", () => {
   it("blocks analysis-only evidence when onboarding also needs review", async () => {
     const session = { ...SESSION, current_step: "ai" as const, draft: { ai: { resource_id: "analysis" } } };
     installFetchMock({ "/api/resources": { resources: [{ resource_id: "analysis", name: "仅分析", ready: false, config: { purposes: ["analysis", "review"] }, validation: { analysis: { state: "ready" } } }] } }, session);
-    renderOnboarding(onboardingSnapshot(session)); await screen.findByRole("option", { name: /仅分析/ });
+    renderOnboarding(onboardingSnapshot(session)); await waitFor(() => expect(screen.getByRole("combobox", { name: "资源" })).toHaveTextContent("仅分析"));
     expect(screen.getByRole("button", { name: "继续" })).toBeDisabled();
     expect(screen.getByText("所选资源尚未就绪")).toBeVisible();
+  });
+
+  it("closes only the nested draft confirmation on Escape", async () => {
+    const session = { ...SESSION, current_step: "ai" as const };
+    const calls = installFetchMock({}, session); renderOnboarding(onboardingSnapshot(session));
+    fireEvent.click(screen.getByRole("button", { name: "添加资源" }));
+    fireEvent.change(await screen.findByLabelText(/资源名称/), { target: { value: "嵌套草稿" } });
+    fireEvent.click(screen.getByRole("button", { name: "返回" }));
+    const child = await screen.findByRole("dialog", { name: "离开配置？" });
+    fireEvent.keyDown(child, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "离开配置？" })).not.toBeInTheDocument());
+    expect(screen.getByLabelText("首次设置步骤")).toBeVisible();
+    expect(calls.some(([path]) => path === "/api/onboarding/pause")).toBe(false);
   });
 
   it("opens the same resource editor inside the first-run guide", async () => {
     const session = { ...SESSION, current_step: "ai" as const };
     installFetchMock({}, session); renderOnboarding(onboardingSnapshot(session));
     fireEvent.click(screen.getByRole("button", { name: "添加资源" }));
-    expect(await screen.findByLabelText("资源名称")).toBeVisible();
-    expect(screen.getAllByLabelText("资源名称")).toHaveLength(1);
+    expect(await screen.findByLabelText(/资源名称/)).toBeVisible();
+    expect(screen.getAllByLabelText(/资源名称/)).toHaveLength(1);
     expect(screen.getByLabelText("首次设置步骤")).toBeVisible();
   });
 
