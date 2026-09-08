@@ -725,6 +725,27 @@ def run_cleanup(run_dir: Path, *, input_dir: Path = Path("input"), confirm: bool
     return report
 
 
+def _record_analysis_failure(args, error: CheapModelServiceError) -> None:
+    if error.code != "analysis_output_invalid" or not getattr(args, "project_run", None):
+        return
+    from .project_storage import ProjectRepository
+
+    with ProjectRepository(args.service_dir) as repository:
+        run = repository.get_run(args.project_run)
+        if run is None:
+            raise KeyError(args.project_run)
+        with repository.transaction():
+            repository.transition_run(run.run_id, status="failed", stage="analyze", event_type="failed",
+                                      error_code=error.code, error_summary="AI 分析响应不符合候选合同，未生成可信候选")
+            repository.discover_issue(
+                issue_code=error.code, category="ai", scope_type="run", project_id=run.project_id,
+                run_id=run.run_id, issue_group_key=f"{error.code}:{run.run_id}",
+                title="AI 分析结果无效", summary="模型响应未通过候选校验",
+                preserved_content="来源录像、转写和已完成窗口保留",
+                next_step="检查分析资源后使用重新处理创建新记录", recovery_capability="none",
+            )
+
+
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
@@ -790,6 +811,9 @@ def main() -> None:
                 **pipeline_kwargs,
             )
         except CheapModelServiceError as exc:
+            _record_analysis_failure(args, exc)
+            if exc.code == "analysis_output_invalid":
+                raise SystemExit(f"{exc}\nAI 分析结果无效；已完成内容保留，请检查资源后重新处理。") from None
             raise SystemExit(
                 f"{exc}\n进度已经写入断点文件。请重新运行同一条 pipeline 命令继续。"
             ) from None
@@ -804,6 +828,9 @@ def main() -> None:
                 **scan_kwargs,
             )
         except CheapModelServiceError as exc:
+            _record_analysis_failure(args, exc)
+            if exc.code == "analysis_output_invalid":
+                raise SystemExit(f"{exc}\nAI 分析结果无效；已完成内容保留，请检查资源后重新处理。") from None
             raise SystemExit(
                 f"{exc}\n进度已经写入断点文件。请使用同一条命令加 --resume 继续。"
             ) from None

@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from live_clipper.cheap_model_client import CheapModelServiceError
 from live_clipper.scan_windows import scan_windows_file
 from live_clipper.utils import read_json, write_json
 
@@ -185,7 +186,7 @@ def test_scan_windows_file_resume_skips_checkpointed_windows(tmp_path):
     assert not checkpoint_path.exists()
 
 
-def test_scan_windows_file_skips_invalid_model_candidate(tmp_path, monkeypatch):
+def test_scan_windows_file_rejects_invalid_model_candidate(tmp_path, monkeypatch):
     class InvalidClient:
         def complete_json(self, system_prompt, user_payload, max_tokens=2048, temperature=0.1):
             return {
@@ -193,7 +194,7 @@ def test_scan_windows_file_skips_invalid_model_candidate(tmp_path, monkeypatch):
                 "candidates": [
                     {
                         "start": 10.0,
-                        "end": 9.0,
+                        "end": 50.0,
                         "score": 99,
                         "clip_type": "insight",
                         "hook": "bad",
@@ -215,16 +216,13 @@ def test_scan_windows_file_skips_invalid_model_candidate(tmp_path, monkeypatch):
         }
     ])
 
-    candidates = scan_windows_file(windows_path, output_path, InvalidClient())
-
-    assert candidates == []
-    assert read_json(output_path) == []
-
+    with pytest.raises(CheapModelServiceError, match="analysis_output_invalid"):
+        scan_windows_file(windows_path, output_path, InvalidClient())
+    assert not output_path.exists()
+    assert not output_path.with_name("cheap_candidates.partial.json").exists()
     logs = list(Path("work/logs").glob("scan_windows_validation_failure_*.json"))
     assert len(logs) == 1
-    log = read_json(logs[0])
-    assert log["window_id"] == "w0001"
-    assert log["model_response"]["candidates"][0]["score"] == 99
+    assert read_json(logs[0]) == {"window_id": "w0001", "code": "analysis_output_invalid"}
 
 
 def test_scan_windows_file_defaults_non_numeric_suggested_context_fields(tmp_path):
@@ -265,7 +263,7 @@ def test_scan_windows_file_defaults_non_numeric_suggested_context_fields(tmp_pat
     assert read_json(output_path)[0]["suggested_context_before"] == 0.0
 
 
-def test_scan_windows_file_skips_response_missing_candidates(tmp_path, monkeypatch):
+def test_scan_windows_file_rejects_response_missing_candidates(tmp_path, monkeypatch):
     class MissingCandidatesClient:
         def complete_json(self, system_prompt, user_payload, max_tokens=2048, temperature=0.1):
             return {"window_id": user_payload["id"]}
@@ -282,17 +280,16 @@ def test_scan_windows_file_skips_response_missing_candidates(tmp_path, monkeypat
         }
     ])
 
-    candidates = scan_windows_file(windows_path, output_path, MissingCandidatesClient())
-
-    assert candidates == []
-    assert read_json(output_path) == []
-
+    with pytest.raises(CheapModelServiceError, match="analysis_output_invalid"):
+        scan_windows_file(windows_path, output_path, MissingCandidatesClient())
+    assert not output_path.exists()
+    assert not output_path.with_name("cheap_candidates.partial.json").exists()
     logs = list(Path("work/logs").glob("scan_windows_validation_failure_*.json"))
     assert len(logs) == 1
-    assert read_json(logs[0])["model_response"] == {"window_id": "w0001"}
+    assert read_json(logs[0]) == {"window_id": "w0001", "code": "analysis_output_invalid"}
 
 
-def test_scan_windows_file_skips_non_object_window_response(tmp_path, monkeypatch):
+def test_scan_windows_file_rejects_non_object_window_response(tmp_path, monkeypatch):
     class NonObjectWindowClient:
         def complete_json(self, system_prompt, user_payload, max_tokens=2048, temperature=0.1):
             return ["bad response"]
@@ -309,16 +306,16 @@ def test_scan_windows_file_skips_non_object_window_response(tmp_path, monkeypatc
         }
     ])
 
-    candidates = scan_windows_file(windows_path, output_path, NonObjectWindowClient())
-
-    assert candidates == []
-    assert read_json(output_path) == []
+    with pytest.raises(CheapModelServiceError, match="analysis_output_invalid"):
+        scan_windows_file(windows_path, output_path, NonObjectWindowClient())
+    assert not output_path.exists()
+    assert not output_path.with_name("cheap_candidates.partial.json").exists()
     logs = list(Path("work/logs").glob("scan_windows_validation_failure_*.json"))
     assert len(logs) == 1
-    assert read_json(logs[0])["model_response"] == ["bad response"]
+    assert read_json(logs[0]) == {"window_id": "w0001", "code": "analysis_output_invalid"}
 
 
-def test_scan_windows_file_skips_mismatched_window_id(tmp_path, monkeypatch):
+def test_scan_windows_file_rejects_mismatched_window_id(tmp_path, monkeypatch):
     class MismatchedWindowClient:
         def complete_json(self, system_prompt, user_payload, max_tokens=2048, temperature=0.1):
             return {"window_id": "other", "candidates": []}
@@ -335,17 +332,16 @@ def test_scan_windows_file_skips_mismatched_window_id(tmp_path, monkeypatch):
         }
     ])
 
-    candidates = scan_windows_file(windows_path, output_path, MismatchedWindowClient())
-
-    assert candidates == []
-    assert read_json(output_path) == []
-
+    with pytest.raises(CheapModelServiceError, match="analysis_output_invalid"):
+        scan_windows_file(windows_path, output_path, MismatchedWindowClient())
+    assert not output_path.exists()
+    assert not output_path.with_name("cheap_candidates.partial.json").exists()
     logs = list(Path("work/logs").glob("scan_windows_validation_failure_*.json"))
     assert len(logs) == 1
-    assert read_json(logs[0])["model_response"]["window_id"] == "other"
+    assert read_json(logs[0]) == {"window_id": "w0001", "code": "analysis_output_invalid"}
 
 
-def test_scan_windows_file_skips_non_object_candidate(tmp_path, monkeypatch):
+def test_scan_windows_file_rejects_non_object_candidate(tmp_path, monkeypatch):
     class NonObjectCandidateClient:
         def complete_json(self, system_prompt, user_payload, max_tokens=2048, temperature=0.1):
             return {
@@ -376,14 +372,16 @@ def test_scan_windows_file_skips_non_object_candidate(tmp_path, monkeypatch):
         }
     ])
 
-    candidates = scan_windows_file(windows_path, output_path, NonObjectCandidateClient())
-
-    assert [candidate.id for candidate in candidates] == ["w0001-c002"]
+    with pytest.raises(CheapModelServiceError, match="analysis_output_invalid"):
+        scan_windows_file(windows_path, output_path, NonObjectCandidateClient())
+    assert not output_path.exists()
+    assert not output_path.with_name("cheap_candidates.partial.json").exists()
     logs = list(Path("work/logs").glob("scan_windows_validation_failure_*.json"))
     assert len(logs) == 1
+    assert read_json(logs[0]) == {"window_id": "w0001", "code": "analysis_output_invalid"}
 
 
-def test_scan_windows_file_skips_candidate_outside_window(tmp_path, monkeypatch):
+def test_scan_windows_file_rejects_candidate_outside_window(tmp_path, monkeypatch):
     class OutsideWindowClient:
         def complete_json(self, system_prompt, user_payload, max_tokens=2048, temperature=0.1):
             return {
@@ -413,20 +411,16 @@ def test_scan_windows_file_skips_candidate_outside_window(tmp_path, monkeypatch)
         }
     ])
 
-    candidates = scan_windows_file(windows_path, output_path, OutsideWindowClient())
-
-    assert candidates == []
-    assert read_json(output_path) == []
-
+    with pytest.raises(CheapModelServiceError, match="analysis_output_invalid"):
+        scan_windows_file(windows_path, output_path, OutsideWindowClient())
+    assert not output_path.exists()
+    assert not output_path.with_name("cheap_candidates.partial.json").exists()
     logs = list(Path("work/logs").glob("scan_windows_validation_failure_*.json"))
     assert len(logs) == 1
-    log = read_json(logs[0])
-    assert log["window_id"] == "w0001"
-    assert log["candidate_index"] == 1
-    assert log["model_response"]["candidates"][0]["start"] == 250.0
+    assert read_json(logs[0]) == {"window_id": "w0001", "code": "analysis_output_invalid"}
 
 
-def test_scan_windows_file_skips_duplicate_candidate_ids(tmp_path, monkeypatch):
+def test_scan_windows_file_rejects_duplicate_candidate_ids(tmp_path, monkeypatch):
     class DuplicateCandidateIdClient:
         def complete_json(self, system_prompt, user_payload, max_tokens=2048, temperature=0.1):
             return {
@@ -467,12 +461,30 @@ def test_scan_windows_file_skips_duplicate_candidate_ids(tmp_path, monkeypatch):
         }
     ])
 
-    candidates = scan_windows_file(windows_path, output_path, DuplicateCandidateIdClient())
-
-    assert [candidate.id for candidate in candidates] == ["dup-clip"]
-    assert [item["id"] for item in read_json(output_path)] == ["dup-clip"]
-
+    with pytest.raises(CheapModelServiceError, match="analysis_output_invalid"):
+        scan_windows_file(windows_path, output_path, DuplicateCandidateIdClient())
+    assert not output_path.exists()
+    assert not output_path.with_name("cheap_candidates.partial.json").exists()
     logs = list(Path("work/logs").glob("scan_windows_validation_failure_*.json"))
     assert len(logs) == 1
-    log = read_json(logs[0])
-    assert log["candidate_id"] == "dup-clip"
+    assert read_json(logs[0]) == {"window_id": "w0001", "code": "analysis_output_invalid"}
+
+
+
+def test_new_run_does_not_deduplicate_candidates_from_another_run(tmp_path):
+    windows = tmp_path / "windows.json"
+    write_json(windows, [{"id": "w0001", "start": 0, "end": 90, "sentences": []}])
+    first = scan_windows_file(windows, tmp_path / "first" / "cheap_candidates.json", FakeClient())
+    second = scan_windows_file(windows, tmp_path / "second" / "cheap_candidates.json", FakeClient(), resume=True)
+    assert first == second and len(second) == 1
+
+
+def test_legitimate_empty_analysis_remains_successful(tmp_path):
+    windows = tmp_path / "windows.json"
+    output = tmp_path / "cheap_candidates.json"
+    write_json(windows, [{"id": "w0001", "start": 0, "end": 90, "sentences": []}])
+    class EmptyClient:
+        def complete_json(self, _prompt, payload, **_kwargs):
+            return {"window_id": payload["id"], "candidates": []}
+    assert scan_windows_file(windows, output, EmptyClient()) == []
+    assert read_json(output) == []

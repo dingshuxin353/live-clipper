@@ -1077,3 +1077,25 @@ def test_run_app_restores_workbench_without_rewriting_current_config_or_database
     assert captured["embedded_service_dir"] == service_dir
     assert config_path.read_bytes() == config_before
     assert database_path(service_dir).read_bytes() == database_before
+
+
+@pytest.mark.parametrize("command", ["scan", "pipeline"])
+def test_invalid_analysis_reaches_durable_failed_run(tmp_path, monkeypatch, command):
+    import sys
+
+    from test_project_auto_review_v2 import _project_run
+
+    from live_clipper.cheap_model_client import CheapModelServiceError
+
+    repository, _project, run, _run_dir, _output = _project_run(tmp_path, candidates=[])
+    def invalid(*_args, **_kwargs):
+        raise CheapModelServiceError("analysis_output_invalid")
+    monkeypatch.setattr(cli, "run_scan" if command == "scan" else "run_pipeline", invalid)
+    monkeypatch.setattr(sys, "argv", ["live-clipper", command, run.latest_seen_path,
+                                      "--project-run", run.run_id, "--service-dir", str(repository.service_dir)])
+    monkeypatch.setenv("LIVE_CLIPPER_PROJECT_RUN", "")
+    with pytest.raises(SystemExit, match="analysis_output_invalid"):
+        cli.main()
+    assert repository.get_run(run.run_id).status == "failed"
+    assert repository.get_run(run.run_id).error_code == "analysis_output_invalid"
+    assert repository.list_issues(run_id=run.run_id, active_only=True)[0].recovery_capability == "none"

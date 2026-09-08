@@ -39,19 +39,12 @@ def probe_settings(proposal: dict[str, Any], credential: str | None) -> Settings
 
 def validate_analysis(settings: Settings) -> None:
     from .refine_candidates import _normalize_refinement
-    from .scan_windows import normalize_candidate_payload
+    from .scan_windows import validate_scan_result
 
     client = CheapModelClient(settings, request_attempts=1)
     window = TranscriptWindow(id='venus-probe', start=0, end=20, sentences=[SENTENCE])
     raw = client.complete_json(load_prompt('cheap_scan_window.md', 'scan probe'), window.model_dump(), max_tokens=4096)
-    if not isinstance(raw, dict) or raw.get('window_id') != window.id or not isinstance(raw.get('candidates'), list):
-        raise ResourceError('analysis_output_invalid')
-    identifiers = set()
-    for index, item in enumerate(raw['candidates']):
-        candidate = ClipCandidate.model_validate({'id': f'venus-probe-{index}', **normalize_candidate_payload(item)})
-        if candidate.start < window.start or candidate.end > window.end or candidate.id in identifiers:
-            raise ResourceError('analysis_output_invalid')
-        identifiers.add(candidate.id)
+    validate_scan_result(raw, window)
     corrected = client.complete_json(load_prompt('cheap_correct_transcript.md', 'correction probe'), {'sentences': [SENTENCE], 'glossary': []}, max_tokens=8192)
     if isinstance(corrected, list):
         corrected = {'sentences': corrected}
