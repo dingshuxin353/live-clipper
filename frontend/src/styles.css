@@ -1346,7 +1346,15 @@ textarea.form-control { height: auto; min-height: 88px; padding: 8px; resize: ve
 .resource-actions { display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0; }
 .resource-row { flex-wrap: wrap; overflow-wrap: anywhere; }
 .resource-editor { padding-bottom: 48px; }
-.resource-form fieldset { display: flex; gap: 18px; border: 1px solid #d6d3cc; padding: 12px; }
+.resource-form fieldset { display: flex; flex-wrap: wrap; gap: 12px 24px; border: 1px solid var(--color-border-emphasized); border-radius: var(--radius-element); padding: 16px; margin: 0; }
+.resource-form fieldset legend { padding: 0 4px; }
+.resource-form fieldset label { display: inline-flex; align-items: center; gap: 8px; line-height: 24px; cursor: pointer; }
+.resource-form fieldset input[type="checkbox"] { width: 16px; height: 16px; margin: 0; accent-color: var(--color-accent); }
+.resource-form > section { display: grid; gap: 12px; }
+.resource-form > section h2 { margin: 0; font-size: 18px; line-height: 1.5; }
+.resource-form > section p { margin: 0; line-height: 1.6; }
+.resource-form > section > .button { justify-self: start; }
+.resource-form > section > [role="status"]:empty { display: none; }
 
 .remix-icon { width: 1.15em; height: 1.15em; display: inline-block; vertical-align: -0.18em; flex-shrink: 0; }
 .resource-form, .resource-form label, .resource-row > div { min-width: 0; }
@@ -1356,3 +1364,5 @@ textarea.form-control { height: auto; min-height: 88px; padding: 8px; resize: ve
 .onboarding-content .resource-editor { padding: 0; }
 .onboarding-content .resource-form { max-width: 100%; }
 @media (max-width: 1000px) { .resource-row { flex-wrap: wrap; } .resource-actions { flex-wrap: wrap; } .resource-editor .resource-form { grid-template-columns: 1fr; } }
+
+.resource-form select.form-control { appearance: none; padding-right: 36px; background-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22%236b6475%22%3E%3Cpath%20d%3D%22M11.9999%2013.1714L16.9497%208.22168L18.3639%209.63589L11.9999%2015.9999L5.63599%209.63589L7.0502%208.22168L11.9999%2013.1714Z%22%2F%3E%3C%2Fsvg%3E"); background-repeat: no-repeat; background-position: right 12px center; background-size: 16px 16px; }
