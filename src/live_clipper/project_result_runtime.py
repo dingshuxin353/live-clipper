@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import errno
+import fcntl
 import hashlib
 import os
 import re
@@ -555,6 +556,41 @@ def run_project_review(
     max_candidates: int = 40,
     clock: Callable[[], datetime] | None = None,
 ) -> AIReviewSession:
+    # The run owns its evidence across worker pools and service processes.
+    with (Path(run_dir) / ".review.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        sessions = repository.list_ai_review_sessions(run_id)
+        run = repository.get_run(run_id)
+        if run is None:
+            raise KeyError(run_id)
+        if sessions and sessions[-1].status in {"selected", "no_clip"}:
+            if reconcile_review_evidence(repository, run_id, run_dir=run_dir) != "verified":
+                raise ProjectReviewError("ai_review_invalid", "registered review evidence changed")
+            return sessions[-1]
+        evidence = Path(run_dir) / "review_result.json"
+        if sessions and sessions[-1].status == "running":
+            if not evidence.is_file():
+                _mark_review_failure(repository, run, sessions[-1], code="ai_review_failed")
+                raise ProjectReviewError("ai_review_failed", "previous review outcome is unknown; do not repeat the request")
+            def adapter(_payload):
+                return read_json(evidence)
+        if sessions and run.status == "failed":
+            return sessions[-1]
+        return _run_project_review_locked(
+            repository, run_id, run_dir=run_dir, adapter=adapter,
+            max_candidates=max_candidates, clock=clock,
+        )
+
+
+def _run_project_review_locked(
+    repository: ProjectRepository,
+    run_id: str,
+    *,
+    run_dir: str | Path,
+    adapter: ReviewAdapter,
+    max_candidates: int,
+    clock: Callable[[], datetime] | None,
+) -> AIReviewSession:
     run = repository.get_run(run_id)
     if run is None:
         raise KeyError(run_id)
@@ -1010,21 +1046,15 @@ class ProjectWorkerPool:
 
             adapter = self._review_adapter or run_structured_review_adapter
             target = work_dir / "projects" / run.project_id / "runs" / run_id
-            sessions = repository.list_ai_review_sessions(run_id)
-            evidence_path = target / "review_result.json"
-            if sessions and sessions[-1].status == "running" and evidence_path.is_file():
-                def adapter_call(_settings: Settings, _payload: dict[str, Any]) -> Mapping[str, Any]:
-                    return read_json(evidence_path)
-            else:
-                def adapter_call(_settings: Settings, payload: dict[str, Any]) -> Mapping[str, Any]:
-                    from .resource_store import ResourceError
-                    from .review_automation import ReviewAutomationError
+            def adapter_call(_settings: Settings, payload: dict[str, Any]) -> Mapping[str, Any]:
+                from .resource_store import ResourceError
+                from .review_automation import ReviewAutomationError
 
-                    try:
-                        frozen_settings = settings_for_snapshot(repository, _settings, run.parameter_snapshot, purpose='review')
-                    except ResourceError:
-                        raise ReviewAutomationError('ai_resource_unavailable', '原处理资源不可用，请查看原修订') from None
-                    return adapter(frozen_settings, payload)
+                try:
+                    frozen_settings = settings_for_snapshot(repository, _settings, run.parameter_snapshot, purpose='review')
+                except ResourceError:
+                    raise ReviewAutomationError('ai_resource_unavailable', '原处理资源不可用，请查看原修订') from None
+                return adapter(frozen_settings, payload)
             run_project_review(
                 repository,
                 run_id,

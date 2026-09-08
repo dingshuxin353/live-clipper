@@ -347,7 +347,7 @@ def test_evidence_landed_before_database_failure_is_registered_on_retry(tmp_path
         repository,
         run.run_id,
         run_dir=run_dir,
-        adapter=lambda _payload: read_json(run_dir / "review_result.json"),
+        adapter=lambda _payload: pytest.fail("durable evidence must not call the adapter again"),
     )
 
     assert session.status == "no_clip"
@@ -381,3 +381,65 @@ def test_worker_tick_is_nonblocking_and_serializes_review_then_render(tmp_path):
     assert repository.get_run(run.run_id).status == "completed"
     assert repository.get_run_result(run.run_id).result_type == "clips_ready"
     assert not (run_dir / "review_result.tmp.json").exists()
+
+
+def test_concurrent_review_owners_do_not_repeat_adapter_or_replace_evidence(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    from live_clipper.project_storage import ProjectRepository
+
+    repository, _project, run, run_dir, _output = _project_run(tmp_path, candidates=[_candidate("one")])
+    entered, release, contender = Event(), Event(), Event()
+    calls = []
+
+    def adapter(_payload):
+        calls.append(1)
+        entered.set()
+        assert release.wait(5)
+        return {"format_version": 1, "overall_summary": "one", "warnings": [], "decisions": [_selected("one")]}
+
+    def execute(second=False):
+        with ProjectRepository(repository.service_dir) as repo:
+            if second:
+                contender.set()
+            return run_project_review(repo, run.run_id, run_dir=run_dir, adapter=adapter)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(execute)
+        assert entered.wait(5)
+        second = pool.submit(execute, True)
+        assert contender.wait(5)
+        release.set()
+        a, b = first.result(5), second.result(5)
+    assert calls == [1]
+    assert a.review_session_id == b.review_session_id
+    assert len(repository.list_ai_review_sessions(run.run_id)) == 1
+    assert reconcile_review_evidence(repository, run.run_id, run_dir=run_dir) == "verified"
+    digest = hashlib.sha256((run_dir / "review_result.json").read_bytes()).hexdigest()
+    run_project_review(repository, run.run_id, run_dir=run_dir, adapter=lambda _: pytest.fail("duplicate paid call"))
+    assert hashlib.sha256((run_dir / "review_result.json").read_bytes()).hexdigest() == digest
+
+
+@pytest.mark.parametrize("stage", ["review", "render"])
+def test_pipeline_reconciliation_cannot_rewind_result_worker_stages(tmp_path, stage):
+    from live_clipper.project_runtime import reconcile_processing
+
+    repository, _project, run, _run_dir, _output = _project_run(tmp_path, candidates=[_candidate("one")])
+    repository.transition_run(run.run_id, status="processing", stage=stage, event_type="started")
+    assert reconcile_processing(repository, work_dir=tmp_path / "work", stale_after_minutes=30) == []
+    assert repository.get_run(run.run_id).current_stage == stage
+
+
+def test_interrupted_review_without_evidence_does_not_repeat_paid_request(tmp_path):
+    repository, _project, run, run_dir, _output = _project_run(tmp_path, candidates=[_candidate("one")])
+    repository.create_ai_review_session(
+        run.run_id, attempt_number=1, resource_ref="test-review", model_name="test-model",
+        strategy_version="auto_review_v1", parameter_snapshot={}, evidence_relative_path="review_result.json",
+    )
+    with pytest.raises(ProjectReviewError, match="outcome is unknown"):
+        run_project_review(repository, run.run_id, run_dir=run_dir, adapter=lambda _: pytest.fail("duplicate paid call"))
+    assert len(repository.list_ai_review_sessions(run.run_id)) == 1
+    assert repository.get_run(run.run_id).status == "failed"
+    issues = repository.list_issues(run_id=run.run_id, active_only=True)
+    assert issues and all(issue.status == "action_required" and not issue.next_retry_at for issue in issues)

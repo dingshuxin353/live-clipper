@@ -172,6 +172,8 @@ def reconcile_processing(repository: ProjectRepository, *, work_dir: str | Path,
     changed = []
     current = datetime.now(UTC)
     for run in (item for item in repository.list_runs() if item.status == "processing"):
+        if run.parameter_snapshot.get("schema_version") == 2 and run.current_stage in {"review", "render"}:
+            continue  # Result workers own these stages after the pipeline handoff.
         target = run_work_dir(work_dir, run)
         clips = target / "clips"
         verified_stages = []
