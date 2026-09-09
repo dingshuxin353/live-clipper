@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -189,13 +190,20 @@ def test_partial_upload_reconciles_existing_bytes_and_only_uploads_missing(tmp_p
     verified = []
     monkeypatch.setattr(release, "verify_remote_asset", lambda _info, _tag, name, *_: verified.append(name))
     (tmp_path / "finalize").mkdir()
-    for name in ("one.zip", "two.dmg"):
-        (tmp_path / "finalize" / name).write_bytes(b"frozen")
-    final = {"assets": {name: {"size": 6, "sha256": release.sha256(tmp_path / "finalize" / name)} for name in ("one.zip", "two.dmg")}}
-    release.upload_assets(tmp_path, {"version": "1.0.2", "github": "example/repo"}, final,
-                          {"draft": True, "assets": [{"name": "one.zip"}]}, {}, tmp_path / "progress.json")
-    assert len(calls) == 1 and str(calls[0][4]).endswith("two.dmg")
-    assert verified == ["one.zip", "two.dmg"]
+    names = list(release.asset_names('1.0.2').values())
+    for name in names:
+        (tmp_path / 'finalize' / name).write_bytes(b'frozen')
+    final = {'assets': {name: {'size': 6, 'sha256': release.sha256(tmp_path / 'finalize' / name)} for name in names}}
+    release.upload_assets(tmp_path, {'version': '1.0.2', 'github': 'example/repo'}, final,
+                          {'draft': True, 'assets': [{'name': name} for name in names[:-1]]}, {}, tmp_path / 'progress.json')
+    assert len(calls) == 1 and str(calls[0][4]).endswith(names[-1])
+    assert verified == names
+    calls.clear()
+    del final['assets'][names[-1]]
+    with pytest.raises(release.ReleaseError, match='Five'):
+        release.upload_assets(tmp_path, {'version': '1.0.2'}, final, {'assets': []}, {}, tmp_path / 'progress.json')
+    assert calls == []
+
 
 
 def test_unowned_existing_release_is_never_adopted(tmp_path, monkeypatch):
@@ -218,16 +226,15 @@ def test_runtime_environment_does_not_inherit_secrets_or_real_app_home(tmp_path,
 
 
 def test_cleanup_stops_on_occupied_owned_path_and_keeps_other_data(tmp_path, monkeypatch):
-    (tmp_path / "owner.json").write_text(json.dumps({"id": "mine", "repo": str(release.ROOT)}))
-    (tmp_path / "final-manifest.json").write_text('{"assets": {}}')
-    source = tmp_path / "source"
-    source.mkdir()
-    unrelated = tmp_path / "keep"
-    unrelated.write_text("user data")
-    monkeypatch.setattr(release.subprocess, "run", lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, "123", ""))
-    with pytest.raises(release.ReleaseError, match="occupied"):
-        release.cleanup_owned(tmp_path, {"owner_id": "mine"})
-    assert source.is_dir() and unrelated.read_text() == "user data"
+    release.atomic_json(tmp_path / 'owner.json', {'format': 1, 'id': 'mine', 'repo': str(release.ROOT)})
+    source = release.owned_directory(tmp_path, 'source')
+    unrelated = tmp_path / 'keep'
+    unrelated.write_text('user data')
+    monkeypatch.setattr(release.subprocess, 'run', lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, '123', ''))
+    result = release.remove_owned(tmp_path, 'source')
+    assert not result['removed'] and 'occupied' in result['reason']
+    assert source.is_dir() and unrelated.read_text() == 'user data'
+
 
 
 @pytest.mark.parametrize("failure", ["disk", "credentials", "dirty", "old_version"])
@@ -334,11 +341,215 @@ def test_retained_release_backend_and_previous_updater(tmp_path):
     assert release.backend_smoke(tmp_path, app)["scan_preview"]["processable_files"] == 1
     serving = tmp_path / "assets"
     serving.mkdir()
-    for original in current.parent.iterdir():
-        if original.name in release.release_assets(current.parent, info["version"]).values():
-            shutil.copy2(original, serving / original.name)
+    for name in release.asset_names(info['version']).values():
+        original = current.parent / name
+        if name.endswith('-media-sources.tar.gz') and os.environ.get('VENUS_RELEASE_TEST_MEDIA_SOURCE'):
+            original = Path(os.environ['VENUS_RELEASE_TEST_MEDIA_SOURCE']).resolve()
+            originals[original] = release.sha256(original)
+        shutil.copy2(original, serving / name)
+    release.release_assets(serving, info['version'])
+    release.check_media_source(serving, app, info)
     result = release.provider_smoke(tmp_path, source, tmp_path / "previous/Venus.app", serving, info)
     assert release.version_tuple(result["previous_version"]) < release.version_tuple(result["version"])
     assert result["version"] == info["version"]
     assert result["native_installer_executed"] is False
     assert all(release.sha256(file) == digest for file, digest in originals.items())
+
+
+def test_five_assets_and_corresponding_source_notice_are_mandatory(tmp_path):
+    version = '1.0.3'
+    for name in (f'Venus-{version}-arm64.dmg', f'Venus-{version}-arm64-mac.zip',
+                 f'Venus-{version}-arm64-mac.zip.blockmap', 'latest-mac.yml'):
+        (tmp_path / name).write_bytes(b'asset')
+    with pytest.raises(release.ReleaseError, match='Five'):
+        release.release_assets(tmp_path, version)
+    source = tmp_path / f'Venus-{version}-media-sources.tar.gz'
+    source.write_bytes(b'corresponding source')
+    assert release.release_assets(tmp_path, version)['media_source'] == source.name
+    app = tmp_path / 'Venus.app'
+    notice = app / 'Contents/Resources/licenses/ffmpeg/CORRESPONDING-SOURCE.md'
+    notice.parent.mkdir(parents=True)
+    notice.write_text(f'https://github.com/example/repo/releases/download/v{version}/{source.name}\n{release.sha256(source)}')
+    release.check_media_source(tmp_path, app, {'version': version, 'github': 'example/repo'})
+    source.write_bytes(b'changed')
+    with pytest.raises(release.ReleaseError):
+        release.check_media_source(tmp_path, app, {'version': version, 'github': 'example/repo'})
+
+
+def test_shared_cache_environment_is_owned_and_separate_from_mutable_environments(tmp_path):
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    cache = release.prepare_download_cache(tmp_path, repo)
+    one = release.isolated_env(tmp_path / 'one', cache=cache)
+    two = release.isolated_env(tmp_path / 'two', cache=cache)
+    for key in ('npm_config_cache', 'PIP_CACHE_DIR', 'ELECTRON_CACHE', 'ELECTRON_BUILDER_CACHE'):
+        assert one[key] == two[key]
+        assert Path(one[key]).is_relative_to(cache)
+    assert one['HOME'] != two['HOME']
+    assert 'PYTHONPATH' not in one
+    owner = cache / 'owner.json'
+    owner.write_text('{}')
+    with pytest.raises(release.ReleaseError):
+        release.prepare_download_cache(tmp_path, repo)
+
+
+def test_cleanup_requires_registered_identity_not_directory_names(tmp_path, monkeypatch):
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    monkeypatch.setattr(release, 'ROOT', repo)
+    root = tmp_path / 'release'
+    release.create_root(root, repo, 'a' * 40)
+    known = release.owned_directory(root, 'scratch')
+    (known / 'file').write_text('temporary')
+    unknown = root / 'source'
+    unknown.mkdir()
+    (unknown / 'user').write_text('keep')
+    report = release.remove_owned(root, 'source')
+    assert not report['removed'] and unknown.is_dir()
+    report = release.remove_owned(root, 'scratch')
+    assert report['removed'] and not known.exists()
+    assert (unknown / 'user').read_text() == 'keep'
+
+
+def test_owned_cleanup_rejects_replaced_directory_and_escaping_link(tmp_path, monkeypatch):
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    monkeypatch.setattr(release, 'ROOT', repo)
+    root = tmp_path / 'release'
+    release.create_root(root, repo, 'a' * 40)
+    target = release.owned_directory(root, 'scratch')
+    target.rename(root / 'original')
+    target.mkdir()
+    assert not release.remove_owned(root, 'scratch')['removed']
+    safe = release.owned_directory(root, 'other')
+    (safe / 'escape').symlink_to(tmp_path)
+    assert not release.remove_owned(root, 'other')['removed']
+    assert safe.exists()
+
+
+def test_recovery_does_not_signal_reused_pid(tmp_path, monkeypatch):
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    monkeypatch.setattr(release, 'ROOT', repo)
+    root = tmp_path / 'release'
+    release.create_root(root, repo, 'a' * 40)
+    release.atomic_json(root / 'resources.json', {'processes': [{'pid': 12345, 'identity': 'old', 'pgid': 12345}], 'mounts': []})
+    monkeypatch.setattr(release, 'process_identity', lambda pid: 'different owner')
+    monkeypatch.setattr(release.os, 'killpg', lambda *_: pytest.fail('Must not signal reused PID'))
+    assert release.recover_resources(root)
+
+
+def test_space_report_blocks_before_install_and_identifies_unknown_residue(tmp_path, monkeypatch):
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    monkeypatch.setattr(release, 'ROOT', repo)
+    (tmp_path / 'unknown-old-build').mkdir()
+    monkeypatch.setattr(release.shutil, 'disk_usage', lambda *_: shutil._ntuple_diskusage(100, 100, 0))
+    with pytest.raises(release.ReleaseError, match='space'):
+        release.space_preflight(tmp_path / 'new', tmp_path / 'download-cache', repo)
+    assert not (tmp_path / 'new').exists()
+
+
+def test_real_process_timeout_and_recovery_leave_no_owned_service(tmp_path, monkeypatch):
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    monkeypatch.setattr(release, 'ROOT', repo)
+    root = tmp_path / 'release'
+    release.create_root(root, repo, 'a' * 40)
+    scope = release.owned_directory(root, 'probe')
+    env = release.isolated_env(scope)
+    with pytest.raises(subprocess.TimeoutExpired):
+        release.run([sys.executable, '-c', 'import signal; signal.pause()'], cwd=scope, env=env, timeout=0.2)
+    assert release.resource_state(root)['processes'] == []
+    process = subprocess.Popen([sys.executable, '-c', 'import signal; signal.pause()'], cwd=scope, start_new_session=True)
+    try:
+        release.remember_process(root, process, scope)
+        assert release.recover_resources(root) == []
+        process.wait(timeout=2)
+        assert release.resource_state(root)['processes'] == []
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=2)
+
+
+def test_cleanup_retains_two_versions_resolves_failure_and_retries(tmp_path, monkeypatch):
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    monkeypatch.setattr(release, 'ROOT', repo)
+    source = 'a' * 40
+    roots = []
+    for version in ('1.0.1', '1.0.2', '1.0.3'):
+        root = tmp_path / version
+        owner = release.create_root(root, repo, source)
+        release.atomic_json(root / 'candidate-manifest.json', {'source': source, 'owner_id': owner['id']})
+        final = release.owned_directory(root, 'finalize')
+        for name in release.asset_names(version).values():
+            (final / name).write_text(version + name)
+        release.owned_directory(root, 'source')
+        release.atomic_json(root / 'published-manifest.json', {
+            'source': source, 'tag': 'v' + version, 'github': 'test/repo', 'release_id': version,
+            'candidate_sha256': release.sha256(root / 'candidate-manifest.json'),
+            'assets': release.asset_records(final, version),
+        })
+        roots.append(root)
+    failed = tmp_path / 'failed'
+    owner = release.create_root(failed, repo, source)
+    release.owned_directory(failed, 'source')
+    release.atomic_json(failed / 'resolution.json', {
+        'owner_id': owner['id'], 'successor': str(roots[-1]), 'reason': 'test-only incident resolved',
+        'successor_candidate_sha256': release.sha256(roots[-1] / 'candidate-manifest.json'),
+    })
+    unknown = tmp_path / 'manual'
+    unknown.mkdir()
+    (unknown / 'user').write_text('keep')
+    monkeypatch.setattr(release, 'git', lambda *_: '')
+    monkeypatch.setattr(release, 'github_release', lambda _, tag: {
+        'id': tag[1:], 'draft': False, 'assets': [
+            {'name': name, 'browser_download_url': 'https://example.test/' + name}
+            for name in release.asset_names(tag[1:]).values()],
+    })
+    monkeypatch.setattr(release, 'verify_remote_asset', lambda *_: None)
+    # A real open file must prevent source removal. Retry cannot call publication.
+    with (roots[-1] / 'source/busy').open('w'):
+        report = release.cleanup(roots[-1], apply=True)
+        assert not report['cleanup_complete']
+        assert (roots[-1] / 'source').exists()
+    assert release.cleanup(roots[-1], apply=True)['cleanup_complete']
+    assert release.cleanup(roots[-1], apply=True)['cleanup_complete']
+    assert not (roots[0] / 'release-assets').exists()
+    assert not (failed / 'source').exists()
+    for root in roots[1:]:
+        done = release.published_record(root)
+        assert release.asset_records(root / 'release-assets', done['tag'][1:]) == done['assets']
+    assert (unknown / 'user').read_text() == 'keep'
+    release.prepare_download_cache(tmp_path, repo)
+    original_limit = release.limit_download_cache
+    def blocked_cache(_cache):
+        raise release.ReleaseError('cache occupied')
+    monkeypatch.setattr(release, 'limit_download_cache', blocked_cache)
+    assert not release.cleanup(roots[-1], apply=True)['cleanup_complete']
+    assert not release.published_record(roots[-1])['cleanup_complete']
+    monkeypatch.setattr(release, 'limit_download_cache', original_limit)
+    assert release.cleanup(roots[-1], apply=True)['cleanup_complete']
+
+
+@pytest.mark.skipif(sys.platform != 'darwin', reason='Real macOS mount lifecycle')
+def test_owned_mount_detaches_after_exception(tmp_path, monkeypatch):
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    monkeypatch.setattr(release, 'ROOT', repo)
+    root = tmp_path / 'release'
+    release.create_root(root, repo, 'a' * 40)
+    data = release.owned_directory(root, 'image-source')
+    (data / 'marker').write_text('isolated mount check')
+    dmg = root / 'test.dmg'
+    release.run(['hdiutil', 'create', '-srcfolder', data, '-format', 'UDZO', dmg])
+    mount = root / 'mounted'
+    with pytest.raises(RuntimeError, match='injected'):
+        with release.mounted_dmg(dmg, mount, root / 'evidence'):
+            assert (mount / 'marker').read_text() == 'isolated mount check'
+            raise RuntimeError('injected probe interruption')
+    assert not os.path.ismount(mount)
+    assert release.resource_state(root)['mounts'] == []
+    assert not mount.exists()

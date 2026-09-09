@@ -55,8 +55,41 @@ function prepareTools(desktop) {
   const expected = JSON.parse(python(desktop, ["--identity"]));
   const cache = path.join(desktop, "vendor/media-tools/darwin-arm64");
   // Existing invalid caches are evidence, not permission to rebuild or overwrite.
+  const sharedRoot = process.env.VENUS_RELEASE_MEDIA_CACHE;
+  let sharedDesktop;
+  if (sharedRoot) {
+    if (!path.isAbsolute(sharedRoot) || fs.realpathSync(sharedRoot) !== sharedRoot) throw new Error("Unsafe shared media cache");
+    const key = createHash("sha256").update(JSON.stringify(expected)).digest("hex");
+    sharedDesktop = path.join(sharedRoot, key);
+    if (fs.existsSync(sharedDesktop)) {
+      if (fs.realpathSync(sharedDesktop) !== sharedDesktop) throw new Error("Unsafe shared media entry");
+      const entries = JSON.parse(fs.readFileSync(path.join(sharedRoot, "entries.json"), "utf8"));
+      const facts = fs.statSync(sharedDesktop);
+      if (entries[key]?.device !== facts.dev || entries[key]?.inode !== facts.ino || entries[key]?.version !== expected.version) {
+        throw new Error("Shared media entry ownership mismatch");
+      }
+      verifyCache(sharedDesktop, expected);
+      if (!fs.lstatSync(cache, { throwIfNoEntry: false })) {
+        fs.mkdirSync(path.dirname(cache), { recursive: true });
+        fs.cpSync(path.join(sharedDesktop, "vendor/media-tools/darwin-arm64"), cache, { recursive: true, errorOnExist: true, force: false });
+      }
+    }
+  }
   if (!fs.lstatSync(cache, { throwIfNoEntry: false })) python(desktop, [], true);
-  return verifyCache(desktop, expected);
+  const manifest = verifyCache(desktop, expected);
+  if (sharedDesktop && !fs.existsSync(sharedDesktop)) {
+    fs.mkdirSync(path.join(sharedDesktop, path.dirname("vendor/media-tools/darwin-arm64")), { recursive: true });
+    fs.cpSync(cache, path.join(sharedDesktop, "vendor/media-tools/darwin-arm64"), { recursive: true, errorOnExist: true, force: false });
+    verifyCache(sharedDesktop, expected);
+    const record = path.join(sharedRoot, "entries.json");
+    const entries = fs.existsSync(record) ? JSON.parse(fs.readFileSync(record, "utf8")) : {};
+    const stat = fs.statSync(sharedDesktop);
+    entries[path.basename(sharedDesktop)] = { version: expected.version, device: stat.dev, inode: stat.ino };
+    if (fs.lstatSync(record, { throwIfNoEntry: false })?.isSymbolicLink()) throw new Error("Unsafe shared media index");
+    fs.writeFileSync(record + ".tmp", JSON.stringify(entries, null, 2) + "\n", { flag: "wx" });
+    fs.renameSync(record + ".tmp", record);
+  }
+  return manifest;
 }
 
 exports.default = async function beforePack(context) {

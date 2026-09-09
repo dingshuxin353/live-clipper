@@ -213,3 +213,27 @@ test("real main startup gates packaged mode before any backend setup; developmen
     if (isPackaged) assert.match(stages[0], /ffmpeg.*missing/);
   }
 });
+
+test("shared media cache copies verified bytes and refuses corrupt reuse", (t) => {
+  const { desktop, manifest } = cacheFixture(t);
+  const sharedRoot = fs.realpathSync(temporary(t));
+  const previous = process.env.VENUS_RELEASE_MEDIA_CACHE;
+  process.env.VENUS_RELEASE_MEDIA_CACHE = sharedRoot;
+  t.after(() => {
+    if (previous === undefined) delete process.env.VENUS_RELEASE_MEDIA_CACHE;
+    else process.env.VENUS_RELEASE_MEDIA_CACHE = previous;
+  });
+  t.mock.method(childProcess, "execFileSync", (_, args) => {
+    assert.ok(args.includes("--identity"), "Cache reuse must not rebuild");
+    return JSON.stringify(manifest.identity);
+  });
+  assert.deepEqual(prepareTools(desktop), manifest);
+  const other = temporary(t);
+  assert.deepEqual(prepareTools(other), manifest);
+  const key = createHash("sha256").update(JSON.stringify(manifest.identity)).digest("hex");
+  const cached = path.join(sharedRoot, key, "vendor/media-tools/darwin-arm64/ffprobe");
+  const local = path.join(other, "vendor/media-tools/darwin-arm64/ffprobe");
+  assert.notEqual(fs.statSync(cached).ino, fs.statSync(local).ino);
+  fs.writeFileSync(cached, "corrupt");
+  assert.throws(() => prepareTools(temporary(t)), /hash mismatch/);
+});

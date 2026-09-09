@@ -127,7 +127,7 @@ def run(command, cwd, env, log, timeout=900):
     print(f"Building: {log.name}", flush=True)
     with log.open("wb") as output:
         process = subprocess.Popen(command, cwd=cwd, env=env, stdout=output,
-                                   stderr=subprocess.STDOUT, start_new_session=True)
+                                   stderr=subprocess.STDOUT, start_new_session=not bool(os.environ.get("VENUS_RELEASE_ROOT")))
         deadline = time.monotonic() + timeout
         try:
             while True:
@@ -147,7 +147,10 @@ def run(command, cwd, env, log, timeout=900):
                 raise RuntimeError(f"Build failed ({code}): {log}")
         except BaseException:
             if process.poll() is None:
-                os.killpg(process.pid, signal.SIGKILL)
+                if os.environ.get("VENUS_RELEASE_ROOT"):
+                    process.kill()
+                else:
+                    os.killpg(process.pid, signal.SIGKILL)
             process.wait()
             raise
 
@@ -156,9 +159,20 @@ def obtain_sources(lock, work, env, archives=None):
     downloads = work / "archives"
     downloads.mkdir()
     sources = {}
+    shared = os.environ.get('VENUS_RELEASE_ARCHIVE_CACHE')
+    if shared:
+        shared = Path(shared)
+        if not shared.is_absolute() or shared.resolve() != shared or not shared.is_dir():
+            raise ValueError('Unsafe archive cache')
     for name, entry in lock["sources"].items():
         file = downloads / entry["file"]
-        if archives is not None:
+        cached = shared / (entry['sha256'] + '-' + entry['file']) if shared else None
+        if cached and (cached.is_symlink() or cached.resolve() != cached):
+            raise ValueError('Unsafe cached archive')
+        if cached and cached.exists():
+            verify_source(cached, entry)
+            shutil.copyfile(cached, file)
+        elif archives is not None:
             original = archives / entry["file"]
             verify_source(original, entry)
             shutil.copyfile(original, file)
@@ -181,6 +195,9 @@ def obtain_sources(lock, work, env, archives=None):
         else:
             download(entry, file)
         verify_source(file, entry)
+        if cached and not cached.exists():
+            with cached.open('xb') as target, file.open('rb') as origin:
+                shutil.copyfileobj(origin, target)
         sources[name] = unpack(file, work / f"source-{name}")
     return sources
 
@@ -222,11 +239,17 @@ def build(desktop, archives=None):
            "GIT_CONFIG_GLOBAL": os.devnull, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "/usr/bin/false",
            "CC": "clang", "CXX": "clang++", "MACOSX_DEPLOYMENT_TARGET": "14.0",
            "CFLAGS": "-mmacosx-version-min=14.0", "LDFLAGS": "-mmacosx-version-min=14.0"}
+    pip_cache = os.environ.get('PIP_CACHE_DIR')
+    if pip_cache:
+        cache = Path(pip_cache)
+        if not cache.is_absolute() or cache.resolve() != cache or not cache.is_dir():
+            raise ValueError('Unsafe pip cache')
+        env['PIP_CACHE_DIR'] = str(cache)
     sources = obtain_sources(lock, work, env, archives)
     tools = work / "tools"
     run([sys.executable, "-m", "venv", str(tools)], work, env, work / "logs/venv.log", 120)
     run([str(tools / "bin/python"), "-m", "pip", "download", "--no-deps", "--only-binary=:all:",
-         "--no-cache-dir", "--retries=0", "--timeout=30", "--index-url=https://pypi.org/simple",
+         *([] if pip_cache else ["--no-cache-dir"]), "--retries=0", "--timeout=30", "--index-url=https://pypi.org/simple",
          "--dest", "wheels", *(f"{n}=={v}" for n, v in lock["build_tools"].items())],
         work, env, work / "logs/tools-download.log", 120)
     wheels = sorted((work / "wheels").iterdir())
