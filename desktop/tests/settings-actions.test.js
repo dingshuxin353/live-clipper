@@ -25,19 +25,19 @@ test('known data directories resolve in their owning process and never create mi
 // Exercise the actual registered IPC handlers and shared updater, without a network or installer.
 function desktopHarness() {
   const handlers = {}; const events = {}; const messages = []; const order = [];
-  let response = 1; let checks = 0; let nextCheck = async () => ({ updateInfo: { version: '1.0.2' } });
+  let nextDialog; let response = 1; let checks = 0; let nextCheck = async () => ({ updateInfo: { version: '1.0.2' } });
   const updater = { on: (name, fn) => { events[name] = fn; }, checkForUpdates: () => { checks++; return nextCheck(); }, quitAndInstall: () => order.push('install') };
   const electron = {
     app: { getPath: () => '/isolated', setPath() {}, getVersion: () => '1.0.2', isPackaged: true, requestSingleInstanceLock: () => true, whenReady: () => new Promise(() => {}), on() {} },
     ipcMain: { handle: (name, fn) => { handlers[name] = fn; } },
-    dialog: { showMessageBox: async options => { messages.push(options); return { response }; }, showErrorBox: (...args) => messages.push(args) },
+    dialog: { showMessageBox: async (parent, options) => { messages.push(options); return nextDialog ? nextDialog(parent, options) : { response }; }, showErrorBox: (...args) => messages.push(args) },
   };
   const fakeFs = { ...fs, existsSync: () => true, realpathSync: value => value, mkdirSync() {} };
   const context = vm.createContext({ require: name => name === 'electron' ? electron : name === 'electron-updater' ? { autoUpdater: updater } : name === 'fs' ? fakeFs : name.startsWith('./') ? require(`../${name.slice(2)}`) : require(name), process: { env: { LIVE_CLIPPER_HOME: '/isolated/home' }, platform: 'darwin', arch: 'arm64' }, URL, console, setTimeout, clearTimeout, __dirname: path.resolve(__dirname, '..') });
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../main.js'), 'utf8'), context);
   vm.runInContext('backendPort = 12345; mainWindow = { webContents: {} }; runtime.setStartup({ entry: { mode: "workbench" } }); backendClient = { stopService: async () => order.push("stop") };', Object.assign(context, { order }));
   const trusted = vm.runInContext('({ sender: mainWindow.webContents, senderFrame: { url: "http://127.0.0.1:12345/settings" } })', context);
-  return { handlers, trusted, events, messages, order, context, checks: () => checks, setResponse: value => { response = value; }, setCheck: fn => { nextCheck = fn; } };
+  return { handlers, trusted, events, messages, order, context, checks: () => checks, setDialog: fn => { nextDialog = fn; }, setResponse: value => { response = value; }, setCheck: fn => { nextCheck = fn; } };
 }
 
 test('desktop info IPC uses app version and rejects untrusted renderers', () => {
@@ -70,4 +70,26 @@ test('IPC and tray update flow share in-flight work, failures retry, downloaded 
   h.setResponse(0); await h.handlers['lc:check-for-updates'](h.trusted);
   assert.deepEqual(h.order, ['stop', 'install']);
   assert.equal((await h.handlers['lc:check-for-updates'](h.trusted)).ok, false);
+});
+
+for (const latest of ['1.0.2', '1.0.1']) test(`no-update ${latest} owns its native dialog and releases IPC for a second check after dismissal`, async () => {
+  const h = desktopHarness(); let dismiss;
+  h.setCheck(async () => ({ updateInfo: { version: latest } }));
+  h.setDialog((parent, options) => {
+    assert.equal(parent, vm.runInContext('mainWindow', h.context));
+    assert.equal(options.message, '已是最新版本');
+    return new Promise(resolve => { dismiss = () => resolve({ response: 0 }); });
+  });
+  let returned = false;
+  const first = h.handlers['lc:check-for-updates'](h.trusted).then(result => { returned = true; return result; });
+  await new Promise(setImmediate);
+  assert.equal(returned, false);
+  assert.equal(h.messages.length, 1);
+  const duplicate = h.handlers['lc:check-for-updates'](h.trusted);
+  assert.equal(h.checks(), 1);
+  dismiss(); assert.equal((await first).ok, true); await duplicate;
+  const second = h.handlers['lc:check-for-updates'](h.trusted);
+  await new Promise(setImmediate);
+  assert.equal(h.checks(), 2); assert.equal(h.messages.length, 2);
+  dismiss(); assert.equal((await second).ok, true);
 });

@@ -231,7 +231,7 @@ function setupAutoUpdater() {
 function confirmDownloadedUpdate() {
   if (updateConfirmation) return updateConfirmation;
   updateConfirmation = (async () => {
-    const { response } = await dialog.showMessageBox({
+    const { response } = await dialog.showMessageBox(mainWindow, {
       type: "info", message: "新版本已下载完成", detail: "重启 Venus 即可完成更新。",
       buttons: ["重启并更新", "稍后"], defaultId: 1, cancelId: 1,
     });
@@ -324,21 +324,21 @@ async function showUpdateResult(result) {
       await confirmDownloadedUpdate();
     } else if (isNewerVersion(result.latest, app.getVersion())) {
       if (!app.isPackaged) {
-        const { response } = await dialog.showMessageBox({
+        const { response } = await dialog.showMessageBox(mainWindow, {
           type: "info", message: `发现新版本 ${result.latest}`,
           detail: `当前版本 ${app.getVersion()}。前往下载页获取更新。`,
           buttons: ["去下载", "稍后"], defaultId: 1, cancelId: 1,
         });
         if (response === 0) await shell.openExternal(UPDATE_RELEASES_PAGE);
       } else {
-        await dialog.showMessageBox({ type: "info", message: `发现新版本 ${result.latest}`, detail: "下载完成后将提示你确认重启更新。" });
+        await dialog.showMessageBox(mainWindow, { type: "info", message: `发现新版本 ${result.latest}`, detail: "下载完成后将提示你确认重启更新。" });
       }
     } else {
-      await dialog.showMessageBox({ type: "info", message: "已是最新版本", detail: `当前版本 ${app.getVersion()}。` });
+      await dialog.showMessageBox(mainWindow, { type: "info", message: "已是最新版本", detail: `当前版本 ${app.getVersion()}。` });
     }
     return { ok: true };
   } catch {
-    dialog.showErrorBox("检查更新", "暂时无法检查更新，请稍后重试。");
+    await dialog.showMessageBox(mainWindow, { type: "error", message: "检查更新", detail: "暂时无法检查更新，请稍后重试。" });
     return { ok: false };
   }
 }
