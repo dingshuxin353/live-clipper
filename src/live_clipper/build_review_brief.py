@@ -1,4 +1,4 @@
-"""Build the compact candidate package reviewed by Codex."""
+"""Build the compact candidate package reviewed by 审阅 Agent."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from .prompt_loader import load_prompt
 from .utils import read_json, write_json
 
 
-def build_codex_brief_file(
+def build_review_brief_file(
     candidates_path: Path,
     transcript_path: Path,
     output_path: Path,
@@ -46,7 +46,7 @@ def build_codex_brief_file(
 
     brief = {
         "source_name": source_name,
-        "review_instructions": load_prompt("codex_select_clips.md", "Codex selection prompt", prompt_dir=prompt_dir),
+        "review_instructions": load_prompt("review_select_clips.md", "审阅 Agent selection prompt", prompt_dir=prompt_dir),
         "expected_output": {
             "path": "selected_clips.json",
             "type": "array",
@@ -60,7 +60,7 @@ def build_codex_brief_file(
     return brief
 
 
-def build_codex_review_markdown(
+def build_review_notes_markdown(
     brief: dict[str, Any],
     *,
     brief_path: str,
@@ -69,7 +69,7 @@ def build_codex_review_markdown(
     required_fields = ", ".join(brief["expected_output"]["required_fields"])
     candidate_count = brief["candidate_count"]
     return (
-        "# Codex Clip Review\n\n"
+        "# Clip Review\n\n"
         f"Source: `{brief['source_name']}`\n\n"
         f"Review `{brief_path}` and write `{selection_path}`.\n\n"
         f"The brief contains {candidate_count} candidates. Select only clips that are worth rendering.\n\n"

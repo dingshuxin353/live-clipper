@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any
 
@@ -43,7 +44,13 @@ def _normalize_refinement(candidate: ClipCandidate, payload: Any) -> dict[str, A
     if payload.get("candidate_id") != candidate.id:
         raise ValueError("Refinement response candidate_id must match the requested candidate")
 
-    keep = bool(payload.get("keep", True))
+    if not isinstance(payload.get('keep'), bool):
+        raise ValueError('Refinement keep must be boolean')
+    for field in ('refined_score', 'commercial_fit', 'hook_strength', 'standalone_value', 'clarity'):
+        value = payload.get(field)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 <= value <= 10:
+            raise ValueError('Refinement score must be between 0 and 10')
+    keep = payload['keep']
     refined_score = _coerce_score(payload.get("refined_score"), candidate.score)
     return {
         "candidate_id": candidate.id,
@@ -72,6 +79,7 @@ def refine_candidates_file(
     *,
     top_n: int = 25,
     prompt_dir: Path | None = None,
+    request_parameters: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     if top_n <= 0:
         raise ValueError("top_n must be greater than 0")
@@ -91,15 +99,13 @@ def refine_candidates_file(
             "business_goal": "Promote Agnes as a practical AI model for real work, using useful livestream highlights.",
         }
         try:
-            refinement = _normalize_refinement(candidate, client.complete_json(system_prompt, payload, max_tokens=2048))
+            refinement = _normalize_refinement(candidate, client.complete_json(system_prompt, payload, **(request_parameters or {"max_tokens": 2048, "temperature": 0.1})))
         except ValueError as exc:
             write_failure_log(
                 "refine_candidates_validation_failure",
                 {
                     "candidate_id": candidate.id,
-                    "user_payload": payload,
                     "error_type": type(exc).__name__,
-                    "error": str(exc),
                 },
             )
             refinement = {

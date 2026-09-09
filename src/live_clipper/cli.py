@@ -10,13 +10,12 @@ from pathlib import Path
 from .ai_guide import AI_ASSISTANT_GUIDE
 from .app_dirs import default_workspace_root, prepare_app_home, resolve_app_home
 from .automation import DEFAULT_NAS_DIR, check_automation_runs, start_latest_recording_job
-from .build_codex_brief import (
-    build_codex_brief_file,
-    build_codex_review_markdown,
+from .build_review_brief import (
+    build_review_brief_file,
+    build_review_notes_markdown,
     build_selected_clips_template,
 )
 from .cheap_model_client import CheapModelClient, CheapModelServiceError
-from .codex_selection import validate_selected_clips_file
 from .config import load_settings, render_app_config_template, write_default_config
 from .correct_transcript import correct_transcript_file
 from .first_run_detection import inspect_startup
@@ -27,6 +26,8 @@ from .project_service import open_project_repository
 from .prompt_loader import export_prompts
 from .refine_candidates import refine_candidates_file
 from .render_clips import render_selected_clips
+from .resource_execution import pipeline_settings
+from .review_selection import validate_selected_clips_file
 from .scan_windows import scan_windows_file
 from .service import (
     get_service_status,
@@ -39,7 +40,7 @@ from .service import (
 from .smoke import run_local_smoke
 from .status import build_run_status
 from .transcribe import transcribe_audio, transcript_sentences_from_raw
-from .utils import ensure_dir, read_json, write_json
+from .utils import ensure_dir, read_json, review_material_path, write_json
 from .video import extract_audio
 from .web import WebPaths, run_web_server
 from .windows import write_windows_file
@@ -199,6 +200,12 @@ def run_app(*, host: str = "127.0.0.1", port: int = 8765) -> None:
     with open_project_repository(service_dir, config_path=config_path, env_path=env_path) as repository:
         if repository.get_data_mode() != "projects":
             raise RuntimeError("App 项目数据模式未就绪")
+        from .resource_migration import migrate_resources
+
+        try:
+            migrate_resources(repository, settings)
+        except Exception:
+            emit_progress("[App] 资源转换未完成；保留历史访问，请从资源页重试准备。")
     emit_progress(f"[App] 数据目录: {home}")
 
     def settings_loader():
@@ -216,7 +223,7 @@ def run_app(*, host: str = "127.0.0.1", port: int = 8765) -> None:
 
 def _friendly_next_step(next_step: str) -> str:
     if "selected_clips.json" in next_step and "审阅" in next_step:
-        return "等待 Codex 或人工选片：阅读 codex_brief.json，写入 selected_clips.json。"
+        return "等待审阅 Agent 或人工选片：阅读 review_brief.json，写入 selected_clips.json。"
     if "render" in next_step:
         return "可以渲染：运行 render 生成成片。"
     if "refine" in next_step:
@@ -338,7 +345,7 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--resume", action="store_true", help="Reuse existing intermediate files in the output directory.")
     scan.add_argument(
         "--skip-transcript-correction",
-        action="store_true",
+        action="store_true", default=None,
         help="Use raw ASR segments as transcript.json and skip cheap-model transcript correction.",
     )
     scan.add_argument("--prompt-dir", type=Path, default=None)
@@ -348,7 +355,7 @@ def build_parser() -> argparse.ArgumentParser:
     refine.add_argument("--top-n", type=int, default=25)
     refine.add_argument("--prompt-dir", type=Path, default=None)
 
-    brief = subparsers.add_parser("brief", help="Build a compact Codex review package.")
+    brief = subparsers.add_parser("brief", help="Build a compact 审阅 Agent review package.")
     brief.add_argument("run_dir", type=Path)
     brief.add_argument("--source", choices=["merged", "refined"], default="merged")
     brief.add_argument("--prompt-dir", type=Path, default=None)
@@ -370,7 +377,7 @@ def build_parser() -> argparse.ArgumentParser:
     web.add_argument("--log-dir", type=Path, default=Path("work") / "automation_logs")
     web.add_argument("--input-dir", type=Path, default=Path("input"))
 
-    automation = subparsers.add_parser("automation", help="Helpers for Codex scheduled workflows.")
+    automation = subparsers.add_parser("automation", help="Helpers for 审阅 Agent scheduled workflows.")
     automation_subparsers = automation.add_subparsers(dest="automation_command", required=True)
 
     start_latest = automation_subparsers.add_parser(
@@ -388,10 +395,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     check = automation_subparsers.add_parser(
         "check",
-        help="Check output runs and write Codex task files for decision points.",
+        help="Check output runs and write 审阅 Agent task files for decision points.",
     )
     check.add_argument("--output-root", type=Path, default=Path("output"))
 
+    for command_parser in (pipeline, scan, refine):
+        command_parser.add_argument('--project-run', help='Use the frozen resources of this queued/processing project run.')
+        command_parser.add_argument('--service-dir', type=Path, default=Path('work') / 'service')
     return parser
 
 
@@ -462,11 +472,17 @@ def run_scan(
     output_dir: Path | None = None,
     *,
     resume: bool = False,
-    skip_transcript_correction: bool = False,
+    skip_transcript_correction: bool | None = None,
     prompt_dir: Path | None = None,
 ) -> Path:
-    settings = load_settings()
-    active_prompt_dir = prompt_dir or settings.prompts.directory
+    settings = pipeline_settings(load_settings())
+    if settings.resource_execution_policy and prompt_dir and prompt_dir.resolve() != settings.prompts.directory:
+        raise ValueError("original_prompt_changed")
+    expected_skip = not settings.resource_execution_policy['correct_transcript']
+    if skip_transcript_correction is not None and skip_transcript_correction != expected_skip:
+        raise ValueError('original_processing_parameters_changed')
+    skip_transcript_correction = expected_skip
+    active_prompt_dir = settings.prompts.directory
     if not video_path.exists():
         raise FileNotFoundError(video_path)
 
@@ -477,7 +493,9 @@ def run_scan(
     windows_path = run_dir / "windows.json"
     cheap_candidates_path = run_dir / "cheap_candidates.json"
     merged_candidates_path = run_dir / "merged_candidates.json"
-    glossary_path = resolve_glossary_path()
+    glossary_path = settings.paths.glossary_path
+    if not glossary_path.exists() and glossary_path.name == "common_terms.json":
+        glossary_path = glossary_path.with_name("common_terms.example.json")
     needs_transcript = not (resume and transcript_path.exists())
     needs_raw_transcript = needs_transcript and not (resume and raw_transcript_path.exists())
     needs_audio = needs_raw_transcript and not (resume and audio_path.exists())
@@ -546,6 +564,7 @@ def run_scan(
             transcript_path,
             client,
             resume=resume,
+            request_parameters=settings.resource_execution_policy.get("stage_parameters", {}).get("correction"),
             **({"prompt_dir": active_prompt_dir} if active_prompt_dir else {}),
         )
         emit_progress(f"[扫描] 3/6 Agnes校对文字稿: 完成 -> {transcript_path}")
@@ -562,6 +581,7 @@ def run_scan(
             cheap_candidates_path,
             client,
             resume=resume,
+            request_parameters=settings.resource_execution_policy.get("stage_parameters", {}).get("scan"),
             **({"prompt_dir": active_prompt_dir} if active_prompt_dir else {}),
         )
         emit_progress(f"[扫描] 5/6 Agnes粗扫候选片段: 完成 -> {cheap_candidates_path}")
@@ -587,7 +607,15 @@ def run_pipeline(
     top_n: int = 25,
     prompt_dir: Path | None = None,
 ) -> Path:
-    require_pipeline_configuration(load_settings())
+    frozen_settings = pipeline_settings(load_settings())
+    require_pipeline_configuration(frozen_settings)
+    policy = frozen_settings.resource_execution_policy
+    if policy:
+        if (correct_transcript and not policy['correct_transcript']) or (refine and not policy['refine']):
+            raise ValueError('original_processing_parameters_changed')
+        correct_transcript, refine, top_n = policy['correct_transcript'], policy['refine'], policy['refine_top_n']
+        if prompt_dir and prompt_dir.resolve() != frozen_settings.prompts.directory:
+            raise ValueError('original_prompt_changed')
     local_source_path = stage_source_file(source_path, input_dir=input_dir)
     scan_kwargs = {"prompt_dir": prompt_dir} if prompt_dir else {}
     run_dir = run_scan(
@@ -606,13 +634,18 @@ def run_pipeline(
         brief_kwargs = {"prompt_dir": prompt_dir} if prompt_dir else {}
         run_brief(run_dir, source="merged", **brief_kwargs)
     build_run_status(run_dir)
-    emit_progress("[流水线] 阶段完成: 已生成候选包, 下一步审阅 codex_brief.json 并写入 selected_clips.json")
+    emit_progress("[流水线] 阶段完成: 已生成候选包, 下一步审阅 review_brief.json 并写入 selected_clips.json")
     return run_dir
 
 
 def run_refine(run_dir: Path, *, top_n: int = 25, prompt_dir: Path | None = None) -> Path:
-    settings = load_settings()
-    active_prompt_dir = prompt_dir or settings.prompts.directory
+    settings = pipeline_settings(load_settings())
+    if prompt_dir and prompt_dir.resolve() != settings.prompts.directory:
+        raise ValueError("original_prompt_changed")
+    if not settings.resource_execution_policy['refine']:
+        raise ValueError("original_processing_parameters_changed")
+    top_n = settings.resource_execution_policy["refine_top_n"]
+    active_prompt_dir = settings.prompts.directory
     if not settings.cheap_model_api_key:
         raise ValueError("CHEAP_MODEL_API_KEY is required before running refine")
     for required_path in [
@@ -629,13 +662,14 @@ def run_refine(run_dir: Path, *, top_n: int = 25, prompt_dir: Path | None = None
         output_path,
         client,
         top_n=top_n,
+        request_parameters=settings.resource_execution_policy.get("stage_parameters", {}).get("refine"),
         **({"prompt_dir": active_prompt_dir} if active_prompt_dir else {}),
     )
     return output_path
 
 
 def run_brief(run_dir: Path, *, source: str = "merged", prompt_dir: Path | None = None) -> Path:
-    settings = load_settings()
+    settings = pipeline_settings(load_settings()) if os.environ.get("LIVE_CLIPPER_PROJECT_RUN") else load_settings()
     active_prompt_dir = prompt_dir or settings.prompts.directory
     if source == "merged":
         candidates_path = run_dir / "merged_candidates.json"
@@ -653,23 +687,23 @@ def run_brief(run_dir: Path, *, source: str = "merged", prompt_dir: Path | None 
             raise FileNotFoundError(required_path)
     metadata = read_json(run_dir / "run_metadata.json")
     build_kwargs = {"prompt_dir": active_prompt_dir} if active_prompt_dir else {}
-    brief = build_codex_brief_file(
+    brief = build_review_brief_file(
         candidates_path,
         run_dir / "transcript.json",
-        run_dir / "codex_brief.json",
+        review_material_path(run_dir, "review_brief.json"),
         source_name=metadata["source_name"],
         **build_kwargs,
     )
-    (run_dir / "codex_review.md").write_text(
-        build_codex_review_markdown(
+    (review_material_path(run_dir, "review_notes.md")).write_text(
+        build_review_notes_markdown(
             brief,
-            brief_path="codex_brief.json",
+            brief_path="review_brief.json",
             selection_path="selected_clips.json",
         ),
         encoding="utf-8",
     )
     write_json(run_dir / "selected_clips.template.json", build_selected_clips_template(brief))
-    return run_dir / "codex_brief.json"
+    return review_material_path(run_dir, "review_brief.json")
 
 
 def run_render(selection_path: Path) -> list[Path]:
@@ -691,9 +725,32 @@ def run_cleanup(run_dir: Path, *, input_dir: Path = Path("input"), confirm: bool
     return report
 
 
+def _record_analysis_failure(args, error: CheapModelServiceError) -> None:
+    if error.code != "analysis_output_invalid" or not getattr(args, "project_run", None):
+        return
+    from .project_storage import ProjectRepository
+
+    with ProjectRepository(args.service_dir) as repository:
+        run = repository.get_run(args.project_run)
+        if run is None:
+            raise KeyError(args.project_run)
+        with repository.transaction():
+            repository.transition_run(run.run_id, status="failed", stage="analyze", event_type="failed",
+                                      error_code=error.code, error_summary="AI 分析响应不符合候选合同，未生成可信候选")
+            repository.discover_issue(
+                issue_code=error.code, category="ai", scope_type="run", project_id=run.project_id,
+                run_id=run.run_id, issue_group_key=f"{error.code}:{run.run_id}",
+                title="AI 分析结果无效", summary="模型响应未通过候选校验",
+                preserved_content="来源录像、转写和已完成窗口保留",
+                next_step="检查分析资源后使用重新处理创建新记录", recovery_capability="none",
+            )
+
+
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
+    if getattr(args, 'project_run', None):
+        os.environ['LIVE_CLIPPER_PROJECT_RUN'] = json.dumps([str(args.service_dir.resolve()), args.project_run])
     if args.command == "config":
         if args.config_command == "init":
             run_config_init(args.output, force=args.force)
@@ -754,6 +811,9 @@ def main() -> None:
                 **pipeline_kwargs,
             )
         except CheapModelServiceError as exc:
+            _record_analysis_failure(args, exc)
+            if exc.code == "analysis_output_invalid":
+                raise SystemExit(f"{exc}\nAI 分析结果无效；已完成内容保留，请检查资源后重新处理。") from None
             raise SystemExit(
                 f"{exc}\n进度已经写入断点文件。请重新运行同一条 pipeline 命令继续。"
             ) from None
@@ -768,6 +828,9 @@ def main() -> None:
                 **scan_kwargs,
             )
         except CheapModelServiceError as exc:
+            _record_analysis_failure(args, exc)
+            if exc.code == "analysis_output_invalid":
+                raise SystemExit(f"{exc}\nAI 分析结果无效；已完成内容保留，请检查资源后重新处理。") from None
             raise SystemExit(
                 f"{exc}\n进度已经写入断点文件。请使用同一条命令加 --resume 继续。"
             ) from None

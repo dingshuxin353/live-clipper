@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from resource_test_support import assign_test_resources
 
 from live_clipper.config import RecordingSourceDefaultConfig, Settings
 from live_clipper.project_domain import default_project_config
@@ -21,6 +22,7 @@ def _project(tmp_path, name="P"):
     output.mkdir(exist_ok=True)
     config = default_project_config(source, output)
     repo = open_project_repository(tmp_path / "service")
+    config = assign_test_resources(repo, config)
     manager = ProjectManager(repo, Settings(cheap_model_api_key="fake"))
     project = manager.create_project(name=name, config=config, activation_state="active")
     settings = Settings(
@@ -113,7 +115,7 @@ def test_recent_selected_and_cross_project_content_identity(tmp_path):
     )
     repo = open_project_repository(tmp_path / "service")
     manager = ProjectManager(repo, settings)
-    project_a = manager.create_project(name="A", config=config_a, activation_state="active")
+    project_a = manager.create_project(name="A", config=assign_test_resources(repo, config_a), activation_state="active")
     repo.update_runtime(project_a.project_id, discovery_baseline="2026-08-20T00:00:00Z")
 
     recent_report = scan_project(
@@ -134,7 +136,7 @@ def test_recent_selected_and_cross_project_content_identity(tmp_path):
     copy_mtime = (cross_now - timedelta(seconds=1)).timestamp()
     os.utime(copy_path, (copy_mtime, copy_mtime))
     config_b = default_project_config(source_b, output_b)
-    project_b = manager.create_project(name="B", config=config_b, activation_state="active")
+    project_b = manager.create_project(name="B", config=assign_test_resources(repo, config_b), activation_state="active")
     cross_report = scan_project(
         repo,
         project_b.project_id,

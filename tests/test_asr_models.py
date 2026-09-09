@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import time
 from copy import deepcopy
 from pathlib import Path
@@ -10,7 +9,6 @@ from pathlib import Path
 import pytest
 
 from live_clipper import asr_models, jobs
-from live_clipper import web as web_module
 from live_clipper.web import WebPaths, handle_api_request
 
 MODEL_ID = "mlx-community/whisper-large-v3-turbo"
@@ -249,7 +247,7 @@ def test_download_failure_keeps_partial_and_last_error(monkeypatch, small_regist
     staging = asr_models.partial_dir(MODEL_ID)
     assert staging.is_dir()
     metadata = json.loads((staging / "_download.json").read_text(encoding="utf-8"))
-    assert metadata["last_error"] == "network interrupted"
+    assert metadata["last_error"] == "model_download_or_integrity_failed"
     assert metadata["source"] == "huggingface"
     assert asr_models._partial_bytes(staging, asr_models.model_entry(MODEL_ID)) >= len(b"partial")
     assert not asr_models.install_dir(MODEL_ID).exists()
@@ -438,42 +436,8 @@ def test_repair_reuses_healthy_file_and_restores_install(monkeypatch, small_regi
     assert not target.with_name(target.name + ".damaged-backup").exists()
 
 
-def test_delete_api_returns_409_while_download_active(monkeypatch, tmp_path, small_registry):
-    paths = _paths(tmp_path)
-    monkeypatch.setattr(jobs, "active_job_for", lambda *args: {"id": "active"})
-
-    status, _headers, payload = handle_api_request(
-        "POST",
-        "/api/asr/models/delete",
-        paths,
-        body={"model": MODEL_ID},
-    )
-
-    assert status == 409
-    assert payload["error_code"] == "model_download_active"
 
 
-def test_download_job_success_result_contains_ok(monkeypatch, tmp_path, small_registry):
-    paths = _paths(tmp_path)
-    paths.config_path.write_text('[asr]\nmodel_source = "huggingface"\n', encoding="utf-8")
-    monkeypatch.setattr(
-        asr_models,
-        "download_model",
-        lambda model_id, source: {"ok": True, "model": model_id, "source": source},
-    )
-
-    status, _headers, payload = handle_api_request(
-        "POST",
-        "/api/asr/models/download",
-        paths,
-        body={"model": MODEL_ID},
-    )
-    job = _wait_for_job(paths.service_dir, payload["job"]["id"])
-
-    assert status == 202
-    assert job["status"] == "succeeded"
-    assert job["result"]["ok"] is True
-    assert job["result"]["source"] == "huggingface"
 
 
 def test_get_api_exposes_four_states_and_status_fields(monkeypatch, tmp_path, small_registry):
@@ -555,270 +519,63 @@ def test_current_model_remains_marked_when_missing_or_damaged(tmp_path, small_re
     assert payload["models"][0]["current"] is True
 
 
-def test_select_rejects_unknown_not_ready_and_damaged_models(tmp_path, small_registry):
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def test_legacy_model_mutations_cannot_change_files_or_create_jobs(tmp_path, monkeypatch):
     paths = _paths(tmp_path)
-    paths.config_path.write_text("", encoding="utf-8")
-
-    status, _headers, payload = handle_api_request(
-        "POST",
-        "/api/asr/models/select",
-        paths,
-        body={"model": "unknown/model"},
-    )
-    assert status == 400
-    assert payload["error_code"] == "unknown_model"
-
-    status, _headers, payload = handle_api_request(
-        "POST",
-        "/api/asr/models/select",
-        paths,
-        body={"model": MODEL_ID},
-    )
-    assert status == 409
-    assert payload["error_code"] == "model_not_ready"
-
-    asr_models.install_dir(MODEL_ID).mkdir(parents=True)
-    status, _headers, payload = handle_api_request(
-        "POST",
-        "/api/asr/models/select",
-        paths,
-        body={"model": MODEL_ID},
-    )
-    assert status == 409
-    assert payload["error_code"] == "model_not_ready"
+    paths.config_path.write_text("[asr]\nmodel = 'original'\n")
+    original = paths.config_path.read_bytes()
+    monkeypatch.setattr(jobs, "start_job", lambda *a, **k: pytest.fail("legacy route started a job"))
+    for action in ("select", "download", "delete"):
+        status, _, payload = handle_api_request("POST", f"/api/asr/models/{action}", paths, body={"model": MODEL_ID})
+        assert status == 410
+        assert payload["error_code"] == "resource_route_retired"
+    assert paths.config_path.read_bytes() == original
 
 
-@pytest.mark.parametrize("variable", ["ASR_MODEL", "ASR_BACKEND"])
-def test_select_rejects_environment_override_without_writing(
-    monkeypatch,
-    tmp_path,
-    small_registry,
-    variable,
-):
-    monkeypatch.chdir(tmp_path)
-    _entry, files = small_registry
-    _install_with_fake_hf(monkeypatch, files)
+def test_resource_preparation_downloads_and_validates_original_revision(tmp_path, monkeypatch, small_registry):
+    from live_clipper import resource_api
+    from live_clipper.project_storage import ProjectRepository
+    from live_clipper.resource_store import ResourceStore
+
     paths = _paths(tmp_path)
-    original = '[asr]\nbackend = "openai"\nmodel = "whisper-1"\n'
-    paths.config_path.write_text(original, encoding="utf-8")
-    monkeypatch.setenv(variable, "forced-value")
-
-    try:
-        status, _headers, payload = handle_api_request(
-            "POST",
-            "/api/asr/models/select",
-            paths,
-            body={"model": MODEL_ID},
-        )
-    finally:
-        os.environ.pop("ASR_MODEL", None)
-        os.environ.pop("ASR_BACKEND", None)
-
-    assert status == 409
-    assert payload["error_code"] == "asr_overridden_by_environment"
-    assert paths.config_path.read_text(encoding="utf-8") == original
-
-
-def test_select_rejects_override_loaded_from_cwd_dotenv(monkeypatch, tmp_path, small_registry):
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("ASR_MODEL", raising=False)
-    monkeypatch.delenv("ASR_BACKEND", raising=False)
-    (tmp_path / ".env").write_text(f"ASR_MODEL={MODEL_ID}\n", encoding="utf-8")
-    _entry, files = small_registry
-    _install_with_fake_hf(monkeypatch, files)
-    paths = _paths(tmp_path)
-    original = '[asr]\nbackend = "openai"\nmodel = "whisper-1"\n'
-    paths.config_path.write_text(original, encoding="utf-8")
-
-    try:
-        status, _headers, payload = handle_api_request(
-            "POST",
-            "/api/asr/models/select",
-            paths,
-            body={"model": MODEL_ID},
-        )
-    finally:
-        os.environ.pop("ASR_MODEL", None)
-        os.environ.pop("ASR_BACKEND", None)
-
-    assert status == 409
-    assert payload["error_code"] == "asr_overridden_by_environment"
-    assert paths.config_path.read_text(encoding="utf-8") == original
-
-
-def test_select_healthy_model_saves_both_fields_and_reloads(monkeypatch, tmp_path, small_registry):
-    monkeypatch.chdir(tmp_path)
-    _entry, files = small_registry
-    _install_with_fake_hf(monkeypatch, files)
-    paths = _paths(tmp_path)
-    paths.config_path.write_text(
-        '[asr]\nbackend = "openai"\nmodel = "whisper-1"\nmodel_source = "modelscope"\n',
-        encoding="utf-8",
-    )
-    reloads = []
-    monkeypatch.setattr(
-        web_module,
-        "_restart_service_from_config",
-        lambda received: reloads.append(received) or {
-            "ok": True,
-            "restarted": False,
-            "reason": "service_not_running",
-        },
-    )
-
-    status, _headers, payload = handle_api_request(
-        "POST",
-        "/api/asr/models/select",
-        paths,
-        body={"model": MODEL_ID},
-    )
-
-    assert status == 200
-    assert payload["ok"] is True
-    assert payload["saved"] is True
-    assert payload["current_backend"] == "mlx_whisper"
-    assert payload["current_model"] == MODEL_ID
-    assert payload["reload"]["reason"] == "service_not_running"
-    assert reloads == [paths]
-    written = paths.config_path.read_text(encoding="utf-8")
-    assert 'backend = "mlx_whisper"' in written
-    assert f'model = "{MODEL_ID}"' in written
-
-
-def test_select_save_failure_keeps_current_and_skips_reload(monkeypatch, tmp_path, small_registry):
-    monkeypatch.chdir(tmp_path)
-    _entry, files = small_registry
-    _install_with_fake_hf(monkeypatch, files)
-    paths = _paths(tmp_path)
-    original = '[asr]\nbackend = "openai"\nmodel = "whisper-1"\n'
-    paths.config_path.write_text(original, encoding="utf-8")
-    monkeypatch.setattr(
-        web_module.config_editor,
-        "save_asr_model_selection",
-        lambda *args, **kwargs: {"ok": False, "saved": False, "message": "write failed"},
-    )
-    monkeypatch.setattr(
-        web_module,
-        "_restart_service_from_config",
-        lambda paths: pytest.fail("reload must not run after save failure"),
-    )
-
-    status, _headers, payload = handle_api_request(
-        "POST",
-        "/api/asr/models/select",
-        paths,
-        body={"model": MODEL_ID},
-    )
-
-    assert status == 400
-    assert payload["error_code"] == "config_save_failed"
-    assert payload["saved"] is False
-    assert payload["current_backend"] == "openai"
-    assert payload["current_model"] == "whisper-1"
-    assert paths.config_path.read_text(encoding="utf-8") == original
-
-
-def test_select_reload_failure_reports_saved_and_get_reflects_current(monkeypatch, tmp_path, small_registry):
-    monkeypatch.chdir(tmp_path)
-    _entry, files = small_registry
-    _install_with_fake_hf(monkeypatch, files)
-    paths = _paths(tmp_path)
-    paths.config_path.write_text(
-        '[asr]\nbackend = "openai"\nmodel = "whisper-1"\n',
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(
-        web_module,
-        "_restart_service_from_config",
-        lambda paths: {"ok": False, "error": "restart failed"},
-    )
-
-    status, _headers, payload = handle_api_request(
-        "POST",
-        "/api/asr/models/select",
-        paths,
-        body={"model": MODEL_ID},
-    )
-
-    assert status == 500
-    assert payload["error_code"] == "service_reload_failed"
-    assert payload["saved"] is True
-    _status, _headers, current = handle_api_request("GET", "/api/asr/models", paths)
-    assert current["current_backend"] == "mlx_whisper"
-    assert current["current_model"] == MODEL_ID
-    assert current["models"][0]["current"] is True
-
-
-def test_delete_protects_current_model_and_allows_non_current(
-    monkeypatch,
-    tmp_path,
-    small_registry,
-):
-    monkeypatch.chdir(tmp_path)
-    _entry, files = small_registry
-    _install_with_fake_hf(monkeypatch, files)
-    paths = _paths(tmp_path)
-    paths.config_path.write_text(
-        f'[asr]\nbackend = "mlx_whisper"\nmodel = "{MODEL_ID}"\n',
-        encoding="utf-8",
-    )
-
-    status, _headers, payload = handle_api_request(
-        "POST",
-        "/api/asr/models/delete",
-        paths,
-        body={"model": MODEL_ID},
-    )
-    assert status == 409
-    assert payload["error_code"] == "current_model_in_use"
-    assert asr_models.install_dir(MODEL_ID).is_dir()
-
-    paths.config_path.write_text(
-        f'[asr]\nbackend = "openai"\nmodel = "{MODEL_ID}"\n',
-        encoding="utf-8",
-    )
-    status, _headers, payload = handle_api_request(
-        "POST",
-        "/api/asr/models/delete",
-        paths,
-        body={"model": MODEL_ID},
-    )
-    assert status == 200
-    assert payload["removed"] is True
-    assert not asr_models.install_dir(MODEL_ID).exists()
-
-
-def test_download_api_rejects_unknown_model_and_source(monkeypatch, tmp_path, small_registry):
-    paths = _paths(tmp_path)
-    status, _headers, _payload = handle_api_request(
-        "POST",
-        "/api/asr/models/download",
-        paths,
-        body={"model": "evil/repo"},
-    )
-    assert status == 400
-
-    paths.config_path.write_text('[asr]\nmodel_source = "invalid"\n', encoding="utf-8")
-    status, _headers, payload = handle_api_request(
-        "POST",
-        "/api/asr/models/download",
-        paths,
-        body={"model": MODEL_ID},
-    )
-    assert status == 400
-    assert payload["error_code"] == "unknown_model_source"
-
-    monkeypatch.setattr(
-        jobs,
-        "start_job",
-        lambda *args, **kwargs: pytest.fail("removed source must not start a network job"),
-    )
-    status, _headers, payload = handle_api_request(
-        "POST",
-        "/api/asr/models/download",
-        paths,
-        body={"model": MODEL_ID, "source": "hf-mirror"},
-    )
-    assert status == 400
-    assert payload["error_code"] == "unsupported_model_source"
-    assert payload["message"] == asr_models.HF_MIRROR_REMOVED_MESSAGE
+    _, files = small_registry
+    def download(**kwargs):
+        destination = Path(kwargs["local_dir"]) / kwargs["filename"]
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(files[kwargs["filename"]])
+        return str(destination)
+    monkeypatch.setattr(asr_models, "hf_hub_download", download)
+    def validate(store, proposal, **kwargs):
+        assert asr_models.local_path_for(MODEL_ID) is not None
+        proof = store.record_validation(proposal, credential=None, resource_id=kwargs['resource_id'], revision=kwargs['revision'],
+            results={'asr': {'state': 'ready'}})
+        return {'validation_id': proof, 'results': {'asr': {'state': 'ready'}}}
+    monkeypatch.setattr(resource_api, "validate_resource", validate)
+    with ProjectRepository(paths.service_dir) as repo:
+        resource = ResourceStore(repo).save({'name': 'unit local', 'kind': 'local_asr', 'config': {
+            'model': MODEL_ID, 'model_source': 'huggingface', 'purposes': ['asr']}}, request_id='prepare-unit')
+    status, _, payload = handle_api_request('POST', f"/api/resources/{resource['resource_id']}/prepare", paths,
+        body={'expected_revision': resource['revision']})
+    assert status == 202
+    job = _wait_for_job(paths.service_dir, payload['job']['id'])
+    assert job['status'] == 'succeeded', job
+    with ProjectRepository(paths.service_dir) as repo:
+        current = ResourceStore(repo).get(resource['resource_id'])
+        assert current['revision'] == resource['revision']
+        assert current['ready']
+        assert repo.connection.execute("SELECT count(*) FROM resource_tasks WHERE state='running'").fetchone()[0] == 0

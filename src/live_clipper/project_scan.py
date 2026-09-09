@@ -144,7 +144,7 @@ def scan_project(
     if not output_directory_is_writable(output_root):
         raise ProjectScanError("output_unwritable", "项目输出目录不可写")
     try:
-        snapshot = resolve_parameter_snapshot(config, settings)
+        snapshot = resolve_parameter_snapshot(config, settings, repository=repository)
     except ResourceUnavailableError as exc:
         raise ProjectScanError("resource_unavailable", "项目使用的处理资源不可用，请检查项目设置") from exc
     candidates = _candidate_paths(source_root, scope=scope, selected_relative_paths=selected_relative_paths)

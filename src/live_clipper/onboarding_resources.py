@@ -14,16 +14,12 @@ import re
 import struct
 import tempfile
 import wave
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
 import requests
-from dotenv import dotenv_values
 
-from . import asr_models, config_editor
-from . import config as config_module
 from .config import Settings, load_settings
 
 ENV_VAR_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
@@ -323,163 +319,5 @@ def write_env_secret(env_path: Path, key: str, value: str) -> None:
 
 
 def load_settings_explicit(config_path: Path, env_path: Path) -> Settings:
-    """Load settings using an explicit env file without changing process cwd."""
-    # ``config.load_settings`` historically loads ``Path.cwd() / .env``.  M1
-    # receives an explicit App-home path, so suppress that implicit lookup for
-    # this read and only apply the requested env file below.  Restore the
-    # module function even when TOML parsing fails.
-    load_dotenv = config_module.load_dotenv
-    config_module.load_dotenv = lambda **_kwargs: False
-    try:
-        settings = load_settings(config_path)
-    finally:
-        config_module.load_dotenv = load_dotenv
-    values = {key: value for key, value in dotenv_values(env_path).items() if value is not None}
-    asr_key = settings.asr.api_key_env
-    llm_key = settings.llm.api_key_env
-    asr_api_key = values.get(asr_key)
-    llm_api_key = values.get(llm_key)
-    asr = replace(settings.asr, api_key=asr_api_key)
-    llm = replace(settings.llm, api_key=llm_api_key)
-    return replace(
-        settings,
-        cheap_model_api_key=llm_api_key,
-        asr_api_key=asr_api_key,
-        asr=asr,
-        llm=llm,
-    )
-
-
-def commit_llm_configuration(
-    *,
-    config_path: Path,
-    env_path: Path,
-    provider_label: str,
-    api_base: str,
-    model: str,
-    api_key: str,
-    api_key_env: str = "CHEAP_MODEL_API_KEY",
-    allow_loopback: bool = False,
-) -> dict[str, Any]:
-    endpoint = normalize_api_base(api_base, allow_loopback=allow_loopback)
-    loaded = config_editor.load_editable_config(config_path=config_path)
-    if not loaded.get("ok"):
-        raise ResourceError("resource_commit_failed", "无法读取当前配置")
-    original = config_path.read_bytes() if config_path.exists() else None
-    draft = loaded["config"]
-    draft.setdefault("llm", {}).update({"provider_label": str(provider_label or "OpenAI-compatible LLM").strip(), "api_base": endpoint, "model": str(model).strip(), "api_key_env": api_key_env})
-    saved = config_editor.save_editable_config(draft, config_path=config_path, backup_root=config_path.parent / "work" / "config_backups", base_dir=config_path.parent)
-    if not saved.get("ok"):
-        raise ResourceError("resource_commit_failed", "AI 配置保存失败")
-    try:
-        write_env_secret(env_path, api_key_env, api_key)
-    except ResourceError:
-        if original is None:
-            config_path.unlink(missing_ok=True)
-        else:
-            config_path.write_bytes(original)
-        raise
-    except OSError as exc:
-        if original is None:
-            config_path.unlink(missing_ok=True)
-        else:
-            config_path.write_bytes(original)
-        raise ResourceError("resource_commit_failed", "AI 凭据保存失败") from exc
-    os.environ[api_key_env] = str(api_key).strip()
-    return {"ok": True, "configured": True, "api_base_display": _display_endpoint(endpoint), "model": str(model).strip(), "provider_label": str(provider_label or "OpenAI-compatible LLM").strip()}
-
-
-def commit_asr_cloud_configuration(
-    *,
-    config_path: Path,
-    env_path: Path,
-    api_base: str,
-    model: str,
-    api_key: str,
-    api_key_env: str = "ASR_API_KEY",
-    allow_loopback: bool = False,
-) -> dict[str, Any]:
-    endpoint = normalize_api_base(api_base, allow_loopback=allow_loopback)
-    loaded = config_editor.load_editable_config(config_path=config_path)
-    if not loaded.get("ok"):
-        raise ResourceError("resource_commit_failed", "无法读取当前配置")
-    original = config_path.read_bytes() if config_path.exists() else None
-    draft = loaded["config"]
-    draft.setdefault("asr", {}).update({"backend": "openai", "api_base": endpoint, "model": str(model).strip(), "api_key_env": api_key_env})
-    saved = config_editor.save_editable_config(draft, config_path=config_path, backup_root=config_path.parent / "work" / "config_backups", base_dir=config_path.parent)
-    if not saved.get("ok"):
-        raise ResourceError("resource_commit_failed", "语音识别配置保存失败")
-    try:
-        write_env_secret(env_path, api_key_env, api_key)
-    except ResourceError:
-        if original is None:
-            config_path.unlink(missing_ok=True)
-        else:
-            config_path.write_bytes(original)
-        raise
-    except OSError as exc:
-        if original is None:
-            config_path.unlink(missing_ok=True)
-        else:
-            config_path.write_bytes(original)
-        raise ResourceError("resource_commit_failed", "语音识别凭据保存失败") from exc
-    os.environ[api_key_env] = str(api_key).strip()
-    return {"ok": True, "configured": True, "api_base_display": _display_endpoint(endpoint), "model": str(model).strip(), "mode": "cloud"}
-
-
-def resource_summaries(settings: Settings, service_dir: Path) -> dict[str, Any]:
-    asr = settings.asr
-    asr_local_ready = bool(asr and asr.backend != "openai" and asr_models.local_path_for(asr.model))
-    asr_cloud_ready = bool(asr and asr.backend == "openai" and asr.api_base and asr.api_key)
-    ai_ready = bool(settings.llm and settings.llm.api_base and settings.llm.model and settings.llm.api_key)
-    catalog = asr_models.list_models(service_dir)
-    safe_catalog = [
-        {
-            key: item.get(key)
-            for key in (
-                "id",
-                "display_name",
-                "backend",
-                "tier",
-                "tier_label",
-                "size_note",
-                "ram_note",
-                "speed_note",
-                "accuracy_note",
-                "recommended",
-                "state",
-                "state_reason",
-                "installed",
-                "downloading",
-                "job_id",
-                "installed_bytes",
-                "partial_bytes",
-                "bytes_downloaded",
-                "bytes_total",
-                "download_source",
-                "current",
-            )
-        }
-        for item in catalog
-    ]
-    return {
-        "asr": {
-            "mode": "cloud" if asr and asr.backend == "openai" else "local",
-            "configured": bool(asr and asr.model),
-            "ready": asr_local_ready or asr_cloud_ready,
-            "model_id": asr.model if asr else None,
-            "model_label": next((entry["display_name"] for entry in asr_models.REGISTRY if entry["id"] == asr.model), asr.model if asr else None),
-            "credential_present": bool(asr and asr.api_key),
-            "problem": None if asr_local_ready or asr_cloud_ready else "语音识别资源尚未就绪",
-        },
-        "ai": {
-            "configured": bool(settings.llm and settings.llm.model),
-            "ready": ai_ready,
-            "provider_label": settings.llm.provider_label if settings.llm else None,
-            "api_base_display": _display_endpoint(settings.llm.api_base if settings.llm else None),
-            "model": settings.llm.model if settings.llm else None,
-            "credential_present": bool(settings.llm and settings.llm.api_key),
-            "problem": None if ai_ready else "内容分析资源尚未就绪",
-        },
-        "model_catalog": safe_catalog,
-    }
+    """Load only the supplied App-home environment without touching shared globals."""
+    return load_settings(config_path, env_path=env_path)

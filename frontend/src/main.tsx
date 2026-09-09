@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { Theme } from "@astryxdesign/core/theme";
 import { stoneTheme } from "@astryxdesign/theme-stone/built";
 
+import { remixIcons } from "./ui/RemixIcon";
 import { App } from "./App";
 import "@astryxdesign/core/reset.css";
 import "@astryxdesign/core/astryx.css";
@@ -12,7 +13,7 @@ import "./styles.css";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <Theme theme={stoneTheme} mode="light">
+    <Theme theme={{ ...stoneTheme, icons: remixIcons }} mode="light">
       <App />
     </Theme>
   </StrictMode>,

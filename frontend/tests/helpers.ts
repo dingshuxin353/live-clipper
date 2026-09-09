@@ -1,4 +1,4 @@
-import { defaultConfig } from "../src/config";
+
 
 export const MODELS = [
   {
@@ -174,20 +174,15 @@ export function installFetchMock(overrides: Record<string, unknown> = {}) {
     "/api/runs": { ok: true, runs: [] },
     "/api/confirmations": { ok: true, confirmations: [] },
     "/api/events": { ok: true, events: [] },
-    "/api/config": {
-      ok: true,
-      config: defaultConfig(),
-      config_path: "live-clipper.toml",
-      exists: true,
-      env_status: {},
-      warnings: [],
-    },
+    "/api/config": { ok: true, storage: { work_dir: '/work' } },
     "/api/scheduler": { ok: true, scheduler: { enabled: true }, jobs: [] },
     "/api/review-automation": {
       ok: true,
       review_automation: { enabled: false },
       environment: {},
     },
+    "/api/resources": { ok: true, resources: [], migration_pending: false, cleanups: [] },
+    "/api/resources/providers": { ok: true, providers: [{ id: "custom", name: "自定义兼容服务", help: "手动填写" }], regions: {} },
     "/api/asr/models": { ok: true, models: MODELS, download_source: "modelscope" },
     "/api/projects": { ok: true, projects: [PROJECT] },
     "/api/projects/project-1": { ok: true, project: PROJECT },
@@ -211,8 +206,8 @@ export function installFetchMock(overrides: Record<string, unknown> = {}) {
       ok: true,
       data_mode: "projects",
       resources: [
-        { resource_id: "asr.local", display_name: "本地 ASR", resource_type: "asr", ready: true, problem: null, version: "small" },
-        { resource_id: "analysis.main", display_name: "主分析模型", resource_type: "analysis", ready: true, problem: null, version: "review-model" },
+        { resource_id: "asr.local", display_name: "本地 ASR", resource_type: "asr", purposes: ["asr"], ready_purposes: ["asr"], ready: true, problem: null, version: "small" },
+        { resource_id: "analysis.main", display_name: "主分析模型", resource_type: "analysis", purposes: ["analysis", "review"], ready_purposes: ["analysis", "review"], ready: true, problem: null, version: "review-model" },
       ],
       first_scan_modes: ["new_only", "recent", "choose_existing"],
       lookback_days: [3, 7, 30],

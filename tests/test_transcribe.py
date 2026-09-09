@@ -32,6 +32,7 @@ def test_transcribe_audio_writes_mlx_whisper_raw_json(tmp_path, monkeypatch):
     from live_clipper import transcribe as transcribe_module
 
     monkeypatch.setattr(transcribe_module, "mlx_whisper", SimpleNamespace(transcribe=fake_transcribe))
+    monkeypatch.setattr(asr_models, "local_path_for", lambda model: tmp_path / "unit-model")
 
     result = transcribe_audio(
         audio,
@@ -43,7 +44,7 @@ def test_transcribe_audio_writes_mlx_whisper_raw_json(tmp_path, monkeypatch):
     assert read_json(output) == fake_result
     assert calls == [{
         "path": str(audio),
-        "path_or_hf_repo": "mlx-community/whisper-large-v3-turbo",
+        "path_or_hf_repo": str(tmp_path / "unit-model"),
         "language": "zh",
         "condition_on_previous_text": False,
     }]
@@ -64,6 +65,7 @@ def test_transcribe_audio_uses_configured_auto_language(tmp_path, monkeypatch):
     from live_clipper import transcribe as transcribe_module
 
     monkeypatch.setattr(transcribe_module, "mlx_whisper", SimpleNamespace(transcribe=fake_transcribe))
+    monkeypatch.setattr(asr_models, "local_path_for", lambda model: tmp_path / "unit-model")
 
     transcribe_audio(
         audio,
@@ -73,7 +75,7 @@ def test_transcribe_audio_uses_configured_auto_language(tmp_path, monkeypatch):
 
     assert calls == [{
         "path": str(audio),
-        "path_or_hf_repo": "mlx-community/whisper-large-v3-turbo",
+        "path_or_hf_repo": str(tmp_path / "unit-model"),
         "language": None,
         "condition_on_previous_text": False,
     }]
@@ -147,6 +149,7 @@ def test_transcribe_audio_does_not_repair_four_repeated_segments(tmp_path, monke
     from live_clipper import transcribe as transcribe_module
 
     monkeypatch.setattr(transcribe_module, "mlx_whisper", SimpleNamespace(transcribe=fake_transcribe))
+    monkeypatch.setattr(asr_models, "local_path_for", lambda model: tmp_path / "unit-model")
 
     result = transcribe_audio(audio, output, _mlx_settings())
 
@@ -178,6 +181,7 @@ def test_transcribe_audio_ignores_empty_segments_when_detecting_repetition(tmp_p
     from live_clipper import transcribe as transcribe_module
 
     monkeypatch.setattr(transcribe_module, "mlx_whisper", SimpleNamespace(transcribe=fake_transcribe))
+    monkeypatch.setattr(asr_models, "local_path_for", lambda model: tmp_path / "unit-model")
 
     result = transcribe_audio(audio, output, _mlx_settings())
 
@@ -216,13 +220,14 @@ def test_transcribe_audio_repairs_one_seek_and_preserves_next_seek(tmp_path, mon
     from live_clipper import transcribe as transcribe_module
 
     monkeypatch.setattr(transcribe_module, "mlx_whisper", SimpleNamespace(transcribe=fake_transcribe))
+    monkeypatch.setattr(asr_models, "local_path_for", lambda model: tmp_path / "unit-model")
 
     result = transcribe_audio(audio, output, _mlx_settings())
 
     assert len(calls) == 2
     assert calls[1] == {
         "path": str(audio),
-        "path_or_hf_repo": "mlx-community/whisper-large-v3-turbo",
+        "path_or_hf_repo": str(tmp_path / "unit-model"),
         "language": "zh",
         "condition_on_previous_text": False,
         "word_timestamps": True,
@@ -272,6 +277,7 @@ def test_transcribe_audio_repairs_each_unique_seek_once_in_seek_order(tmp_path, 
     from live_clipper import transcribe as transcribe_module
 
     monkeypatch.setattr(transcribe_module, "mlx_whisper", SimpleNamespace(transcribe=fake_transcribe))
+    monkeypatch.setattr(asr_models, "local_path_for", lambda model: tmp_path / "unit-model")
 
     result = transcribe_audio(audio, output, _mlx_settings())
 
@@ -311,6 +317,7 @@ def test_transcribe_audio_filters_invalid_and_cross_boundary_replacements(tmp_pa
     from live_clipper import transcribe as transcribe_module
 
     monkeypatch.setattr(transcribe_module, "mlx_whisper", SimpleNamespace(transcribe=fake_transcribe))
+    monkeypatch.setattr(asr_models, "local_path_for", lambda model: tmp_path / "unit-model")
 
     result = transcribe_audio(audio, output, _mlx_settings())
 
@@ -335,6 +342,7 @@ def test_transcribe_audio_rejects_failed_repair_without_writing(tmp_path, monkey
     from live_clipper import transcribe as transcribe_module
 
     monkeypatch.setattr(transcribe_module, "mlx_whisper", SimpleNamespace(transcribe=fake_transcribe))
+    monkeypatch.setattr(asr_models, "local_path_for", lambda model: tmp_path / "unit-model")
 
     with pytest.raises(RuntimeError, match="repeated segments remain"):
         transcribe_audio(audio, output, _mlx_settings())
@@ -363,6 +371,7 @@ def test_transcribe_audio_rejects_repetition_without_seek(tmp_path, monkeypatch)
         SimpleNamespace(transcribe=lambda path, **kwargs: first),
     )
 
+    monkeypatch.setattr(asr_models, "local_path_for", lambda _model: tmp_path / "unit-model")
     with pytest.raises(RuntimeError, match="no valid seek"):
         transcribe_audio(audio, output, _mlx_settings())
 
@@ -376,6 +385,7 @@ def test_transcribe_audio_writes_openai_compatible_verbose_json(tmp_path, monkey
     calls = []
 
     class FakeResponse:
+        status_code = 200
         def raise_for_status(self):
             return None
 
@@ -387,7 +397,8 @@ def test_transcribe_audio_writes_openai_compatible_verbose_json(tmp_path, monkey
                 ],
             }
 
-    def fake_post(url, headers, data, files, timeout):
+    def fake_post(url, headers, data, files, timeout, allow_redirects):
+        assert allow_redirects is False
         calls.append((url, headers, data, files["file"][0], files["file"][1].read(), timeout))
         return FakeResponse()
 
@@ -413,6 +424,7 @@ def test_transcribe_audio_writes_openai_compatible_verbose_json(tmp_path, monkey
             "model": "whisper-1",
             "response_format": "verbose_json",
             "timestamp_granularities[]": "segment",
+            "language": "zh",
         },
         "audio.wav",
         b"wav",
@@ -425,7 +437,7 @@ def test_transcribe_audio_requires_openai_asr_key(tmp_path):
     output = tmp_path / "transcript_raw.json"
     audio.write_bytes(b"wav")
 
-    with pytest.raises(ValueError, match="ASR_API_KEY"):
+    with pytest.raises(RuntimeError, match="required_connection_fields"):
         transcribe_audio(
             audio,
             output,

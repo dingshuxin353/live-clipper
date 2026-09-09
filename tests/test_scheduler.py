@@ -183,7 +183,7 @@ def test_run_scan_recordings_job_calls_existing_service_action(monkeypatch, tmp_
 def test_review_due_check_marks_needs_review_without_selected_clips(tmp_path):
     run_dir = tmp_path / "output" / "default" / "run-1"
     run_dir.mkdir(parents=True)
-    write_json(run_dir / "codex_brief.json", {"run_id": "run-1"})
+    write_json(run_dir / "review_brief.json", {"run_id": "run-1"})
     write_json(
         tmp_path / "runs.json",
         {
@@ -212,7 +212,7 @@ def test_review_due_check_marks_needs_review_without_selected_clips(tmp_path):
     assert result["ok"] is True
     assert result["result"]["due_runs"] == ["run-1"]
     assert read_json(tmp_path / "runs.json")["runs"][0]["review_due_at"]
-    assert (run_dir / "codex_task.md").exists()
+    assert (run_dir / "review_task.md").exists()
     assert not (run_dir / "selected_clips.json").exists()
 
 

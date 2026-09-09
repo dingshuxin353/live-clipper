@@ -7,6 +7,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from .cheap_model_client import CheapModelServiceError
 from .models import ClipCandidate, TranscriptWindow
 from .prompt_loader import load_prompt
 from .utils import read_json, write_failure_log, write_json
@@ -26,6 +27,27 @@ def normalize_candidate_payload(candidate_payload: dict[str, Any]) -> dict[str, 
         except (TypeError, ValueError):
             normalized.pop(key)
     return normalized
+
+
+def validate_scan_result(result: Any, window: TranscriptWindow, seen_ids: set[str] | None = None) -> list[ClipCandidate]:
+    if not isinstance(result, dict) or result.get("window_id") != window.id or not isinstance(result.get("candidates"), list):
+        raise CheapModelServiceError("analysis_output_invalid")
+    identifiers = set(seen_ids or ())
+    candidates = []
+    for index, item in enumerate(result["candidates"], start=1):
+        if not isinstance(item, dict):
+            raise CheapModelServiceError("analysis_output_invalid")
+        payload = normalize_candidate_payload(item)
+        payload.setdefault("id", f"{window.id}-c{index:03d}")
+        try:
+            candidate = ClipCandidate.model_validate(payload)
+        except ValidationError:
+            raise CheapModelServiceError("analysis_output_invalid") from None
+        if candidate.start < window.start or candidate.end > window.end or candidate.id in identifiers:
+            raise CheapModelServiceError("analysis_output_invalid")
+        identifiers.add(candidate.id)
+        candidates.append(candidate)
+    return candidates
 
 
 def scan_checkpoint_path(output_path: Path) -> Path:
@@ -75,6 +97,7 @@ def scan_windows_file(
     *,
     resume: bool = False,
     prompt_dir: Path | None = None,
+    request_parameters: dict[str, Any] | None = None,
 ) -> list[ClipCandidate]:
     system_prompt = load_prompt("cheap_scan_window.md", "cheap scan prompt", prompt_dir=prompt_dir)
     windows = [TranscriptWindow.model_validate(item) for item in read_json(windows_path)]
@@ -99,105 +122,19 @@ def scan_windows_file(
         payload = window.model_dump()
         before_count = len(candidates)
         emit_progress(f"[候选扫描] {window_index}/{total_windows} {window.id}: 正在请求 Agnes")
-        result = client.complete_json(system_prompt, payload, max_tokens=4096)
-        if not isinstance(result, dict):
-            write_failure_log(
-                "scan_windows_validation_failure",
-                {
-                    "window_id": window.id,
-                    "user_payload": payload,
-                    "model_response": result,
-                },
-            )
-            checkpoint_processed_window(checkpoint_path, processed_window_ids, processed_window_id_set, window.id, candidates)
-            emit_progress(f"[候选扫描] {window_index}/{total_windows} {window.id}: 返回格式异常, 已跳过")
-            continue
-        if result.get("window_id") != window.id:
-            write_failure_log(
-                "scan_windows_validation_failure",
-                {
-                    "window_id": window.id,
-                    "user_payload": payload,
-                    "model_response": result,
-                },
-            )
-            checkpoint_processed_window(checkpoint_path, processed_window_ids, processed_window_id_set, window.id, candidates)
-            emit_progress(f"[候选扫描] {window_index}/{total_windows} {window.id}: window_id 不匹配, 已跳过")
-            continue
-        if not isinstance(result.get("candidates"), list):
-            write_failure_log(
-                "scan_windows_validation_failure",
-                {
-                    "window_id": window.id,
-                    "user_payload": payload,
-                    "model_response": result,
-                },
-            )
-            checkpoint_processed_window(checkpoint_path, processed_window_ids, processed_window_id_set, window.id, candidates)
-            emit_progress(f"[候选扫描] {window_index}/{total_windows} {window.id}: 缺少 candidates 字段, 已跳过")
-            continue
-
-        skipped_candidates = 0
-        for index, item in enumerate(result["candidates"], start=1):
-            if not isinstance(item, dict):
-                write_failure_log(
-                    "scan_windows_validation_failure",
-                    {
-                        "window_id": window.id,
-                        "candidate_index": index,
-                        "user_payload": payload,
-                        "model_response": result,
-                    },
-                )
-                skipped_candidates += 1
-                continue
-            candidate_payload = normalize_candidate_payload(dict(item))
-            candidate_payload.setdefault("id", f"{window.id}-c{index:03d}")
-            try:
-                candidate = ClipCandidate.model_validate(candidate_payload)
-            except ValidationError:
-                write_failure_log(
-                    "scan_windows_validation_failure",
-                    {
-                        "window_id": window.id,
-                        "candidate_index": index,
-                        "user_payload": payload,
-                        "model_response": result,
-                    },
-                )
-                skipped_candidates += 1
-                continue
-            if candidate.start < window.start or candidate.end > window.end:
-                write_failure_log(
-                    "scan_windows_validation_failure",
-                    {
-                        "window_id": window.id,
-                        "candidate_index": index,
-                        "user_payload": payload,
-                        "model_response": result,
-                    },
-                )
-                skipped_candidates += 1
-                continue
-            if candidate.id in seen_candidate_ids:
-                write_failure_log(
-                    "scan_windows_validation_failure",
-                    {
-                        "window_id": window.id,
-                        "candidate_index": index,
-                        "candidate_id": candidate.id,
-                        "user_payload": payload,
-                        "model_response": result,
-                    },
-                )
-                skipped_candidates += 1
-                continue
-            candidates.append(candidate)
-            seen_candidate_ids.add(candidate.id)
+        result = client.complete_json(system_prompt, payload, **(request_parameters or {"max_tokens": 4096, "temperature": 0.1}))
+        try:
+            validated = validate_scan_result(result, window, seen_candidate_ids)
+        except CheapModelServiceError:
+            write_failure_log("scan_windows_validation_failure", {"window_id": window.id, "code": "analysis_output_invalid"})
+            emit_progress(f"[候选扫描] {window_index}/{total_windows} {window.id}: 分析响应不符合候选合同，处理已停止")
+            raise
+        candidates.extend(validated)
+        seen_candidate_ids.update(candidate.id for candidate in validated)
         checkpoint_processed_window(checkpoint_path, processed_window_ids, processed_window_id_set, window.id, candidates)
         emit_progress(
             f"[候选扫描] {window_index}/{total_windows} {window.id}: 完成, "
-            f"新增 {len(candidates) - before_count} 条, 跳过 {skipped_candidates} 条, 当前累计 {len(candidates)} 条"
+            f"新增 {len(candidates) - before_count} 条, 跳过 0 条, 当前累计 {len(candidates)} 条"
         )
 
     write_json(output_path, [candidate.model_dump() for candidate in candidates])

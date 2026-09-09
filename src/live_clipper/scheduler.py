@@ -8,7 +8,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from .config import SchedulerJobConfig, Settings
-from .utils import ensure_dir, read_json, write_json
+from .utils import ensure_dir, read_json, review_material_path, write_json
 
 JOB_ID_RE = re.compile(r"^[a-z0-9_-]{1,64}$")
 JOB_TYPES = {"scan_recordings", "review_due_check", "maintenance_check", "ai_review"}
@@ -485,7 +485,7 @@ def _job_state(runs_state: dict[str, Any], job_id: str) -> dict[str, Any]:
 
 def _write_review_task(run_dir: Path, run_id: str) -> None:
     ensure_dir(run_dir)
-    task_path = run_dir / "codex_task.md"
+    task_path = review_material_path(run_dir, "review_task.md")
     if task_path.exists():
         return
     task_path.write_text(

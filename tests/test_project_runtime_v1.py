@@ -1,6 +1,7 @@
+from resource_test_support import ready_project_config
+
 from live_clipper import service
 from live_clipper.config import PathsConfig, Settings
-from live_clipper.project_domain import default_project_config
 from live_clipper.project_runtime import (
     dispatch_queued,
     ensure_retention_confirmations,
@@ -18,7 +19,7 @@ def test_fifo_dispatch_failure_does_not_block_next_and_recovery_keeps_run_id(tmp
     output.mkdir()
     repo = open_project_repository(tmp_path / "service")
     project = ProjectManager(repo, Settings(cheap_model_api_key="fake")).create_project(
-        name="P", config=default_project_config(source, output), activation_state="active"
+        name="P", config=ready_project_config(repo, source, output), activation_state="active"
     )
     failed = repo.create_normal_run(
         project_id=project.project_id,
@@ -62,7 +63,7 @@ def test_retention_confirmation_deletes_only_allowlisted_project_intermediates(t
     output.mkdir()
     repo = open_project_repository(tmp_path / "service")
     project = ProjectManager(repo, Settings(cheap_model_api_key="fake")).create_project(
-        name="P", config=default_project_config(source, output), activation_state="active"
+        name="P", config=ready_project_config(repo, source, output), activation_state="active"
     )
     snapshot = {"output": {"intermediate_retention": "remind_immediately"}}
     run = repo.create_normal_run(

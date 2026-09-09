@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "live-clipper"
-version = "1.0.1"
+version = "1.0.3"
 description = "Venus: CLI pipeline for extracting highlight clips from livestream recordings."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -68,6 +68,7 @@ where = ["src"]
 [tool.setuptools.package-data]
 live_clipper = [
   "prompts/*.md",
+  "validation_audio.wav",
   "web_static/fonts/*.woff2",
   "web_static/fonts/*.pdf",
   "web_static/fonts/*.txt",

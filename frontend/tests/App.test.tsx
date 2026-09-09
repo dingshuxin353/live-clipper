@@ -60,7 +60,7 @@ describe("Venus 1.0 core workbench", () => {
       "/api/onboarding": { ...WORKBENCH_ONBOARDING, entry: { mode: "onboarding", onboarding: "new", reason_code: null, evidence_codes: [] }, session: null },
       "/api/onboarding/start": { ok: true, session },
     });
-    render(<App />); expect(await screen.findByRole("dialog", { name: "开始" })).toBeVisible();
+    render(<App />); await waitFor(() => expect(screen.getByRole("dialog", { name: "开始" })).toBeVisible());
     expect(calls.some(([path]) => path === "/api/onboarding/start")).toBe(true);
   });
 
@@ -81,7 +81,7 @@ describe("Venus 1.0 core workbench", () => {
       "/api/onboarding/pause": { ok: true, session: paused },
     });
     render(<App />); const dialog = await screen.findByRole("dialog", { name: "开始" });
-    const pauseButton = within(dialog).getAllByRole("button", { name: "稍后继续" })[0]; await waitFor(() => expect(pauseButton).toBeEnabled()); fireEvent.keyDown(document, { key: "Escape" });
+    const pauseButton = within(dialog).getAllByRole("button", { name: "稍后继续" })[0]; await waitFor(() => expect(pauseButton).toBeEnabled()); fireEvent.keyDown(dialog, { key: "Escape" });
     const pausedCard = (await screen.findByText("首次设置尚未完成")).closest("article"); expect(pausedCard).not.toBeNull();
     const resume = within(pausedCard!).getByRole("button", { name: "继续首次设置" }); await waitFor(() => expect(resume).toHaveFocus());
   });
@@ -104,11 +104,11 @@ describe("Venus 1.0 core workbench", () => {
     expect(document.querySelectorAll(".project-row")[0]).toHaveTextContent("受阻项目");
   });
 
-  it("persists the four-step draft under the frozen localStorage key", async () => {
+  it("persists the four-step draft under its own stable identity", async () => {
     installFetchMock(); render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: /新建项目/ }));
     fireEvent.change(await screen.findByLabelText(/项目名称/), { target: { value: "可恢复草稿" } });
-    await waitFor(() => expect(JSON.parse(localStorage.getItem("venus.project-draft.v1") ?? "{}").name).toBe("可恢复草稿"));
+    await waitFor(() => expect(JSON.parse(localStorage.getItem(`venus.project-draft.v1.${localStorage.getItem("venus.project-draft.v1.active")}`) ?? "{}").name).toBe("可恢复草稿"));
     fireEvent.click(screen.getByRole("button", { name: "关闭" }));
     fireEvent.click(screen.getByRole("button", { name: /新建项目/ }));
     expect(await screen.findByLabelText(/项目名称/)).toHaveValue("可恢复草稿");
@@ -148,7 +148,7 @@ describe("Venus 1.0 core workbench", () => {
     await waitFor(() => expect(attempts).toBe(2));
     const bodies = calls.filter(([path, options]) => path === "/api/projects" && options?.method === "POST").map(([, options]) => JSON.parse(String(options?.body)));
     expect(bodies[0].request_id).toBe(bodies[1].request_id);
-    expect(bodies[1].project.config).toMatchObject({ schema_version: 2, resources: { review_ref: "analysis.main" }, processing: { review_strategy: "ai_auto" } });
+    expect(bodies[1].project.config).toMatchObject({ schema_version: 2, resources: { review_ref: "reuse_analysis" }, processing: { review_strategy: "ai_auto" } });
   });
 
   it("locks the manual scan button and prevents duplicate writes", async () => {
@@ -190,18 +190,15 @@ describe("Venus 1.0 core workbench", () => {
     expect(screen.queryByRole("heading", { name: PROJECT.name })).not.toBeInTheDocument();
   });
 
-  it("preserves global settings and exposes project resources read-only", async () => {
+  it("keeps application settings separate from the resource workspace", async () => {
     installFetchMock(); route("/settings"); const view = render(<App />);
     expect(await screen.findByRole("heading", { name: "设置" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "保存配置" })).toBeVisible();
-    expect(screen.getByLabelText("录像目录")).toBeVisible();
-    view.unmount();
-    route("/resources"); render(<App />);
+    expect(screen.queryByRole("button", { name: "保存应用设置" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("录像目录")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/API Key/)).not.toBeInTheDocument();
+    view.unmount(); route("/resources"); render(<App />);
     expect(await screen.findByRole("heading", { name: "资源" })).toBeVisible();
-    expect(screen.getByText("本地 ASR")).toBeVisible();
-    expect(screen.getByText("主分析模型")).toBeVisible();
-    expect(screen.getByRole("link", { name: "前往设置" })).toHaveAttribute("href", "/settings");
-    expect(screen.queryByRole("button", { name: /删除|新增|编辑/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "添加资源" })).toHaveAttribute("href", "/resources/new");
   });
 
   it("shows the current unseen result count in the top navigation", async () => {

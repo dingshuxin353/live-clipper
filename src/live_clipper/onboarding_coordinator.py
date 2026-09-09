@@ -12,7 +12,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from . import asr_models, config_editor, onboarding, onboarding_resources, service
+from . import asr_models, onboarding, onboarding_resources, service
 from .config import Settings
 from .first_run_detection import detect_first_run_environment, inspect_startup
 from .first_run_state import FirstRunSession, FirstRunStateError, StartupDecision
@@ -26,6 +26,7 @@ from .project_service import (
     output_directory_status,
 )
 from .project_storage import ProjectRepository, database_path
+from .resource_store import ResourceError, ResourceStore
 
 
 class OnboardingError(ValueError):
@@ -290,7 +291,7 @@ class OnboardingCoordinator:
             settings = self.settings()
         except Exception:  # noqa: BLE001 - diagnostic startup must still return a safe DTO.
             settings = Settings()
-        resources = onboarding_resources.resource_summaries(settings, self.service_dir)
+        resources = self._resource_summary(session.draft if session else {})
         migration = None
         if decision.entry in {"migration_required", "diagnostic_required", "workbench"}:
             from .migration_coordinator import migration_summary_for_startup
@@ -405,7 +406,14 @@ class OnboardingCoordinator:
             if existing:
                 session = repo.get_first_run_session()
                 return 200, {"ok": True, "session": _safe_session(session), "reused": True}
-            session = repo.update_first_run_draft(expected, patch, current_step=current_step)
+            with repo.transaction():
+                for section, purpose in (('asr', 'asr'), ('ai', 'analysis')):
+                    identifier = patch.get(section, {}).get('resource_id')
+                    if identifier:
+                        resource = ResourceStore(repo).get(identifier)
+                        if resource['deleted'] or purpose not in resource['config']['purposes']:
+                            raise ValueError('incompatible_resource')
+                session = repo.update_first_run_draft(expected, patch, current_step=current_step)
             repo.save_idempotency_key("onboarding.session", request_id, request_hash=request_hash, object_type="session", object_id="primary")
             return 200, {"ok": True, "session": _safe_session(session)}
         except (ValueError, KeyError) as exc:
@@ -473,152 +481,6 @@ class OnboardingCoordinator:
         finally:
             repo.close()
 
-    def _resource_commit_guard(self, repo: ProjectRepository, request_id: str, payload: dict[str, Any]) -> bool:
-        existing = repo.get_idempotency_key("onboarding.resource", request_id)
-        if existing:
-            if existing["request_hash"] != _request_hash(payload):
-                raise OnboardingError("request_id_conflict", "这次操作与上次提交的内容不一致，请重新打开首次设置", status=409)
-            return True
-        return False
-
-    def asr_local(self, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
-        _strict_body(body, _COMMON_REQUEST_FIELDS | {"model_id", "model_source"})
-        request_id = _request_id(body.get("request_id"))
-        expected = _revision(body.get("expected_revision"))
-        model_id = str(body.get("model_id") or "").strip()
-        source = str(body.get("model_source") or asr_models.DEFAULT_MODEL_SOURCE).strip()
-        if model_id not in asr_models.registry_ids() or source not in asr_models.source_ids():
-            raise OnboardingError("model_not_ready", "模型或下载源不可用", status=409)
-        payload = {"model_id": model_id, "model_source": source}
-        request_hash = _request_hash(payload)
-        repo = self._require_writable_session(
-            expected_revision=expected,
-            allowed_states={"in_progress"},
-            replay_scope="onboarding.resource",
-            replay_request_id=request_id,
-            replay_payload=payload,
-        )
-        try:
-            if self._resource_commit_guard(repo, request_id, payload):
-                return 200, {"ok": True, "reused": True, "session": _safe_session(repo.get_first_run_session())}
-            try:
-                try:
-                    asr_models.recommended_model()
-                except ValueError as exc:
-                    raise OnboardingError("diagnostic_required", "本地 ASR 模型目录缺少唯一推荐项", status=409) from exc
-                if os.getenv("ASR_BACKEND") is not None or os.getenv("ASR_MODEL") is not None:
-                    raise OnboardingError("asr_overridden_by_environment", "ASR 配置正被环境变量覆盖，请先移除 ASR_MODEL / ASR_BACKEND", status=409)
-                if asr_models.local_path_for(model_id) is None:
-                    raise OnboardingError("model_not_ready", "所选本地模型尚未完整安装", status=409)
-                entry = asr_models.model_entry(model_id)
-                saved = config_editor.save_asr_model_selection(entry["backend"], model_id, model_source=source, config_path=self.config_path, backup_root=self.config_path.parent / "work" / "config_backups")
-                if not saved.get("ok"):
-                    raise OnboardingError("resource_commit_failed", "本地 ASR 配置保存失败", status=500)
-                loaded = onboarding_resources.load_settings_explicit(self.config_path, self.env_path)
-                if loaded.asr.backend != entry["backend"] or loaded.asr.model != model_id or loaded.asr.model_source != source:
-                    raise OnboardingError("resource_commit_failed", "本地 ASR 配置回读不一致", status=500)
-            except OnboardingError:
-                raise
-            except Exception as exc:
-                raise OnboardingError("resource_commit_failed", "本地 ASR 配置保存失败", status=500) from exc
-            session = repo.update_first_run_draft(expected, {"asr": {"mode": "local", "local_model_id": model_id, "model_source": source, "model": model_id}}, current_step="asr")
-            repo.save_idempotency_key("onboarding.resource", request_id, request_hash=request_hash, object_type="session", object_id="primary")
-            return 200, {"ok": True, "resource": {"mode": "local", "model_id": model_id, "ready": True}, "session": _safe_session(session)}
-        finally:
-            repo.close()
-
-    def asr_cloud(self, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
-        _strict_body(body, _COMMON_REQUEST_FIELDS | {"api_base", "model", "api_key"})
-        request_id = _request_id(body.get("request_id"))
-        expected = _revision(body.get("expected_revision"))
-        api_base = str(body.get("api_base") or "").strip()
-        model = str(body.get("model") or "").strip()
-        api_key = str(body.get("api_key") or "").strip()
-        payload = {"api_base": api_base, "model": model}
-        request_hash = _request_hash(payload)
-        repo = self._require_writable_session(
-            expected_revision=expected,
-            allowed_states={"in_progress"},
-            replay_scope="onboarding.resource",
-            replay_request_id=request_id,
-            replay_payload=payload,
-        )
-        try:
-            if self._resource_commit_guard(repo, request_id, payload):
-                return 200, {"ok": True, "reused": True, "session": _safe_session(repo.get_first_run_session())}
-            result = onboarding_resources.test_asr_service(api_base, model, api_key, allow_loopback=urlsplit_host_is_loopback(api_base))
-            if not result.get("ok"):
-                return 422, result
-            try:
-                committed = onboarding_resources.commit_asr_cloud_configuration(config_path=self.config_path, env_path=self.env_path, api_base=api_base, model=model, api_key=api_key, allow_loopback=urlsplit_host_is_loopback(api_base))
-                normalized_endpoint = onboarding_resources.normalize_api_base(api_base, allow_loopback=urlsplit_host_is_loopback(api_base))
-                loaded = onboarding_resources.load_settings_explicit(self.config_path, self.env_path)
-                if loaded.asr.backend != "openai" or loaded.asr.model != model or loaded.asr.api_base != normalized_endpoint or not loaded.asr.api_key:
-                    raise OnboardingError("resource_commit_failed", "云端 ASR 配置回读不一致", status=500)
-            except onboarding_resources.ResourceError as exc:
-                raise OnboardingError(exc.code, exc.message, status=500, fields=exc.fields) from exc
-            except Exception as exc:  # noqa: BLE001 - config/readback failures use one stable public contract.
-                raise OnboardingError("resource_commit_failed", "云端 ASR 配置保存失败", status=500) from exc
-            normalized_endpoint = onboarding_resources.normalize_api_base(
-                api_base, allow_loopback=urlsplit_host_is_loopback(api_base)
-            )
-            session = repo.update_first_run_draft(
-                expected,
-                {"asr": {"mode": "cloud", "api_base": normalized_endpoint, "model": model}},
-                current_step="asr",
-            )
-            repo.save_idempotency_key("onboarding.resource", request_id, request_hash=request_hash, object_type="session", object_id="primary")
-            return 200, {"ok": True, "resource": committed, "session": _safe_session(session)}
-        finally:
-            repo.close()
-
-    def ai(self, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
-        _strict_body(body, _COMMON_REQUEST_FIELDS | {"provider_id", "provider_label", "api_base", "model", "api_key"})
-        request_id = _request_id(body.get("request_id"))
-        expected = _revision(body.get("expected_revision"))
-        provider_id = str(body.get("provider_id") or "custom").strip()
-        provider_label = str(body.get("provider_label") or provider_id).strip()
-        api_base = str(body.get("api_base") or "").strip()
-        model = str(body.get("model") or "").strip()
-        api_key = str(body.get("api_key") or "").strip()
-        payload = {"provider_id": provider_id, "provider_label": provider_label, "api_base": api_base, "model": model}
-        request_hash = _request_hash(payload)
-        repo = self._require_writable_session(
-            expected_revision=expected,
-            allowed_states={"in_progress"},
-            replay_scope="onboarding.resource",
-            replay_request_id=request_id,
-            replay_payload=payload,
-        )
-        try:
-            if self._resource_commit_guard(repo, request_id, payload):
-                return 200, {"ok": True, "reused": True, "session": _safe_session(repo.get_first_run_session())}
-            result = onboarding_resources.test_ai_service(api_base, model, api_key, allow_loopback=urlsplit_host_is_loopback(api_base))
-            if not result.get("ok"):
-                return 422, result
-            try:
-                committed = onboarding_resources.commit_llm_configuration(config_path=self.config_path, env_path=self.env_path, provider_label=provider_label, api_base=api_base, model=model, api_key=api_key, allow_loopback=urlsplit_host_is_loopback(api_base))
-                normalized_endpoint = onboarding_resources.normalize_api_base(api_base, allow_loopback=urlsplit_host_is_loopback(api_base))
-                loaded = onboarding_resources.load_settings_explicit(self.config_path, self.env_path)
-                if loaded.llm.model != model or loaded.llm.api_base != normalized_endpoint or not loaded.llm.api_key:
-                    raise OnboardingError("resource_commit_failed", "AI 配置回读不一致", status=500)
-            except onboarding_resources.ResourceError as exc:
-                raise OnboardingError(exc.code, exc.message, status=500, fields=exc.fields) from exc
-            except Exception as exc:  # noqa: BLE001 - config/readback failures use one stable public contract.
-                raise OnboardingError("resource_commit_failed", "AI 配置保存失败", status=500) from exc
-            normalized_endpoint = onboarding_resources.normalize_api_base(
-                api_base, allow_loopback=urlsplit_host_is_loopback(api_base)
-            )
-            session = repo.update_first_run_draft(
-                expected,
-                {"ai": {"provider_id": provider_id, "api_base": normalized_endpoint, "model": model}},
-                current_step="ai",
-            )
-            repo.save_idempotency_key("onboarding.resource", request_id, request_hash=request_hash, object_type="session", object_id="primary")
-            return 200, {"ok": True, "resource": committed, "session": _safe_session(session)}
-        finally:
-            repo.close()
-
     def _project_from_draft(self, draft: dict[str, Any]) -> tuple[str, dict[str, Any], dict[str, Any]]:
         project = draft.get("project")
         if not isinstance(project, dict):
@@ -671,8 +533,9 @@ class OnboardingCoordinator:
                 "timezone": timezone,
             }
         )
-        base["resources"].update({"asr_ref": "legacy.asr.default", "analysis_ref": "legacy.analysis.default"})
+        base["resources"].update({"asr_ref": draft.get("asr", {}).get("resource_id", ""), "analysis_ref": draft.get("ai", {}).get("resource_id", "")})
         config = project_config_v2(base)
+        config["resources"]["review_ref"] = "reuse_analysis"
         return name, config, {"source_directory": source, "output_directory": output, "trigger_mode": trigger, "schedule_mode": schedule_mode}
 
     def validate_project(self, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
@@ -688,8 +551,8 @@ class OnboardingCoordinator:
             result = manager.validate_project(name=name, config=config, activation_state="active", allow_creatable_output=True)
             output_status = output_directory_status(Path(raw["output_directory"]))
             checks = {
-                "asr": {"ready": bool(onboarding_resources.resource_summaries(settings, self.service_dir)["asr"]["ready"])},
-                "ai": {"ready": bool(onboarding_resources.resource_summaries(settings, self.service_dir)["ai"]["ready"])},
+                "asr": {"ready": bool(self._resource_summary(repo.get_first_run_session().draft)["asr"]["ready"])},
+                "ai": {"ready": bool(self._resource_summary(repo.get_first_run_session().draft)["ai"]["ready"])},
                 "source_directory": {"status": "ready" if Path(raw["source_directory"]).is_dir() else "blocked"},
                 "output_directory": {"status": output_status},
             }
@@ -864,47 +727,41 @@ class OnboardingCoordinator:
             if should_close:
                 repo.close()
 
-    def _revalidate_resources(self, settings: Settings, *, draft: dict[str, Any] | None = None) -> None:
-        asr = settings.asr
-        if asr is None or not asr.model:
-            raise OnboardingError("model_not_ready", "语音识别资源尚未就绪", status=422)
-        if os.getenv("ASR_BACKEND") is not None or os.getenv("ASR_MODEL") is not None:
-            raise OnboardingError("asr_overridden_by_environment", "ASR 配置正被环境变量覆盖，请先移除 ASR_MODEL / ASR_BACKEND", status=422)
-        asr_draft = draft.get("asr") if isinstance(draft, dict) else None
-        if isinstance(asr_draft, dict):
-            mode = asr_draft.get("mode")
-            if mode == "local":
+    def _resource_summary(self, draft: dict[str, Any]) -> dict[str, Any]:
+        result = {}
+        if not database_path(self.service_dir).exists():
+            return {'asr': {'configured': False, 'ready': False}, 'ai': {'configured': False, 'ready': False}, 'model_catalog': asr_models.list_models(self.service_dir)}
+        with self._repo() as repo:
+            store = ResourceStore(repo)
+            for section, purpose in (('asr', 'asr'), ('ai', 'analysis')):
+                identifier = draft.get(section, {}).get('resource_id', '')
                 try:
-                    entry = asr_models.model_entry(asr.model)
-                except ValueError as exc:
-                    raise OnboardingError("model_not_ready", "已保存的本地 ASR 配置无法识别", status=422) from exc
-                if (
-                    asr.model != asr_draft.get("local_model_id")
-                    or asr.backend != entry["backend"]
-                    or asr.model_source != asr_draft.get("model_source")
-                ):
-                    raise OnboardingError("model_not_ready", "已保存的本地 ASR 配置与当前选择不一致", status=422)
-            if mode == "cloud" and (
-                asr.backend != "openai"
-                or asr.model != asr_draft.get("model")
-                or asr.api_base != asr_draft.get("api_base")
-            ):
-                raise OnboardingError("resource_commit_failed", "已保存的云端 ASR 配置与当前选择不一致", status=422)
-        if asr.backend == "openai":
-            result = onboarding_resources.test_asr_service(asr.api_base or "", asr.model, asr.api_key or "", allow_loopback=urlsplit_host_is_loopback(asr.api_base or ""))
-        elif asr_models.local_path_for(asr.model) is None:
-            raise OnboardingError("model_not_ready", "本地 ASR 模型尚未完整安装", status=422)
-        else:
-            result = {"ok": True}
-        if not result.get("ok"):
-            raise OnboardingError(str(result.get("error_code") or "asr_request_failed"), str(result.get("message") or "语音识别资源测试失败"), status=422)
-        llm = settings.llm
-        ai_draft = draft.get("ai") if isinstance(draft, dict) else None
-        if isinstance(ai_draft, dict) and (llm.model != ai_draft.get("model") or llm.api_base != ai_draft.get("api_base")):
-            raise OnboardingError("resource_commit_failed", "已保存的 AI 配置与当前选择不一致", status=422)
-        ai = onboarding_resources.test_ai_service(llm.api_base, llm.model, llm.api_key or "", allow_loopback=urlsplit_host_is_loopback(llm.api_base))
-        if not ai.get("ok"):
-            raise OnboardingError(str(ai.get("error_code") or "ai_request_failed"), str(ai.get("message") or "AI 资源测试失败"), status=422)
+                    resource = store.get(identifier)
+                    ready = not resource['deleted'] and resource['validation'].get(purpose, {}).get('state') == 'ready'
+                    if section == 'ai':
+                        ready = ready and resource['validation'].get('review', {}).get('state') == 'ready'
+                    config = resource['config']
+                    result[section] = {'configured': True, 'ready': ready, 'resource_id': identifier,
+                        'model': config.get('model'), 'model_id': config.get('model'), 'model_label': resource['name'],
+                        'provider_label': config.get('provider'), 'api_base_display': config.get('endpoint'),
+                        'mode': 'cloud' if resource['kind'] == 'cloud_asr' else 'local',
+                        'credential_present': resource['has_credential'], 'problem': None if ready else '资源尚未通过用途验证'}
+                except ResourceError:
+                    result[section] = {'configured': False, 'ready': False, 'problem': '请选择资源'}
+        result['model_catalog'] = asr_models.list_models(self.service_dir)
+        return result
+
+    def _revalidate_resources(self, settings: Settings, *, draft: dict[str, Any] | None = None) -> None:
+        # Finish checks durable evidence and local availability; it never sends paid probes.
+        with self._repo() as repo:
+            store = ResourceStore(repo)
+            try:
+                store.freeze((draft or {}).get('asr', {}).get('resource_id', ''), 'asr')
+                identifier = (draft or {}).get('ai', {}).get('resource_id', '')
+                store.freeze(identifier, 'analysis')
+                store.freeze(identifier, 'review')
+            except ResourceError as exc:
+                raise OnboardingError(exc.code, '所选资源尚未就绪，请返回资源页准备', status=422) from None
 
     def dispatch(self, method: str, path: str, body: dict[str, Any] | None = None) -> tuple[int, dict[str, Any]] | None:
         parts = [item for item in path.split("?")[0].split("/") if item]
@@ -919,9 +776,6 @@ class OnboardingCoordinator:
             ("POST", ("api", "onboarding", "pause")): self.pause,
             ("POST", ("api", "onboarding", "resume")): self.resume,
             ("POST", ("api", "onboarding", "environment-check")): self.environment_check,
-            ("POST", ("api", "onboarding", "resources", "asr", "local")): self.asr_local,
-            ("POST", ("api", "onboarding", "resources", "asr", "cloud")): self.asr_cloud,
-            ("POST", ("api", "onboarding", "resources", "ai")): self.ai,
             ("POST", ("api", "onboarding", "project", "validate")): self.validate_project,
             ("POST", ("api", "onboarding", "finish")): self.finish,
             ("POST", ("api", "onboarding", "service", "retry")): self.retry,

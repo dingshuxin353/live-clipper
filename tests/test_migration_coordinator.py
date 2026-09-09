@@ -133,7 +133,7 @@ def test_completed_migration_returns_frozen_backup_grant_without_writes_or_syste
         lambda *args, **kwargs: {"ok": ready, **({} if ready else {"error_code": "service_not_ready"})},
     )
     session = _execute_completed(coordinator)
-    assert session["state"] == ("completed_ready" if ready else "completed_attention")
+    assert session["state"] == "completed_attention"
     backup = coordinator.backup_root / session["migration_id"]
     before = _tree_facts(backup)
     monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: pytest.fail("grant must not run a system command"))
@@ -324,14 +324,14 @@ def test_execute_is_idempotent_and_atomically_switches_to_projects(tmp_path):
     replay = coordinator.execute(body)[1]
     assert replay["session"]["migration_id"] == first["session"]["migration_id"]
     completed = _wait_completed(coordinator, first["session"]["migration_id"])
-    assert completed["session"]["state"] == "completed_ready"
+    assert completed["session"]["state"] == "completed_attention"
     with ProjectRepository(service) as repository:
         assert repository.get_data_mode() == "projects"
         assert len(repository.list_projects()) == 1
         runs = repository.list_runs()
         assert len(runs) == 1 and runs[0].trigger_source == "legacy_import"
         assert runs[0].status == "completed"
-        assert repository.connection.execute("SELECT count(*) FROM issues").fetchone()[0] == 0
+        assert repository.connection.execute("SELECT count(*) FROM issues").fetchone()[0] == 1
     backup = tmp_path / "work" / "migration-backups" / first["session"]["migration_id"]
     assert backup.is_dir() and (backup / "manifest.json").is_file()
     assert "SENTINEL" not in (backup / "manifest.json").read_text(encoding="utf-8")
@@ -428,7 +428,7 @@ def test_restart_recovery_marks_unowned_execution_failed_without_resuming(tmp_pa
         assert repository.list_projects() == []
 
 
-def test_service_start_failure_becomes_completed_attention_on_same_project(tmp_path, monkeypatch):
+def test_migration_preserves_project_inactive_until_resource_validation(tmp_path, monkeypatch):
     coordinator, service_dir = _legacy_home(tmp_path)
     monkeypatch.setattr(
         service,
@@ -447,7 +447,7 @@ def test_service_start_failure_becomes_completed_attention_on_same_project(tmp_p
     completed = _wait_completed(coordinator, accepted["session"]["migration_id"])
     assert completed["session"]["state"] == "completed_attention"
     assert completed["report"]["blocker_count"] == 1
-    assert completed["report"]["blocker_codes"] == ["service_not_ready"]
+    assert completed["report"]["blocker_codes"] == ["resource_validation_required"]
     with ProjectRepository(service_dir) as repository:
         project = repository.list_projects()[0]
         runtime = repository.get_runtime(project.project_id)
@@ -473,6 +473,9 @@ def test_recovered_migration_readiness_issue_closes_on_same_project_without_scan
         run_ids = [run.run_id for run in repository.list_runs(project_id=project.project_id)]
         scan_ids = [scan.scan_id for scan in repository.list_scan_events(project.project_id)]
 
+        from resource_test_support import assign_test_resources
+        revision = repository.get_config_revision(project.project_id)
+        repository.add_config_revision(project.project_id, assign_test_resources(repository, revision.config), expected_revision=revision.revision)
         ProjectManager(repository, settings).enable_project(project.project_id, request_id="enable-after-repair")
         runtime = repository.get_runtime(project.project_id)
         assert runtime is not None
@@ -489,7 +492,7 @@ def test_recovered_migration_readiness_issue_closes_on_same_project_without_scan
         )
         status, payload = api.handle(
             "POST",
-            "/api/issue-groups/migration-runtime-readiness/recheck",
+            f"/api/issue-groups/{issue.issue_group_key}/recheck",
             body={
                 "request_id": "recheck-after-repair",
                 "issue_revisions": {issue.issue_id: issue.issue_revision},
@@ -598,7 +601,7 @@ def test_fault_rolls_back_all_business_facts_and_retry_reuses_backup(tmp_path, f
         }
     )[1]
     completed = _wait_completed(coordinator, retried["session"]["migration_id"])
-    assert completed["session"]["state"] == "completed_ready"
+    assert completed["session"]["state"] == "completed_attention"
 
 
 def test_retry_plan_change_returns_to_durable_failed_state(tmp_path, monkeypatch):

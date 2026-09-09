@@ -5,10 +5,11 @@ import json
 from datetime import UTC, datetime
 
 import pytest
+from resource_test_support import ready_project_config
 
+from live_clipper.cheap_model_client import CheapModelServiceError
 from live_clipper.config import Settings
 from live_clipper.media_probe import MediaMetadata
-from live_clipper.project_domain import default_project_config
 from live_clipper.project_resources import resolve_parameter_snapshot
 from live_clipper.project_result_runtime import (
     ProjectReviewError,
@@ -49,12 +50,12 @@ def _project_run(tmp_path, *, candidates: list[dict]):
     manager = ProjectManager(repository, settings)
     project = manager.create_project(
         name="项目",
-        config=default_project_config(source_dir, output_dir),
+        config=ready_project_config(repository, source_dir, output_dir),
         activation_state="active",
     )
     revision = repository.get_config_revision(project.project_id)
     assert revision is not None
-    snapshot = resolve_parameter_snapshot(revision.config, settings)
+    snapshot = resolve_parameter_snapshot(revision.config, settings, repository=repository)
     run = repository.create_normal_run(
         project_id=project.project_id,
         content_id=hashlib.sha256(source_path.read_bytes()).hexdigest(),
@@ -67,7 +68,7 @@ def _project_run(tmp_path, *, candidates: list[dict]):
     run_dir = work_dir / "projects" / project.project_id / "runs" / run.run_id
     run_dir.mkdir(parents=True)
     write_json(run_dir / "merged_candidates.json", candidates)
-    write_json(run_dir / "codex_brief.json", {"source_name": source_path.name, "candidates": candidates})
+    write_json(run_dir / "review_brief.json", {"source_name": source_path.name, "candidates": candidates})
     write_json(run_dir / "transcript.json", {"sentences": [], "corrections": []})
     repository.transition_run(run.run_id, status="processing", stage="review", event_type="review_ready")
     return repository, project, repository.get_run(run.run_id), run_dir, output_dir
@@ -281,7 +282,7 @@ def test_transient_ai_failure_records_bounded_retry_without_raw_error(tmp_path):
             repository,
             run.run_id,
             run_dir=run_dir,
-            adapter=lambda _payload: (_ for _ in ()).throw(TimeoutError("sk-secret timeout")),
+            adapter=lambda _payload: (_ for _ in ()).throw(CheapModelServiceError("connection_timeout")),
             clock=lambda: current,
         )
 
@@ -346,7 +347,7 @@ def test_evidence_landed_before_database_failure_is_registered_on_retry(tmp_path
         repository,
         run.run_id,
         run_dir=run_dir,
-        adapter=lambda _payload: read_json(run_dir / "review_result.json"),
+        adapter=lambda _payload: pytest.fail("durable evidence must not call the adapter again"),
     )
 
     assert session.status == "no_clip"
@@ -380,3 +381,113 @@ def test_worker_tick_is_nonblocking_and_serializes_review_then_render(tmp_path):
     assert repository.get_run(run.run_id).status == "completed"
     assert repository.get_run_result(run.run_id).result_type == "clips_ready"
     assert not (run_dir / "review_result.tmp.json").exists()
+
+
+def test_concurrent_review_owners_do_not_repeat_adapter_or_replace_evidence(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    from live_clipper.project_storage import ProjectRepository
+
+    repository, _project, run, run_dir, _output = _project_run(tmp_path, candidates=[_candidate("one")])
+    entered, release, contender = Event(), Event(), Event()
+    calls = []
+
+    def adapter(_payload):
+        calls.append(1)
+        entered.set()
+        assert release.wait(5)
+        return {"format_version": 1, "overall_summary": "one", "warnings": [], "decisions": [_selected("one")]}
+
+    def execute(second=False):
+        with ProjectRepository(repository.service_dir) as repo:
+            if second:
+                contender.set()
+            return run_project_review(repo, run.run_id, run_dir=run_dir, adapter=adapter)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(execute)
+        assert entered.wait(5)
+        second = pool.submit(execute, True)
+        assert contender.wait(5)
+        release.set()
+        a, b = first.result(5), second.result(5)
+    assert calls == [1]
+    assert a.review_session_id == b.review_session_id
+    assert len(repository.list_ai_review_sessions(run.run_id)) == 1
+    assert reconcile_review_evidence(repository, run.run_id, run_dir=run_dir) == "verified"
+    digest = hashlib.sha256((run_dir / "review_result.json").read_bytes()).hexdigest()
+    run_project_review(repository, run.run_id, run_dir=run_dir, adapter=lambda _: pytest.fail("duplicate paid call"))
+    assert hashlib.sha256((run_dir / "review_result.json").read_bytes()).hexdigest() == digest
+
+
+@pytest.mark.parametrize("stage", ["review", "render"])
+def test_pipeline_reconciliation_cannot_rewind_result_worker_stages(tmp_path, stage):
+    from live_clipper.project_runtime import reconcile_processing
+
+    repository, _project, run, _run_dir, _output = _project_run(tmp_path, candidates=[_candidate("one")])
+    repository.transition_run(run.run_id, status="processing", stage=stage, event_type="started")
+    assert reconcile_processing(repository, work_dir=tmp_path / "work", stale_after_minutes=30) == []
+    assert repository.get_run(run.run_id).current_stage == stage
+
+
+def test_interrupted_review_without_evidence_does_not_repeat_paid_request(tmp_path):
+    repository, _project, run, run_dir, _output = _project_run(tmp_path, candidates=[_candidate("one")])
+    repository.create_ai_review_session(
+        run.run_id, attempt_number=1, resource_ref="test-review", model_name="test-model",
+        strategy_version="auto_review_v1", parameter_snapshot={}, evidence_relative_path="review_result.json",
+    )
+    with pytest.raises(ProjectReviewError, match="outcome is unknown"):
+        run_project_review(repository, run.run_id, run_dir=run_dir, adapter=lambda _: pytest.fail("duplicate paid call"))
+    assert len(repository.list_ai_review_sessions(run.run_id)) == 1
+    assert repository.get_run(run.run_id).status == "failed"
+    issues = repository.list_issues(run_id=run.run_id, active_only=True)
+    assert issues and all(issue.status == "action_required" and not issue.next_retry_at for issue in issues)
+
+
+def test_invalid_registered_outputs_preserved_and_stuck_registration_stops(tmp_path):
+    repository, _project, run, run_dir, _output = _project_run(tmp_path, candidates=[_candidate("one")])
+    original = run_project_review(repository, run.run_id, run_dir=run_dir, adapter=lambda _: {
+        "format_version": 1, "overall_summary": "one", "warnings": [], "decisions": [_selected("one")],
+    })
+    outputs = repository.list_run_outputs(run.run_id)
+    evidence_path = run_dir / "review_result.json"
+    evidence_path.write_text(evidence_path.read_text() + "\n")
+    assert reconcile_review_evidence(repository, run.run_id, run_dir=run_dir) == "invalid"
+    issue = repository.list_issues(run_id=run.run_id, active_only=True)[0]
+    assert issue.recovery_capability == "none"
+    assert "重新处理" in issue.next_step
+    # Reproduce a recovery already accepted by the previous version.
+    repository.transition_run(run.run_id, status="processing", stage="review", event_type="recovery_queued")
+    repository.create_ai_review_session(
+        run.run_id, attempt_number=2, resource_ref=original.resource_ref, model_name=original.model_name,
+        strategy_version=original.strategy_version, parameter_snapshot={}, evidence_relative_path="review_result.json",
+    )
+    before = evidence_path.read_bytes()
+    with pytest.raises(ProjectReviewError, match="create a new run"):
+        run_project_review(repository, run.run_id, run_dir=run_dir, adapter=lambda _: pytest.fail("must not call provider"))
+    assert repository.get_run(run.run_id).status == "failed"
+    assert repository.list_run_outputs(run.run_id) == outputs
+    assert evidence_path.read_bytes() == before
+    assert all(session.status == "invalid" for session in repository.list_ai_review_sessions(run.run_id))
+
+
+def test_stale_continue_request_cannot_reregister_existing_outputs(tmp_path):
+    from live_clipper.project_recovery import continue_run
+    from live_clipper.resource_store import ResourceError
+
+    repository, project, run, run_dir, _output = _project_run(tmp_path, candidates=[_candidate("one")])
+    run_project_review(repository, run.run_id, run_dir=run_dir, adapter=lambda _: {
+        "format_version": 1, "overall_summary": "one", "warnings": [], "decisions": [_selected("one")],
+    })
+    repository.transition_run(run.run_id, status="failed", stage="review", event_type="failed")
+    issue = repository.discover_issue(
+        issue_code="ai_review_invalid", category="ai", scope_type="run", project_id=project.project_id,
+        run_id=run.run_id, issue_group_key="stale-review", status="ready_to_recover",
+        recovery_capability="continue_run", redo_stages=("review",),
+    )
+    with pytest.raises(ResourceError, match="review_reprocess_required"):
+        continue_run(repository, issue.issue_id, expected_issue_revision=issue.issue_revision,
+                     request_id="stale-continue", requested_by="test")
+    assert repository.get_run(run.run_id).status == "failed"
+    assert not repository.list_recovery_attempts(issue.issue_id)

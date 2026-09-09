@@ -1,8 +1,9 @@
 import stat
 
+from resource_test_support import ready_project_config
+
 from live_clipper.config import RecordingSourceDefaultConfig, Settings
 from live_clipper.project_api import ProjectAPI
-from live_clipper.project_domain import default_project_config
 from live_clipper.project_scan import ProjectScanError
 
 
@@ -12,7 +13,7 @@ def test_api_create_list_detail_and_stable_errors(tmp_path):
     source.mkdir()
     output.mkdir()
     api = ProjectAPI(tmp_path / "service", Settings(cheap_model_api_key="fake"))
-    config = default_project_config(source, output)
+    config = ready_project_config(api.repository, source, output)
     status, payload = api.handle(
         "POST",
         "/api/projects",
@@ -58,7 +59,7 @@ def test_api_preview_revision_conflict_cursor_and_seen_anchor(tmp_path):
         body={"source_directory": str(source), "first_scan_mode": "choose_existing"},
     )
     assert status == 200 and preview["processable_files"] == 1
-    config = default_project_config(source, output)
+    config = ready_project_config(api.repository, source, output)
     status, created = api.handle(
         "POST",
         "/api/projects",
@@ -69,7 +70,7 @@ def test_api_preview_revision_conflict_cursor_and_seen_anchor(tmp_path):
         },
     )
     project_id = created["project"]["project_id"]
-    changed_config = default_project_config(source, output)
+    changed_config = ready_project_config(api.repository, source, output)
     changed_config["output"]["intermediate_retention"] = "keep"
     status, updated = api.handle(
         "PATCH",
@@ -121,9 +122,9 @@ def test_recent_project_creation_uses_legal_initial_scan_trigger(tmp_path):
     output = tmp_path / "output"
     source.mkdir()
     output.mkdir()
-    config = default_project_config(source, output)
-    config["source"].update(first_scan_mode="recent", lookback_days=3)
     api = ProjectAPI(tmp_path / "service", Settings(cheap_model_api_key="fake"))
+    config = ready_project_config(api.repository, source, output)
+    config["source"].update(first_scan_mode="recent", lookback_days=3)
 
     status, payload = api.handle(
         "POST",
@@ -146,9 +147,9 @@ def test_initial_scan_failure_returns_coherent_created_project(tmp_path, monkeyp
     output = tmp_path / "output"
     source.mkdir()
     output.mkdir()
-    config = default_project_config(source, output)
-    config["source"].update(first_scan_mode="recent", lookback_days=3)
     api = ProjectAPI(tmp_path / "service", Settings(cheap_model_api_key="fake"))
+    config = ready_project_config(api.repository, source, output)
+    config["source"].update(first_scan_mode="recent", lookback_days=3)
     monkeypatch.setattr(
         "live_clipper.project_api.scan_project",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(ProjectScanError("source_unavailable", "录像目录不可用")),
@@ -192,7 +193,7 @@ def test_manual_scan_returns_output_unwritable_without_creating_scan_or_run(tmp_
             "project": {
                 "name": "output-guard",
                 "description": "",
-                "config": default_project_config(source, output),
+                "config": ready_project_config(api.repository, source, output),
             },
         },
     )

@@ -70,7 +70,7 @@ Venus 首次启动会先检查旧数据，并在迁移前创建备份。升级�
 1. 从 [GitHub Releases](https://github.com/dingshuxin353/live-clipper/releases/latest) 安装并打开 Venus。
 2. 新用户完成首次设置；0.3.x 用户按应用内步骤检查、备份并升级旧数据。
 3. 创建或进入项目，确认录像来源和成片目录。
-4. 手动扫描录像，或在设置中启用定时扫描。
+4. 为项目选择语音识别、内容分析与审阅资源，再手动扫描或启用项目定时扫描。
 5. 处理完成后，在“成片”中查看视频、AI 判断和发布物料；遇到问题时按页面提示恢复或重新处理。
 
 本地语音模型提供 Small（约 187 MB）、Medium（约 489 MB）和 Large（约 1.6 GB）三档，可从 ModelScope（中国大陆推荐）或 Hugging Face（国际官方）下载。首次下载需要网络；下载完成后，本地语音识别可以离线运行。AI 审阅是否联网仍取决于所配置的 AI 服务。
@@ -98,7 +98,7 @@ Venus 首次启动会先检查旧数据，并在迁移前创建备份。升级�
 <details>
 <summary><strong>本地模型多大，首次需要多久？</strong></summary>
 
-Small 约 187 MB，Medium 约 489 MB，Large 约 1.6 GB。首次下载时间取决于网络和所选下载源，客户端会显示实际下载进度；首次向导初始选择 Small 只是为了降低首次下载成本，不代表质量推荐。
+Small 约 187 MB，Medium 约 489 MB，Large 约 1.6 GB。首次下载时间取决于网络和所选下载源，客户端会显示实际下载进度；模型由你明确选择，下载不会自动启动。
 </details>
 
 <details>
@@ -110,7 +110,7 @@ Small 约 187 MB，Medium 约 489 MB，Large 约 1.6 GB。首次下载时间取�
 <details>
 <summary><strong>AI 选片需要什么服务？</strong></summary>
 
-你可以使用本机的 Codex CLI、Claude Code，或配置 OpenAI-compatible 模型服务。可用性、联网行为和费用取决于你的选择。
+在资源页添加模型直连或 Claude Code 审阅资源，再为项目选择用途。开发分支已移除内置 Codex CLI；外部 Agent 仍可通过通用 MCP 或审阅材料协作。详见[资源与配置](docs/configuration.md)。
 </details>
 
 <details>

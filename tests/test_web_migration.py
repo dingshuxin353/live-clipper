@@ -7,7 +7,7 @@ from threading import Thread
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from live_clipper import config, service
+from live_clipper import service
 from live_clipper.project_storage import ProjectRepository
 from live_clipper.web import LiveClipperRequestHandler, WebPaths, handle_api_request
 
@@ -202,7 +202,6 @@ def test_restricted_real_http_executes_then_switches_to_project_api(tmp_path, mo
 
 def test_real_http_recheck_closes_recovered_migration_readiness_issue_without_new_work(tmp_path, monkeypatch):
     paths = _paths(tmp_path)
-    monkeypatch.setattr(config, "load_dotenv", lambda *args, **kwargs: None)
     monkeypatch.setenv("CHEAP_MODEL_API_KEY", "synthetic-ready-ai-key")
     service_ready = {"value": False}
     monkeypatch.setattr(
@@ -284,6 +283,10 @@ def test_real_http_recheck_closes_recovered_migration_readiness_issue_without_ne
             run_ids = [run.run_id for run in repository.list_runs(project_id=project_id)]
             scan_ids = [scan.scan_id for scan in repository.list_scan_events(project_id)]
 
+        from resource_test_support import assign_test_resources
+        with ProjectRepository(paths.service_dir) as repository:
+            revision = repository.get_config_revision(project_id)
+            repository.add_config_revision(project_id, assign_test_resources(repository, revision.config), expected_revision=revision.revision)
         service_ready["value"] = True
         enable_status, enabled = request(
             "POST",
@@ -297,7 +300,7 @@ def test_real_http_recheck_closes_recovered_migration_readiness_issue_without_ne
 
         recheck_status, rechecked = request(
             "POST",
-            "/api/issue-groups/migration-runtime-readiness/recheck",
+            f"/api/issue-groups/{issue.issue_group_key}/recheck",
             {
                 "request_id": "http-recheck-after-repair",
                 "issue_revisions": {issue.issue_id: issue.issue_revision},

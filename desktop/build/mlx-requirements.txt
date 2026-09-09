@@ -1,0 +1,4 @@
+# Desktop only: Python 3.11, macOS arm64. Keep the macOS 14 builds on newer hosts.
+mlx @ https://files.pythonhosted.org/packages/4e/3c/f56f5de7188b0b5855046244b1ebb6f2055cc298c9f7336b69cc2013ad23/mlx-0.32.2-cp311-cp311-macosx_14_0_arm64.whl#sha256=238b50d2ee3917c836e73f9446011518b79ff094940eb0107fa6cd17d02a2eca
+mlx-metal @ https://files.pythonhosted.org/packages/f7/ab/ba1952908c5d2a5070cf1cfbfea0161c4751ea62299e2776819810917483/mlx_metal-0.32.2-py3-none-macosx_14_0_arm64.whl#sha256=3825fff379dbc107dd3413e564a06caeaa24819910ec49c0439e454c06a1b9b8
+mlx-whisper==0.4.3

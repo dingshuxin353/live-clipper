@@ -1,0 +1,14 @@
+{
+  "format": 1,
+  "target": "darwin-arm64",
+  "minimum_macos": "14.0",
+  "compiler": "Apple clang version 17.0.0 (clang-1700.6.4.2)",
+  "sdk": "26.2",
+  "build_tools": {"meson": "1.9.0", "ninja": "1.13.0"},
+  "sources": {
+    "ffmpeg": {"version": "9.0.1", "file": "ffmpeg-9.0.1.tar.xz", "url": "https://ffmpeg.org/releases/ffmpeg-9.0.1.tar.xz", "size": 12036420, "sha256": "cf38e0e28c7e5605942c4a77755349b0145804a397af37eb1fb4c77cb237f635"},
+    "x264": {"commit": "b35605ace3ddf7c1a5d67a2eb553f034aef41d55", "file": "x264-b35605ace3ddf7c1a5d67a2eb553f034aef41d55.tar", "git": "https://code.videolan.org/videolan/x264.git", "size": 6133760, "sha256": "97011e241beb7322b21643d3c029b15d7d81018ae0332a44d1578ee11df00475"},
+    "dav1d": {"version": "1.5.4", "file": "dav1d-1.5.4.tar.xz", "url": "https://download.videolan.org/pub/videolan/dav1d/1.5.4/dav1d-1.5.4.tar.xz", "size": 1038852, "sha256": "686616b7c69eb88d44459391ab25cac13b6647a3b288835c5784e71c1514a5c5"},
+    "pkgconf": {"version": "2.5.1", "file": "pkgconf-2.5.1.tar.xz", "url": "https://distfiles.ariadne.space/pkgconf/pkgconf-2.5.1.tar.xz", "size": 328064, "sha256": "cd05c9589b9f86ecf044c10a2269822bc9eb001eced2582cfffd658b0a50c243"}
+  }
+}

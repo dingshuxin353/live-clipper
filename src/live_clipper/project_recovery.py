@@ -7,7 +7,6 @@ from typing import Any
 
 from .config import Settings
 from .project_domain import Run, new_id, normalize_utc, stable_json
-from .project_resources import resource_map
 from .project_result_domain import (
     Issue,
     RecoveryAttempt,
@@ -17,6 +16,7 @@ from .project_result_domain import (
 )
 from .project_service import output_directory_is_writable
 from .project_storage import ProjectRepository
+from .resource_store import ResourceError, ResourceStore
 
 IssueChecker = Callable[[Issue], Mapping[str, Any]]
 
@@ -61,21 +61,20 @@ def _default_check(
             "ok": output_directory_is_writable(output),
             "safe_checkpoint": issue.safe_checkpoint or "validated_review",
         }
-    if issue.issue_code in {"asr_resource_unavailable", "ai_resource_unavailable"}:
-        if settings is None:
-            return {"ok": False, "reason": "resource_check_required"}
-        references = run.parameter_snapshot.get("resources", {})
-        resource_id = (
-            references.get("asr_ref")
-            if issue.issue_code == "asr_resource_unavailable"
-            else references.get("review_ref")
-        )
-        resource = resource_map(settings).get(str(resource_id))
-        return {
-            "ok": bool(resource and resource.ready),
-            "safe_checkpoint": issue.safe_checkpoint or "artifacts",
-        }
+    if issue.recovery_capability == "continue_run":
+        _check_frozen_resources(repository, run)
     return {"ok": True, "safe_checkpoint": issue.safe_checkpoint or "artifacts"}
+
+
+def _check_frozen_resources(repository: ProjectRepository, run: Run) -> None:
+    if run.parameter_snapshot.get('resource_contract') != 1:
+        raise ResourceError('original_configuration_unknown')
+    try:
+        store = ResourceStore(repository)
+        for purpose in ('asr', 'analysis', 'review'):
+            store.resolved_binding(run.parameter_snapshot['resources'][purpose])
+    except (KeyError, TypeError):
+        raise ResourceError('original_configuration_unknown') from None
 
 
 def recheck_issue(
@@ -117,12 +116,16 @@ def recheck_issue(
             else:
                 override_failure = "output_inside_source"
     try:
+        if run is not None and issue.recovery_capability == 'continue_run':
+            _check_frozen_resources(repository, run)
         if override_failure is not None:
             result = {"ok": False, "reason": override_failure}
         elif overrides and checker is None:
             result = {"ok": True, "safe_checkpoint": issue.safe_checkpoint or "artifacts"}
         else:
             result = dict(checker(issue) if checker else _default_check(repository, issue, settings))
+    except ResourceError as exc:
+        result = {"ok": False, "reason": exc.code}
     except Exception:  # noqa: BLE001 - durable issue state must survive checker failures.
         result = {"ok": False, "reason": "check_failed"}
     if result.get("ok"):
@@ -221,6 +224,9 @@ def _accepted_attempt(
             failed_run = repository.get_run(str(issue.run_id))
             if failed_run is None:
                 raise KeyError(str(issue.run_id))
+            if "review" in issue.redo_stages and repository.list_run_outputs(failed_run.run_id):
+                raise ResourceError("review_reprocess_required")
+            _check_frozen_resources(repository, failed_run)
             active = repository.find_active_run(
                 failed_run.project_id,
                 failed_run.content_id,

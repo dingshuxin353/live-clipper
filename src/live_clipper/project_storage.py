@@ -51,7 +51,7 @@ from .project_result_domain import (
     validate_titles,
 )
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 MIGRATION_STATES = frozenset(
     {
@@ -740,6 +740,13 @@ VALUES (4, 'migration state and plan foundation v4', strftime('%Y-%m-%dT%H:%M:%f
                 "SELECT migration_fault('after_migration_version');",
             ]
         )
+    if 5 not in versions:
+        from .resource_store import SCHEMA as resource_schema
+
+        statements.extend([
+            resource_schema,
+            "INSERT INTO schema_migrations VALUES (5, 'named resource revisions', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));",
+        ])
     statements.append("COMMIT;")
     try:
         connection.executescript("\n".join(statements))
@@ -862,12 +869,23 @@ class ProjectRepository:
 
     @contextmanager
     def transaction(self, *, immediate: bool = True) -> Iterator[sqlite3.Connection]:
-        self.connection.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
+        # Nested repository operations participate in their caller's atomic commit.
+        import uuid
+
+        savepoint = "txn_" + uuid.uuid4().hex if self.connection.in_transaction else None
+        self.connection.execute(f"SAVEPOINT {savepoint}" if savepoint else ("BEGIN IMMEDIATE" if immediate else "BEGIN"))
         try:
             yield self.connection
-            self.connection.commit()
+            if savepoint:
+                self.connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+            else:
+                self.connection.commit()
         except BaseException:
-            self.connection.rollback()
+            if savepoint:
+                self.connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                self.connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+            else:
+                self.connection.rollback()
             raise
 
     def get_data_mode(self) -> str:

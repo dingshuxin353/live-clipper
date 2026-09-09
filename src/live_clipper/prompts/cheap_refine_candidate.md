@@ -2,7 +2,7 @@
 
 You are reviewing one livestream clip candidate for a sponsored workflow that must showcase Agnes as a practical AI model for real work.
 
-Decide whether this candidate should advance to final human/Codex review. Prefer clips that:
+Decide whether this candidate should advance to final human or AI review. Prefer clips that:
 
 - show a concrete work problem, workflow, AI tool use, or useful judgment
 - make Agnes / AI feel practical for ordinary creators, operators, or knowledge workers

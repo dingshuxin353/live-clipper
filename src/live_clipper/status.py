@@ -6,7 +6,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from .utils import read_json, write_json
+from .utils import read_json, review_material_path, write_json
 
 
 def _count_json_items(path: Path) -> int | None:
@@ -26,7 +26,7 @@ def _count_json_items(path: Path) -> int | None:
 
 
 def _file_status(run_dir: Path, name: str) -> dict[str, Any]:
-    path = run_dir / name
+    path = review_material_path(run_dir, name)
     status: dict[str, Any] = {
         "path": str(path),
         "exists": path.exists(),
@@ -56,10 +56,10 @@ def _infer_next_step(files: dict[str, dict[str, Any]]) -> str:
         return "运行 render 渲染 selected_clips.json"
     if not files["refined_candidates.json"]["exists"]:
         return "运行 refine，让 Agnes 二次复评候选"
-    if not files["codex_brief.json"]["exists"]:
+    if not files["review_brief.json"]["exists"]:
         return "运行 brief --source refined 生成精选候选包"
     if not files["selected_clips.json"]["exists"]:
-        return "审阅 codex_brief.json，并写入 selected_clips.json"
+        return "审阅 review_brief.json，并写入 selected_clips.json"
     return "已完成"
 
 
@@ -95,7 +95,7 @@ def build_run_status(run_dir: Path, *, write_report: bool = True) -> dict[str, A
         "cheap_candidates.json",
         "merged_candidates.json",
         "refined_candidates.json",
-        "codex_brief.json",
+        "review_brief.json",
         "selected_clips.json",
         "edit_decision_list.json",
     ]

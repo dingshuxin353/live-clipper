@@ -205,7 +205,8 @@ def test_web_v3_service_runs_confirmations_events_and_settings_api(tmp_path, mon
     assert log["ok"] is True
     assert confirmations["confirmations"][0]["id"] == created["confirmation_id"]
     assert events["events"][0]["type"] == "phase_changed"
-    assert settings["settings"]["service"]["scan_interval_minutes"] == 30
+    assert not settings["ok"]
+    assert settings["error_code"] == "settings_route_retired"
 
 
 def test_web_v3_approval_rejection_and_batch_api(tmp_path):

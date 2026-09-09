@@ -510,6 +510,7 @@ class MigrationCoordinator:
             str(plan.project_preview["source_directory"]),
             str(plan.project_preview["output_directory"]),
         )
+        config["resources"].update(asr_ref="legacy.asr.default", analysis_ref="legacy.analysis.default")
         schedule = config["schedule"]
         schedule["timezone"] = str(plan.project_preview["timezone"])
         schedule["enabled"] = plan.project_preview["trigger_mode"] == "scheduled"
@@ -624,6 +625,8 @@ class MigrationCoordinator:
                 for code in plan.readiness_summary["resource_problems"]
                 if code != "backup_space"
             ]
+            # Migrated settings have no structured capability evidence for the new resource contract.
+            blockers.append('resource_validation_required')
             report = {
                 "plan_version": PLAN_VERSION,
                 "plan_hash": plan.plan_hash,
@@ -669,24 +672,9 @@ class MigrationCoordinator:
                 fault_injection=self.fault_injection,
             )
             committed = True
-            from . import service
+            from .resource_migration import migrate_resources
 
-            completed = repository.get_migration_session(migration_id)
-            if completed is not None and completed.state == "completed_ready" and completed.project_id:
-                try:
-                    readiness = service.ensure_service_ready(
-                        self.settings_loader,
-                        service_dir=self.service_dir,
-                        project_id=completed.project_id,
-                    )
-                except Exception:  # noqa: BLE001 - the committed migration becomes attention, never rollback.
-                    readiness = {"ok": False, "error_code": "service_not_ready"}
-                if not readiness.get("ok"):
-                    repository.mark_completed_migration_attention(
-                        migration_id,
-                        completed.revision,
-                        failure_code=str(readiness.get("error_code") or "service_not_ready"),
-                    )
+            migrate_resources(repository, self.settings_loader())
         except Exception as exc:  # noqa: BLE001 - background ownership must become a durable outcome.
             if not committed:
                 self._remove_evidence(created_evidence)

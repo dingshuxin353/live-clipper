@@ -57,6 +57,7 @@ def test_v2_upgrades_to_current_schema_without_rebuilding_result_tables(tmp_path
         (2,),
         (3,),
         (4,),
+        (5,),
     ]
     assert connection.execute(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'run_results'"

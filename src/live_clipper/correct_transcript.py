@@ -72,8 +72,6 @@ def log_validation_failure(
             "raw_sentence_count": sentences_count,
             "model_sentence_count": corrected_sentences_count,
             "batch_start": batch_start,
-            "user_payload": payload,
-            "model_response": corrected_payload,
         },
     )
 
@@ -87,6 +85,7 @@ def correct_transcript_file(
     *,
     resume: bool = False,
     prompt_dir: Path | None = None,
+    request_parameters: dict[str, Any] | None = None,
 ) -> CorrectedTranscript:
     if batch_size <= 0:
         raise ValueError("Transcript correction batch_size must be greater than 0")
@@ -120,7 +119,7 @@ def correct_transcript_file(
             "glossary": glossary_payload,
         }
 
-        corrected_payload = client.complete_json(system_prompt, payload, max_tokens=8192)
+        corrected_payload = client.complete_json(system_prompt, payload, **(request_parameters or {"max_tokens": 8192, "temperature": 0.1}))
         if isinstance(corrected_payload, list):
             corrected_payload = {"sentences": corrected_payload, "corrections": []}
         corrected_sentences = corrected_payload.get("sentences", [])
@@ -172,11 +171,6 @@ def correct_transcript_file(
             {
                 "raw_sentence_count": len(sentences),
                 "model_sentence_count": len(corrected_sentence_items),
-                "user_payload": {
-                    "sentences": [sentence.model_dump() for sentence in sentences],
-                    "glossary": glossary_payload,
-                },
-                "model_response": corrected_payload,
             },
         )
         raise

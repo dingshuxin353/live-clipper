@@ -59,6 +59,11 @@ desktop/node_modules/
 desktop/backend-dist/
 desktop/backend-build/
 desktop/dist-app/
+desktop/vendor/media-tools/
+!desktop/build/
+desktop/build/*
+!desktop/build/ffmpeg/
+!desktop/build/ffmpeg/**
 
 # Local skill tooling state, not part of the product.
 skills-lock.json

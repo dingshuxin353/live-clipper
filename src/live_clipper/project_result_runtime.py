@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import errno
+import fcntl
 import hashlib
 import os
 import re
@@ -23,7 +24,7 @@ from .project_domain import Run, new_id, stable_json
 from .project_result_domain import AIReviewSession, RunOutput, sanitize_persisted_text
 from .project_service import output_directory_is_writable
 from .project_storage import ProjectRepository
-from .utils import read_json
+from .utils import read_json, review_material_path
 
 ReviewAdapter = Callable[[dict[str, Any]], Mapping[str, Any] | ProjectReviewResult | None]
 ClipRenderer = Callable[[Path, CorrectedTranscript, SelectedClip, Path, Path], Any]
@@ -82,9 +83,8 @@ def automatic_review_retry_plan(
         or getattr(root, "status_code", None)
         or getattr(response, "status_code", None)
     )
-    transient = isinstance(root, (TimeoutError, ConnectionError)) or "Timeout" in type(root).__name__ or status == 429 or (
-        isinstance(status, int) and 500 <= status <= 599
-    )
+    # A read timeout or server failure may already have consumed inference. Do not repeat it.
+    transient = getattr(root, 'code', None) in {'connection_timeout', 'rate_limited'} or type(root).__name__ == 'ConnectTimeout' or status == 429
     if not transient or attempt_number > 2:
         return AutomaticRetryPlan(False, None, max(0, attempt_number - 1), transient and attempt_number > 2)
     current = now or datetime.now(UTC)
@@ -173,7 +173,7 @@ def build_project_review_payload(run: Run, run_dir: str | Path, *, max_candidate
     if max_candidates < 1:
         raise ValueError("max_candidates must be positive")
     candidates = _read_candidate_items(target)
-    brief = read_json(target / "codex_brief.json")
+    brief = read_json(review_material_path(target, "review_brief.json"))
     sent = candidates[:max_candidates]
     return {
         "format_version": 1,
@@ -280,6 +280,7 @@ def _functional_issue(
     automatic_attempt_count: int = 0,
     next_retry_at: str | None = None,
     retry_exhausted: bool = False,
+    resource_purpose: str = 'review',
 ) -> None:
     details = {
         "ai_review_invalid": (
@@ -347,6 +348,12 @@ def _functional_issue(
         ),
     }
     category, title, preserved, next_step, capability = details[code]
+    if code == "ai_review_invalid" and repository.list_run_outputs(run.run_id):
+        preserved = "原审阅证据和已登记输出保持不变"
+        next_step = "原审阅证据已失效，请使用重新处理创建新记录"
+        capability = "none"
+    if code == 'ai_resource_unavailable' and resource_purpose == 'analysis':
+        title, preserved, next_step = '内容分析资源不可用', '来源录像和已有产物保持不变', '修复原内容分析资源后重新检查'
     issue = repository.discover_issue(
         issue_code=code,
         category=category,
@@ -362,17 +369,20 @@ def _functional_issue(
         preserved_content=preserved,
         next_step=next_step,
         recovery_capability=capability,
+        root_cause_ref=run.parameter_snapshot.get('resources', {}).get('asr_ref' if code == 'asr_resource_unavailable' else f'{resource_purpose}_ref') if code in {'ai_resource_unavailable', 'asr_resource_unavailable'} else None,
         safe_checkpoint=(
             "validated_review"
             if code in {"render_failed", "output_unwritable", "storage_full"}
             else "artifacts"
         ),
         reuse_stages=(
+            () if code == 'ai_resource_unavailable' and resource_purpose == 'analysis' else
             ("read_source", "transcribe", "analyze", "arbitrate")
             if code not in {"source_missing", "source_unreadable", "asr_resource_unavailable"}
             else ()
         ),
         redo_stages=(
+            ('read_source', 'transcribe', 'analyze') if code == 'ai_resource_unavailable' and resource_purpose == 'analysis' else
             ("render",)
             if code in {"render_failed", "output_unwritable", "storage_full"}
             else (("read_source",) if code in {"source_missing", "source_unreadable"} else (("transcribe",) if code == "asr_resource_unavailable" else ("review",)))
@@ -386,19 +396,25 @@ def _functional_issue(
         or issue.automatic_attempt_count != automatic_attempt_count
         or issue.next_retry_at != next_retry_at
         or issue.retry_exhausted != retry_exhausted
+        or issue.recovery_capability != capability
+        or issue.next_step != next_step
     ):
         from .project_domain import normalize_utc
 
         with repository.transaction():
             repository.connection.execute(
                 """UPDATE issues SET status = ?, automatic_attempt_count = ?, next_retry_at = ?,
-                     retry_exhausted = ?, updated_at = ?, issue_revision = issue_revision + 1
+                     retry_exhausted = ?, recovery_capability = ?, next_step = ?, preserved_content = ?,
+                     updated_at = ?, issue_revision = issue_revision + 1
                    WHERE issue_id = ?""",
                 (
                     status,
                     automatic_attempt_count,
                     next_retry_at,
                     int(retry_exhausted),
+                    capability,
+                    next_step,
+                    preserved,
                     normalize_utc(),
                     issue.issue_id,
                 ),
@@ -549,6 +565,44 @@ def run_project_review(
     adapter: ReviewAdapter,
     max_candidates: int = 40,
     clock: Callable[[], datetime] | None = None,
+) -> AIReviewSession:
+    # The run owns its evidence across worker pools and service processes.
+    with (Path(run_dir) / ".review.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        sessions = repository.list_ai_review_sessions(run_id)
+        run = repository.get_run(run_id)
+        if run is None:
+            raise KeyError(run_id)
+        if sessions and sessions[-1].status in {"selected", "no_clip"}:
+            if reconcile_review_evidence(repository, run_id, run_dir=run_dir) != "verified":
+                raise ProjectReviewError("ai_review_invalid", "registered review evidence changed")
+            return sessions[-1]
+        if sessions and repository.list_run_outputs(run_id):
+            _mark_review_failure(repository, run, sessions[-1], code="ai_review_invalid")
+            raise ProjectReviewError("ai_review_invalid", "registered outputs belong to an invalid review; create a new run")
+        evidence = Path(run_dir) / "review_result.json"
+        if sessions and sessions[-1].status == "running":
+            if not evidence.is_file():
+                _mark_review_failure(repository, run, sessions[-1], code="ai_review_failed")
+                raise ProjectReviewError("ai_review_failed", "previous review outcome is unknown; do not repeat the request")
+            def adapter(_payload):
+                return read_json(evidence)
+        if sessions and run.status == "failed":
+            return sessions[-1]
+        return _run_project_review_locked(
+            repository, run_id, run_dir=run_dir, adapter=adapter,
+            max_candidates=max_candidates, clock=clock,
+        )
+
+
+def _run_project_review_locked(
+    repository: ProjectRepository,
+    run_id: str,
+    *,
+    run_dir: str | Path,
+    adapter: ReviewAdapter,
+    max_candidates: int,
+    clock: Callable[[], datetime] | None,
 ) -> AIReviewSession:
     run = repository.get_run(run_id)
     if run is None:
@@ -1001,20 +1055,24 @@ class ProjectWorkerPool:
             run = repository.get_run(run_id)
             if run is None:
                 return
+            from .resource_execution import settings_for_snapshot
+
             adapter = self._review_adapter or run_structured_review_adapter
             target = work_dir / "projects" / run.project_id / "runs" / run_id
-            sessions = repository.list_ai_review_sessions(run_id)
-            evidence_path = target / "review_result.json"
-            if sessions and sessions[-1].status == "running" and evidence_path.is_file():
-                def adapter_call(_settings: Settings, _payload: dict[str, Any]) -> Mapping[str, Any]:
-                    return read_json(evidence_path)
-            else:
-                adapter_call = adapter
+            def adapter_call(_settings: Settings, payload: dict[str, Any]) -> Mapping[str, Any]:
+                from .resource_store import ResourceError
+                from .review_automation import ReviewAutomationError
+
+                try:
+                    frozen_settings = settings_for_snapshot(repository, _settings, run.parameter_snapshot, purpose='review')
+                except ResourceError:
+                    raise ReviewAutomationError('ai_resource_unavailable', '原处理资源不可用，请查看原修订') from None
+                return adapter(frozen_settings, payload)
             run_project_review(
                 repository,
                 run_id,
                 run_dir=target,
-                max_candidates=settings.review_automation.model.max_candidates,
+                max_candidates=run.parameter_snapshot.get("execution_policy", {}).get("review_max_candidates", 40),
                 adapter=lambda payload: adapter_call(settings, payload),
                 clock=self._clock,
             )
@@ -1101,7 +1159,7 @@ class ProjectWorkerPool:
                     and verified is None
                     and run.status in {"queued", "processing"}
                     and run.current_stage == "review"
-                    and (target / "codex_brief.json").is_file()
+                    and (review_material_path(target, "review_brief.json")).is_file()
                 ):
                     self._futures[("review", run.run_id)] = self._review_executor.submit(
                         self._review, service_dir, settings, work_root, run.run_id

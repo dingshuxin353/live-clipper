@@ -181,8 +181,8 @@ def test_load_settings_uses_default_scheduler_jobs(monkeypatch, tmp_path):
     assert settings.scheduler.jobs[1].type == "review_due_check"
     assert settings.scheduler.jobs[1].time == "12:00"
     assert settings.review_automation.enabled is False
-    assert settings.review_automation.mode == "local_agent"
-    assert settings.review_automation.local_agent.provider == "codex_cli"
+    assert settings.review_automation.mode == "model"
+    assert settings.review_automation.local_agent.provider == "claude_code"
     assert settings.review_automation.local_agent.allow_agent_file_writes is False
     assert settings.review_automation.model.provider == "openai_compatible"
     assert settings.review_automation.model.use_llm_config is True

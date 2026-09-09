@@ -17,8 +17,8 @@ _NON_PERSISTABLE_KEY = re.compile(
 _DAILY_TIME = re.compile(r"(?:[01]\d|2[0-3]):[0-5]\d")
 
 _ALLOWED_FIELDS: dict[str, frozenset[str]] = {
-    "asr": frozenset({"mode", "local_model_id", "model_source", "api_base", "model"}),
-    "ai": frozenset({"provider_id", "api_base", "model"}),
+    "asr": frozenset({"resource_id", "mode", "local_model_id", "model_source", "api_base", "model"}),
+    "ai": frozenset({"resource_id", "provider_id", "api_base", "model"}),
     "project": frozenset(
         {
             "name",
@@ -33,6 +33,8 @@ _ALLOWED_FIELDS: dict[str, frozenset[str]] = {
 }
 
 _STRING_LIMITS: dict[tuple[str, str], int] = {
+    ("asr", "resource_id"): 128,
+    ("ai", "resource_id"): 128,
     ("asr", "mode"): 32,
     ("asr", "local_model_id"): 256,
     ("asr", "model_source"): 64,

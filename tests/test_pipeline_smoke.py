@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import subprocess
 
+from resource_test_support import bind_cli_test_run
+
 from live_clipper import cli
 from live_clipper.config import Settings
 from live_clipper.models import SelectedClip
@@ -12,7 +14,7 @@ class FakeCheapModelClient:
     def __init__(self, settings):
         self.settings = settings
 
-    def complete_json(self, system_prompt, user_payload, max_tokens=2048):
+    def complete_json(self, system_prompt, user_payload, max_tokens=2048, temperature=0.1):
         if "glossary" in user_payload:
             return {
                 "sentences": [
@@ -93,6 +95,7 @@ def test_scan_brief_render_pipeline_smoke(tmp_path, monkeypatch):
     ))
     monkeypatch.setattr("live_clipper.render_clips.subprocess.run", fake_run)
 
+    bind_cli_test_run(monkeypatch, tmp_path, cli.load_settings())
     cli.run_scan(source_video, run_dir)
     cli.run_brief(run_dir)
     write_json(run_dir / "selected_clips.json", [
@@ -113,7 +116,7 @@ def test_scan_brief_render_pipeline_smoke(tmp_path, monkeypatch):
         "windows.json",
         "cheap_candidates.json",
         "merged_candidates.json",
-        "codex_brief.json",
+        "review_brief.json",
         "selected_clips.json",
         "edit_decision_list.json",
         "subtitles/w0001-c001.srt",
@@ -123,4 +126,4 @@ def test_scan_brief_render_pipeline_smoke(tmp_path, monkeypatch):
         assert (run_dir / relative_path).exists(), relative_path
 
     assert read_json(run_dir / "transcript.json")["sentences"][0]["text"] == "我们用 ffmpeg 渲染"
-    assert read_json(run_dir / "codex_brief.json")["candidates"][0]["id"] == "w0001-c001"
+    assert read_json(run_dir / "review_brief.json")["candidates"][0]["id"] == "w0001-c001"

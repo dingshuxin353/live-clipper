@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.0.3 - 2026-09-09
+
+### Upgrade notes
+
+- Removed the built-in Codex CLI integration. If a project used it, choose and validate a replacement resource before resuming processing. Existing results remain available; Venus does not switch providers automatically.
+- Settings now shows data locations, the desktop version and updates, and troubleshooting information. Model configuration is managed under Resources; recording schedules and output folders remain in project settings. The old application-settings write API has been retired.
+
+### Added
+
+- Manage named speech recognition and AI resources, validate their uses, see which projects reference them, and assign resources separately for transcription, analysis, and review.
+- Edit shared resources with a view of affected projects. Queued and existing runs retain their saved resource versions; comparing a different model on an earlier recording creates a new run.
+
+### Fixed
+
+- Corrected resource form spacing, dropdown indicators, empty number fields, and nested dialog keyboard behavior.
+- Invalid analysis or review responses no longer appear as a successful result with no clips; failed outputs remain available for diagnosis.
+- Checking for updates now requires confirmation before installing an already downloaded update.
+
+### Verification scope
+
+- This release's live provider testing covered Volcengine Ark. Alibaba Cloud Bailian (Qwen), GLM, and Kimi presets have not been verified with live accounts. macOS 14 has not been tested on a physical machine.
+
+## 1.0.2 - 2026-09-04
+
+### Fixed
+
+- Bundled ffprobe to fix first-run setup failing when no system copy is installed, and replaced ffmpeg with a matching build from pinned FFmpeg 9.0.1 sources.
+- Pinned the macOS 14 builds of MLX 0.32.2 and added binary checks to prevent packaging a runtime that requires a newer system.
+- Fixed the results page going blank during clip playback when playback progress updates were processed after the video event.
+
 ## 1.0.1 - 2026-09-03
 
 ### Changed

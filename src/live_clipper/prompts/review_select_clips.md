@@ -1,6 +1,6 @@
-# Codex: Select Clips
+# Review: Select Clips
 
-You will receive `codex_brief.json`, a compact package of merged clip candidates.
+You will receive `review_brief.json`, a compact package of merged clip candidates.
 
 Select the clips worth rendering. Prefer clips with:
 
@@ -11,4 +11,3 @@ Select the clips worth rendering. Prefer clips with:
 - low publishing risk
 
 Return `selected_clips.json` and explain dropped candidates briefly.
-

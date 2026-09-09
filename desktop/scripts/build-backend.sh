@@ -4,9 +4,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."  # repo root
 
-if ! .venv/bin/python -c "import mlx, mlx_whisper" >/dev/null 2>&1; then
-  echo '[build-backend] MLX desktop runtime is required; refusing to build an incomplete backend.' >&2
-  echo '[build-backend] Install it with: .venv/bin/pip install ".[mlx]"' >&2
+if ! .venv/bin/python scripts/ci/assert_backend_bundle.py --installed; then
+  echo '[build-backend] Prepare the required runtime: .venv/bin/pip install ".[mlx]" -r desktop/build/mlx-requirements.txt' >&2
   exit 1
 fi
 
@@ -37,5 +36,7 @@ rm -rf desktop/backend-dist desktop/backend-build
   --collect-all mlx \
   --collect-all mlx_whisper \
   desktop/backend_entry.py
+
+.venv/bin/python scripts/ci/assert_backend_bundle.py --bundle desktop/backend-dist/live-clipper-backend
 
 echo "[build-backend] done -> desktop/backend-dist/live-clipper-backend/"

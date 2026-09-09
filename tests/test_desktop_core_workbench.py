@@ -89,7 +89,6 @@ def test_forms_share_astryx_controls_path_fields_and_container_layout():
     onboarding = (frontend / "Onboarding.tsx").read_text(encoding="utf-8")
     migration = (frontend / "features" / "migration" / "MigrationFlow.tsx").read_text(encoding="utf-8")
     results = (frontend / "RunResultPage.tsx").read_text(encoding="utf-8")
-    settings = (frontend / "Settings.tsx").read_text(encoding="utf-8")
     styles = (frontend / "styles.css").read_text(encoding="utf-8")
 
     assert "export function PathField" in shared
@@ -103,7 +102,4 @@ def test_forms_share_astryx_controls_path_fields_and_container_layout():
         assert re.search(rf"(?<![-\w])\.{re.escape(obsolete)}(?![-\w])", styles) is None
     assert "container-type: inline-size" in styles
     assert "@container" in styles
-    assert "form-control form-secret-input" in onboarding
-    assert "form-control form-secret-input" in results
-    assert "form-control form-secret-input" in settings
     assert "const [apiKey, setApiKey]" not in results
