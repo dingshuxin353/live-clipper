@@ -124,12 +124,13 @@ def test_accessibility_and_live_state_contracts_remain_strong():
     source = _react()
     for token in [
         'role="dialog"',
-        'aria-modal="true"',
         'role="alert"',
-        'event.key === "Escape"',
-        'event.key !== "Tab"',
     ]:
         assert token in source
+    assert "import { Dialog } from '@astryxdesign/core/Dialog'" in source
+    assert '<Dialog isOpen' in source and 'onOpenChange=' in source
+    assert "<DialogFrame" in source
+    assert 'aria-labelledby="onboarding-title"' in source
     styles = Path("frontend/src/styles.css").read_text(encoding="utf-8")
     assert "@media (prefers-reduced-motion: reduce)" in styles
     assert "@media (max-width: 980px)" in styles

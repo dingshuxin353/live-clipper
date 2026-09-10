@@ -321,6 +321,8 @@ def test_execute_is_idempotent_and_atomically_switches_to_projects(tmp_path):
         "choices": plan["choices"],
     }
     first = coordinator.execute(body)[1]
+    with ProjectRepository(service) as repository:
+        assert repository.get_migration_session(first["session"]["migration_id"]).choices == plan["choices"]
     replay = coordinator.execute(body)[1]
     assert replay["session"]["migration_id"] == first["session"]["migration_id"]
     completed = _wait_completed(coordinator, first["session"]["migration_id"])
@@ -592,6 +594,9 @@ def test_fault_rolls_back_all_business_facts_and_retry_reuses_backup(tmp_path, f
         assert repository.get_data_mode() == "legacy"
         assert repository.list_projects() == []
         assert repository.list_runs() == []
+    backup = coordinator.backup_root / accepted["session"]["migration_id"]
+    backup_before = _tree_facts(backup)
+    originals = {path: path.read_bytes() for path in (coordinator.config_path, service / "runs.json")}
     coordinator.fault_injection = None
     retried = coordinator.retry(
         {
@@ -602,6 +607,10 @@ def test_fault_rolls_back_all_business_facts_and_retry_reuses_backup(tmp_path, f
     )[1]
     completed = _wait_completed(coordinator, retried["session"]["migration_id"])
     assert completed["session"]["state"] == "completed_attention"
+    assert _tree_facts(backup) == backup_before
+    assert {path: path.read_bytes() for path in originals} == originals
+    with ProjectRepository(service) as repository:
+        assert repository.get_migration_session(accepted["session"]["migration_id"]).choices == plan["choices"]
 
 
 def test_retry_plan_change_returns_to_durable_failed_state(tmp_path, monkeypatch):
@@ -639,3 +648,30 @@ def test_retry_plan_change_returns_to_durable_failed_state(tmp_path, monkeypatch
     with ProjectRepository(service) as repository:
         assert repository.get_data_mode() == "legacy"
         assert repository.list_projects() == []
+
+
+
+def test_retry_does_not_guess_previously_redacted_directories(tmp_path):
+    coordinator, service = _legacy_home(tmp_path)
+    plan = _validated(coordinator)
+    coordinator.fault_injection = lambda phase: (
+        (_ for _ in ()).throw(RuntimeError("fault")) if phase == "after_project" else None)
+    accepted = coordinator.execute({"request_id": "old-redacted", "source_fingerprint": plan["source_fingerprint"],
+                                    "plan_hash": plan["plan_hash"], "choices": plan["choices"]})[1]
+    failed = _wait_completed(coordinator, accepted["session"]["migration_id"])
+    redacted = {**plan["choices"], "source_directory": "[redacted-path]", "output_directory": "[redacted-path]"}
+    with ProjectRepository(service) as repository:
+        repository.connection.execute("UPDATE migration_sessions SET choices_json=? WHERE migration_id=?",
+                                      (json.dumps(redacted), failed["session"]["migration_id"]))
+        repository.connection.commit()
+    backup = coordinator.backup_root / failed["session"]["migration_id"]
+    before = _tree_facts(backup)
+    coordinator.fault_injection = None
+    with pytest.raises(MigrationError, match="migration_plan_changed"):
+        coordinator.retry({"request_id": "retry-old", "migration_id": failed["session"]["migration_id"],
+                           "expected_revision": failed["session"]["revision"]})
+    with ProjectRepository(service) as repository:
+        assert repository.get_migration_session(failed["session"]["migration_id"]).choices == redacted
+        assert repository.get_data_mode() == "legacy"
+        assert repository.list_projects() == []
+    assert _tree_facts(backup) == before

@@ -787,6 +787,27 @@ def _safe_payload(value: Any) -> Any:
     return value
 
 
+def _migration_choices(choices: Mapping[str, Any]) -> dict[str, Any]:
+    fields = {"project_name": (str,), "source_directory": (str,), "output_directory": (str,),
+              "trigger_mode": (str,), "schedule_mode": (str, type(None)),
+              "daily_time": (str, type(None)), "interval_minutes": (int, type(None))}
+    result = dict(choices)
+    for key, value in result.items():
+        if key not in fields or type(value) not in fields[key]:
+            raise ValueError("Invalid migration choice field or type")
+        if key in ("source_directory", "output_directory"):
+            path = Path(value)
+            if not path.is_absolute() or ".." in path.parts or any(ord(char) < 32 for char in value):
+                raise ValueError("Invalid migration directory")
+            # These paths are executable configuration, not diagnostic summaries.
+            # Check each component for secrets without redacting the user path.
+            if any(sanitize_persisted_text(part) != part for part in path.parts):
+                raise ValueError("Secret-bearing migration directory")
+        elif isinstance(value, str) and sanitize_persisted_text(value) != value:
+            raise ValueError("Non-persistable migration choice")
+    return result
+
+
 def _integer(value: Any, *, field: str, minimum: int = 0) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
         raise ValueError(f"{field} must be an integer >= {minimum}")
@@ -3336,7 +3357,7 @@ class ProjectRepository:
         assert fingerprint and normalized_plan_hash and normalized_request_hash
         plan_version = _integer(plan_version, field="plan_version", minimum=1)
         safe_manifest = _safe_payload(list(source_manifest))
-        safe_choices = _safe_payload(dict(choices))
+        safe_choices = _migration_choices(choices)
         timestamp = normalize_utc(occurred_at)
         with self.transaction():
             existing_request = self.get_migration_session_by_request(request_id)

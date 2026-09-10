@@ -689,10 +689,25 @@ def test_resolved_python_creates_working_copied_venv_and_media_environment(tmp_p
     identity = release.python_identity()
     assert identity['executable'] == str(real)
     assert identity['sha256'] == release.sha256(real)
-    environment = release.isolated_env(tmp_path / 'environment', python=identity['executable'])
+    repository = tmp_path / 'test-repo'
+    repository.mkdir()
+    monkeypatch.setattr(release, 'ROOT', repository)
+    outer = tmp_path / 'outer'
+    outer.mkdir()
+    outer_owner = {'format': 1, 'repo': '/unrelated/repository', 'id': 'outer'}
+    release.atomic_json(outer / 'owner.json', outer_owner)
+    release.atomic_json(outer / 'resources.json', {'processes': [], 'mounts': []})
+    before = {file.name: file.read_bytes() for file in outer.iterdir()}
+    with pytest.raises(release.ReleaseError, match='ownership mismatch'):
+        release.owner_record(outer)
+    inner = outer / 'inner'
+    release.create_root(inner, release.ROOT, 'a' * 40)
+    scope = release.owned_directory(inner, 'environment')
+    environment = release.isolated_env(scope, python=identity['executable'])
+    assert environment['VENUS_RELEASE_ROOT'] == str(inner.resolve())
     environment['PIP_NO_INDEX'] = '1'
     assert Path(shutil.which('python3.11', path=environment['PATH'])).resolve() == real
-    target = tmp_path / 'copied'
+    target = release.owned_directory(inner, 'copied')
     release.run([identity['executable'], '-I', '-m', 'venv', '--copies', target], env=environment)
     python = target / 'bin/python'
     assert not python.is_symlink()
@@ -710,6 +725,8 @@ def test_resolved_python_creates_working_copied_venv_and_media_environment(tmp_p
     assert media['base_prefix'] == identity['base_prefix']
     monkeypatch.setenv('PATH', str(target / 'bin') + os.pathsep + os.environ['PATH'])
     assert release.python_identity() == identity
+    assert {name: (outer / name).read_bytes() for name in before} == before
+    assert release.resource_state(inner) == {'processes': [], 'mounts': []}
 
 
 @pytest.mark.parametrize('pinned', [True, False])

@@ -204,3 +204,37 @@ def test_migration_session_identity_and_terminal_state_invariants(tmp_path):
             "UPDATE migration_sessions SET state='completed_ready' WHERE migration_id=?",
             (created.migration_id,),
         )
+
+
+@pytest.mark.parametrize("source", ["/home/operator/recordings", "/Users/operator/recordings"])
+def test_migration_choices_preserve_operational_paths(tmp_path, source):
+    choices = {"project_name": "迁移项目", "source_directory": source,
+               "output_directory": str(tmp_path / "output"), "trigger_mode": "manual",
+               "schedule_mode": None, "daily_time": None, "interval_minutes": None}
+    with ProjectRepository(tmp_path) as repository:
+        session = repository.create_migration_session(
+            migration_id="migration-paths", source_fingerprint="a" * 64, plan_version=3,
+            plan_hash="b" * 64, source_manifest=[], choices=choices,
+            request_id="request-paths", request_hash="c" * 64)
+        assert session.choices == choices
+    with ProjectRepository(tmp_path) as reopened:
+        assert reopened.get_migration_session(session.migration_id).choices == choices
+
+
+@pytest.mark.parametrize("choices", [
+    {"api_key": "SENTINEL"}, {"unexpected": "value"},
+    {"project_name": "Bearer SENTINEL"}, {"source_directory": "/home/operator/token=SENTINEL"},
+    {"source_directory": "[redacted-path]"}, {"source_directory": "/home/operator/../recordings"},
+    {"source_directory": {"path": "/home/operator"}}, {"interval_minutes": True},
+    {"output_directory": "/home/operator/recordings\x00"},
+])
+def test_migration_choices_reject_invalid_or_secret_fields_without_persisting(tmp_path, choices):
+    with ProjectRepository(tmp_path) as repository:
+        with pytest.raises(ValueError):
+            repository.create_migration_session(
+                migration_id="migration-invalid", source_fingerprint="a" * 64, plan_version=3,
+                plan_hash="b" * 64, source_manifest=[], choices=choices,
+                request_id="request-invalid", request_hash="c" * 64)
+        assert repository.list_migration_sessions() == []
+    for file in tmp_path.glob("venus.sqlite3*"):
+        assert b"SENTINEL" not in file.read_bytes()

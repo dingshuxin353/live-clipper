@@ -202,4 +202,28 @@ describe("five-step first-run setup", () => {
     fireEvent.click(within(dialog).getByRole("radio")); fireEvent.click(within(dialog).getByRole("button", { name: "用这条录像试运行" }));
     await waitFor(() => expect(calls.some(([path]) => path === "/api/projects/p1/scans")).toBe(true)); const body = JSON.parse(String(calls.find(([path]) => path === "/api/projects/p1/scans")?.[1]?.body)); expect(body.selected_relative_paths).toEqual(["ready.mp4"]);
   });
+
+  it("keeps native Tab handling in the trial modal and restores focus after Escape", async () => {
+    const session = { ...SESSION, state: "completed" as const, current_step: "complete" as const, first_project: { project_id: "p1", name: "项目", activation_state: "active" as const, readiness_state: "ready" } };
+    installFetchMock({ "/api/projects/p1/source-files": { ok: true, files: [{ relative_path: "ready.mp4", bytes: 10, modified_at: "now", selectable: true }] } });
+    renderOnboarding(onboardingSnapshot(session));
+    const trigger = await screen.findByRole("button", { name: "选择一条录像试运行" });
+    trigger.focus(); fireEvent.click(trigger);
+    const dialog = screen.getByRole("dialog", { name: "选择一条录像试运行" });
+    expect(dialog.tagName).toBe("DIALOG");
+    expect(dialog).toHaveAttribute("open");
+    expect(dialog).toHaveAttribute("aria-modal", "true");
+    const close = within(dialog).getByRole("button", { name: "关闭" });
+    expect(close).toHaveFocus();
+    // JSDOM has no native tab traversal; require the component to leave Tab
+    // to the modal browser primitive. Real traversal is checked in a browser.
+    expect(fireEvent.keyDown(close, { key: "Tab" })).toBe(true);
+    expect(fireEvent.keyDown(close, { key: "Tab", shiftKey: true })).toBe(true);
+    expect(dialog).toHaveAttribute("open");
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "选择一条录像试运行" })).not.toBeInTheDocument());
+    await waitFor(() => expect(trigger).toHaveFocus());
+    expect(screen.getByLabelText("首次设置步骤")).toBeVisible();
+  });
+
 });
