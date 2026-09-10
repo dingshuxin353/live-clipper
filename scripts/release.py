@@ -232,14 +232,40 @@ def github_release(github, tag):
     return matches[0] if matches else None
 
 
+def python_identity():
+    entry = shutil.which("python3.11")
+    require(entry, "Missing python3.11")
+    env = {"PATH": os.environ.get("PATH", os.defpath)}
+    # A venv or external launcher may not live beside the base standard library.
+    executable = run([entry, "-I", "-c", "import os,sys; print(os.path.realpath(sys._base_executable))"], env=env, timeout=60).strip()
+    require(executable and Path(executable).is_absolute(), "Invalid base Python executable")
+    executable = canonical_path(Path(executable))
+    require(executable.is_file() and os.access(executable, os.X_OK), "Base Python is not executable")
+    facts = json.loads(run([executable, "-I", "-c",
+        "import encodings,ssl,sqlite3,venv,sys,sysconfig,json; "
+        "print(json.dumps({'version':'.'.join(map(str,sys.version_info[:3])),'executable':sys.executable,"
+        "'prefix':sys.prefix,'base_prefix':sys.base_prefix,'stdlib':sysconfig.get_path('stdlib')}))"], env=env, timeout=60))
+    require(facts['version'].startswith('3.11.') and facts['executable'] == str(executable)
+            and facts.pop('prefix') == facts['base_prefix'], "Python 3.11 base interpreter required")
+    for key in ('base_prefix', 'stdlib'):
+        require(canonical_path(Path(facts[key])).is_dir(), f"Missing Python {key}")
+    media_python = shutil.which("python3.11", path=str(executable.parent))
+    require(media_python and Path(media_python).resolve() == executable, "Base Python directory lacks matching python3.11")
+    facts['sha256'] = sha256(executable)
+    return facts
+
+
 def tools_snapshot():
     require(platform.system() == "Darwin" and platform.machine() == "arm64", "macOS arm64 required")
     require(not any(os.environ.get(key) for key in ("DEVELOPER_DIR", "SDKROOT", "TOOLCHAINS")),
             "Remove Apple toolchain overrides; builds use the system developer directory")
-    commands = {"python": ["python3.11", "--version"], "node": ["node", "--version"], "npm": ["npm", "--version"],
+    python = python_identity()
+    commands = {"node": ["node", "--version"], "npm": ["npm", "--version"],
                 "git": ["git", "--version"], "gh": ["gh", "--version"]}
     values = {key: run(cmd, timeout=60).strip() for key, cmd in commands.items()}
-    require(values["python"].startswith("Python 3.11.") and values["node"].startswith("v24.") and values["npm"].startswith("11."), "Python 3.11 / Node 24 / npm 11 required")
+    values["python"] = "Python " + python["version"]
+    values["python_identity"] = python
+    require(values["node"].startswith("v24.") and values["npm"].startswith("11."), "Python 3.11 / Node 24 / npm 11 required")
     # Match build-media-tools.py's system environment, without creating a build home.
     apple_env = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"}
     apple_commands = {"developer_dir": ["/usr/bin/xcode-select", "-p"],
@@ -381,7 +407,7 @@ def prepare_download_cache(parent, repo):
     return cache
 
 
-def limit_download_cache(cache):
+def limit_download_cache(cache, python=None):
     canonical_path(cache)
     require(read_json(canonical_path(cache / 'owner.json')) == {'format': 1, 'repo': str(ROOT.resolve()), 'kind': 'venus-download-cache'}, 'Cache ownership mismatch')
     before = directory_bytes(cache)
@@ -393,7 +419,7 @@ def limit_download_cache(cache):
         # The shared cache has no reliable per-version download ownership. Purge
         # only our bounded cache, using package-manager commands where available.
         run(['npm', 'cache', 'clean', '--force', '--cache', cache / 'npm', '--userconfig=/dev/null'])
-        run(['python3.11', '-m', 'pip', '--isolated', 'cache', '--cache-dir', cache / 'pip', 'purge'])
+        run([python or python_identity()['executable'], '-I', '-m', 'pip', '--isolated', 'cache', '--cache-dir', cache / 'pip', 'purge'])
         for name in ('electron', 'electron-builder', 'media-archives'):
             path = canonical_path(cache / name)
             require(not any(os.path.ismount(p) or not p.resolve().is_relative_to(path) for p in (path, *path.rglob('*'))), 'Unsafe cache path')
@@ -522,7 +548,7 @@ def notarize(asset, profile, progress, state_path, command=run):
         atomic_json(state_path, progress)
 
 
-def isolated_env(root, cache=None):
+def isolated_env(root, cache=None, python=None):
     # No ambient application config, model/AI secrets, proxy auth, or Python import paths.
     env = {key: os.environ[key] for key in ("PATH", "LANG", "LC_ALL", "TMPDIR", "SYSTEMROOT") if key in os.environ}
     for name in ("home", "cache", "config", "tmp"):
@@ -531,6 +557,8 @@ def isolated_env(root, cache=None):
                XDG_CONFIG_HOME=str(root / "config"), TMPDIR=str(root / "tmp"),
                LIVE_CLIPPER_HOME=str(root / "app-home"), PYTHONNOUSERSITE="1")
     env.update(PIP_CONFIG_FILE=os.devnull, npm_config_userconfig=os.devnull)
+    if python:
+        env["PATH"] = str(Path(python).parent) + os.pathsep + env.get("PATH", os.defpath)
     if cache:
         env.update(PIP_CACHE_DIR=str(cache / 'pip'), npm_config_cache=str(cache / 'npm'),
                    ELECTRON_CACHE=str(cache / 'electron'), electron_config_cache=str(cache / 'electron'), ELECTRON_BUILDER_CACHE=str(cache / 'electron-builder'),
@@ -837,21 +865,22 @@ def candidate(args):
     atomic_json(evidence / 'space-preflight.json', space)
     cache = prepare_download_cache(output.parent, repo)
     owned_directory(output, 'build-environment')
-    env = isolated_env(output / "build-environment", cache=cache)
+    python = tools["python_identity"]["executable"]
+    env = isolated_env(output / "build-environment", cache=cache, python=python)
     prune_media_cache(cache, cache_keep_versions(cleanup_plan(output)))
-    limit_download_cache(cache)
+    limit_download_cache(cache, python=python)
 
     def step(name, command, **kwargs):
         print(name, flush=True)
         result = run(command, cwd=source, env=env, log=evidence / f"{name}.log", **kwargs)
         atomic_json(evidence / f'{name}-space.json', space_snapshot(output, cache))
-        limit_download_cache(cache)
+        limit_download_cache(cache, python=python)
         return result
 
     owned_directory(output, "source")
     run(["git", "clone", "--shared", "--no-checkout", repo, source], log=evidence / "source-clone.log")
     git(source, "checkout", "--detach", args.source)
-    step("venv", ["python3.11", "-m", "venv", "--copies", ".venv"])
+    step("venv", [python, "-I", "-m", "venv", "--copies", ".venv"])
     step("python-install", [".venv/bin/pip", "install", ".[mlx,dev]", "-r", "desktop/build/mlx-requirements.txt", "ruff==0.16.3", "pyinstaller>=6.10"])
     step("python-test", [".venv/bin/python", "-m", "pytest", "-q"])
     step("ruff-version", [".venv/bin/ruff", "--version"])

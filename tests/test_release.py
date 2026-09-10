@@ -557,6 +557,7 @@ def test_owned_mount_detaches_after_exception(tmp_path, monkeypatch):
 
 @pytest.fixture
 def apple_tools(monkeypatch):
+    monkeypatch.setattr(release, "python_identity", lambda: {"version": "3.11.9", "executable": "/base/bin/python3.11", "sha256": "a" * 64, "base_prefix": "/base", "stdlib": "/base/lib/python3.11"})
     monkeypatch.setattr(release.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(release.platform, "machine", lambda: "arm64")
     for key in ("DEVELOPER_DIR", "SDKROOT", "TOOLCHAINS"):
@@ -636,7 +637,7 @@ def test_tools_snapshot_rejects_build_environment_overrides(apple_tools, monkeyp
     assert apple_tools[1] == []
 
 
-@pytest.mark.parametrize("field", ["developer_dir", "clang", "sdk_version", "sdk_path", "tool_paths"])
+@pytest.mark.parametrize("field", ["developer_dir", "clang", "sdk_version", "sdk_path", "tool_paths", "python_path", "python_hash"])
 @pytest.mark.parametrize("operation", ["candidate", "publish"])
 def test_changed_tool_snapshot_stops_before_build_or_external_writes(tmp_path, monkeypatch, apple_tools, field, operation):
     import argparse
@@ -644,7 +645,9 @@ def test_changed_tool_snapshot_stops_before_build_or_external_writes(tmp_path, m
 
     frozen = release.tools_snapshot()
     changed = copy.deepcopy(frozen)
-    if field == "tool_paths":
+    if field in ("python_path", "python_hash"):
+        changed["python_identity"]["executable" if field == "python_path" else "sha256"] += "-changed"
+    elif field == "tool_paths":
         changed[field]["notarytool"] = "/different/notarytool"
     else:
         changed[field] += "-changed"
@@ -670,3 +673,87 @@ def test_changed_tool_snapshot_stops_before_build_or_external_writes(tmp_path, m
         else:
             release.publish(argparse.Namespace(candidate=manifest, acceptance=root / "acceptance.json", confirm_version="v1.0.4"))
     assert sorted(p.name for p in root.iterdir()) == ["candidate-manifest.json"]
+
+
+def test_resolved_python_creates_working_copied_venv_and_media_environment(tmp_path, monkeypatch):
+    entry = tmp_path / 'entry'
+    entry.mkdir()
+    real = Path(subprocess.check_output([
+        'python3.11', '-I', '-c', 'import os,sys; print(os.path.realpath(sys._base_executable))'
+    ], text=True).strip())
+    (entry / 'python3.11').symlink_to(real)
+    monkeypatch.setenv('PATH', str(entry) + os.pathsep + os.environ['PATH'])
+    monkeypatch.setenv('PYTHONHOME', '/unrelated/python')
+    monkeypatch.setenv('PYTHONPATH', '/unrelated/modules')
+    monkeypatch.setenv('__PYVENV_LAUNCHER__', '/unrelated/launcher')
+    identity = release.python_identity()
+    assert identity['executable'] == str(real)
+    assert identity['sha256'] == release.sha256(real)
+    environment = release.isolated_env(tmp_path / 'environment', python=identity['executable'])
+    environment['PIP_NO_INDEX'] = '1'
+    assert Path(shutil.which('python3.11', path=environment['PATH'])).resolve() == real
+    target = tmp_path / 'copied'
+    release.run([identity['executable'], '-I', '-m', 'venv', '--copies', target], env=environment)
+    python = target / 'bin/python'
+    assert not python.is_symlink()
+    facts = json.loads(release.run([python, '-I', '-c',
+        'import encodings,ssl,sqlite3,venv,sys,sysconfig,json; '
+        'print(json.dumps({"prefix":sys.prefix,"base_prefix":sys.base_prefix,"stdlib":sysconfig.get_path("stdlib")}))'],
+        env=environment))
+    assert Path(facts['prefix']).resolve() == target.resolve()
+    assert facts['base_prefix'] == identity['base_prefix']
+    assert facts['stdlib'] == identity['stdlib']
+    assert str(target) in release.run([python, '-I', '-m', 'pip', '--version'], env=environment)
+    media = json.loads(release.run(['python3.11', '-I', '-c',
+        'import sys,json; print(json.dumps({"executable":sys.executable,"base_prefix":sys.base_prefix}))'], env=environment))
+    assert media['executable'] == identity['executable']
+    assert media['base_prefix'] == identity['base_prefix']
+    monkeypatch.setenv('PATH', str(target / 'bin') + os.pathsep + os.environ['PATH'])
+    assert release.python_identity() == identity
+
+
+@pytest.mark.parametrize('pinned', [True, False])
+def test_cache_purge_uses_selected_base_python(tmp_path, monkeypatch, pinned):
+    cache = release.prepare_download_cache(tmp_path, release.ROOT)
+    monkeypatch.setattr(release, 'python_identity', lambda: {'executable': '/selected/bin/python3.11'})
+    sizes = iter([release.CACHE_LIMIT + 1, 0, 0])
+    monkeypatch.setattr(release, 'directory_bytes', lambda *_: next(sizes))
+    monkeypatch.setattr(release.subprocess, 'run', lambda *_a, **_kw: subprocess.CompletedProcess([], 1, '', ''))
+    calls = []
+    monkeypatch.setattr(release, 'run', lambda args, **kwargs: calls.append(args))
+    release.limit_download_cache(cache, **({'python': '/selected/bin/python3.11'} if pinned else {}))
+    assert calls[1][:5] == ['/selected/bin/python3.11', '-I', '-m', 'pip', '--isolated']
+
+
+
+def test_candidate_venv_uses_frozen_python_identity(tmp_path, monkeypatch):
+    import argparse
+
+    monkeypatch.setattr(release, 'ROOT', tmp_path / 'repo')
+    monkeypatch.setattr(release, 'metadata', lambda *_: {'version': '1.0.4', 'github': 'example/repo'})
+    monkeypatch.setattr(release, 'check_source', lambda *_: None)
+    monkeypatch.setattr(release, 'git', lambda _repo, *args: 'a' * 40 if args[0] == 'rev-parse' else '')
+    monkeypatch.setattr(release, 'github_release', lambda *_: None)
+    monkeypatch.setattr(release, 'tools_snapshot', lambda: {'python_identity': {'executable': '/selected/bin/python3.11'}})
+    monkeypatch.setattr(release, 'space_preflight', lambda *_: {})
+    monkeypatch.setattr(release, 'prune_media_cache', lambda *_: None)
+    monkeypatch.setattr(release, 'cleanup_plan', lambda *_: {})
+    monkeypatch.setattr(release, 'cache_keep_versions', lambda *_: [])
+    purges = []
+    monkeypatch.setattr(release, 'limit_download_cache', lambda cache, python: purges.append(python))
+    monkeypatch.setenv('VENUS_NOTARY_PROFILE', 'test-only')
+
+    def command(args, **kwargs):
+        if args[0] == 'security':
+            return '1) ' + 'A' * 40 + ' "Developer ID Application: Test"'
+        if 'venv' in args:
+            assert args == ['/selected/bin/python3.11', '-I', '-m', 'venv', '--copies', '.venv']
+            assert kwargs['env']['PATH'].split(os.pathsep)[0] == '/selected/bin'
+            raise release.ReleaseError('Reached selected venv boundary')
+        assert args[0] in ('xcrun', 'git')
+        return ''
+
+    monkeypatch.setattr(release, 'run', command)
+    with pytest.raises(release.ReleaseError, match='Reached selected venv boundary'):
+        release.candidate(argparse.Namespace(source='a' * 40, previous_tag='v1.0.3', output=tmp_path / 'release'))
+    assert purges == ['/selected/bin/python3.11']
