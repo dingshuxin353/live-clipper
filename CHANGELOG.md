@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.0.4 - 2026-09-10
+
+### Fixed
+
+- Fixed an empty task index blocking unfinished setup with `legacy_projects_conflict` in project mode. Setup resumes at the saved step without deleting the index or resetting settings ([#2](https://github.com/dingshuxin353/live-clipper/issues/2)).
+- Stopped project mode from running legacy global tasks that could recreate the empty index ([f277f6b](https://github.com/dingshuxin353/live-clipper/commit/f277f6b37f9b1eb74990cca9ba44f9b7aeea9e49)).
+
+### Added
+
+- Added a local release tool with candidate freezing, five-asset checks, shared download caches, and cleanup of owned build files ([ca67345](https://github.com/dingshuxin353/live-clipper/commit/ca6734558b25a732d143d6aa72dd6af7253d9e8f)).
+
 ## 1.0.3 - 2026-09-09
 
 ### Upgrade notes
