@@ -553,3 +553,120 @@ def test_owned_mount_detaches_after_exception(tmp_path, monkeypatch):
     assert not os.path.ismount(mount)
     assert release.resource_state(root)['mounts'] == []
     assert not mount.exists()
+
+
+@pytest.fixture
+def apple_tools(monkeypatch):
+    monkeypatch.setattr(release.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(release.platform, "machine", lambda: "arm64")
+    for key in ("DEVELOPER_DIR", "SDKROOT", "TOOLCHAINS"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(release.shutil, "which", lambda name, **kwargs: "/usr/bin/" + name)
+    responses = {
+        ("python3.11", "--version"): "Python 3.11.9",
+        ("node", "--version"): "v24.1.0",
+        ("npm", "--version"): "11.1.0",
+        ("/usr/bin/xcode-select", "-p"): "/Library/Developer/CommandLineTools",
+        ("/usr/bin/clang", "--version"): "Apple clang version 17.0.0",
+        ("/usr/bin/xcrun", "--show-sdk-version"): "26.2",
+        ("/usr/bin/xcrun", "--show-sdk-path"): "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
+    }
+    calls = []
+
+    def command(args, **kwargs):
+        calls.append(tuple(args))
+        assert "xcodebuild" not in args
+        if args[0].startswith("/usr/bin/"):
+            assert kwargs["env"] == {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"}
+        if tuple(args) in responses:
+            return responses[tuple(args)]
+        if args[:2] == ["/usr/bin/xcrun", "--find"]:
+            return "/Library/Developer/CommandLineTools/usr/bin/" + args[2]
+        return "available"
+
+    monkeypatch.setattr(release, "run", command)
+    return responses, calls
+
+
+def test_tools_snapshot_accepts_clt_and_records_actual_apple_tools(apple_tools):
+    snapshot = release.tools_snapshot()
+    assert snapshot["developer_dir"] == "/Library/Developer/CommandLineTools"
+    assert snapshot["clang"] == "Apple clang version 17.0.0"
+    assert snapshot["sdk_version"] == "26.2"
+    assert snapshot["sdk_path"].endswith("MacOSX.sdk")
+    assert snapshot["tool_paths"]["vtool"].endswith("/vtool")
+    assert snapshot["tool_paths"]["make"] == "/usr/bin/make"
+    assert "xcode" not in snapshot
+
+
+@pytest.mark.parametrize("probe", [
+    ("/usr/bin/xcode-select", "-p"), ("/usr/bin/clang", "--version"),
+    ("/usr/bin/xcrun", "--show-sdk-version"), ("/usr/bin/xcrun", "--show-sdk-path"),
+    ("/usr/bin/xcrun", "--find", "vtool"), ("/usr/bin/xcrun", "--find", "notarytool"),
+    ("/usr/bin/xcrun", "--find", "stapler"), ("/usr/bin/xcrun", "--find", "clang"),
+])
+@pytest.mark.parametrize("failure", ["empty", "exit"])
+def test_tools_snapshot_rejects_unusable_apple_probe(apple_tools, monkeypatch, probe, failure):
+    original = release.run
+
+    def command(args, **kwargs):
+        if tuple(args) == probe:
+            if failure == "exit":
+                raise release.ReleaseError("probe failed")
+            return "  "
+        return original(args, **kwargs)
+
+    monkeypatch.setattr(release, "run", command)
+    with pytest.raises(release.ReleaseError):
+        release.tools_snapshot()
+
+
+@pytest.mark.parametrize("tool", ["make", "otool", "codesign"])
+def test_tools_snapshot_rejects_missing_required_tool(apple_tools, monkeypatch, tool):
+    monkeypatch.setattr(release.shutil, "which", lambda name, **kwargs: None if name == tool else "/usr/bin/" + name)
+    with pytest.raises(release.ReleaseError, match="Missing"):
+        release.tools_snapshot()
+
+
+@pytest.mark.parametrize("key", ["DEVELOPER_DIR", "SDKROOT", "TOOLCHAINS"])
+def test_tools_snapshot_rejects_build_environment_overrides(apple_tools, monkeypatch, key):
+    monkeypatch.setenv(key, "/different/toolchain")
+    with pytest.raises(release.ReleaseError, match="override"):
+        release.tools_snapshot()
+    assert apple_tools[1] == []
+
+
+@pytest.mark.parametrize("field", ["developer_dir", "clang", "sdk_version", "sdk_path", "tool_paths"])
+@pytest.mark.parametrize("operation", ["candidate", "publish"])
+def test_changed_tool_snapshot_stops_before_build_or_external_writes(tmp_path, monkeypatch, apple_tools, field, operation):
+    import argparse
+    import copy
+
+    frozen = release.tools_snapshot()
+    changed = copy.deepcopy(frozen)
+    if field == "tool_paths":
+        changed[field]["notarytool"] = "/different/notarytool"
+    else:
+        changed[field] += "-changed"
+    root = tmp_path / "release"
+    root.mkdir()
+    manifest = root / "candidate-manifest.json"
+    manifest.write_text("{}")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    info = {"version": "1.0.4", "github": "example/repo"}
+    monkeypatch.setattr(release, "ROOT", repo)
+    monkeypatch.setattr(release, "metadata", lambda *_: info)
+    monkeypatch.setattr(release, "check_source", lambda *_: None)
+    monkeypatch.setattr(release, "git", lambda *_: "a" * 40)
+    monkeypatch.setattr(release, "verify_candidate", lambda *_: {
+        **info, "source": "a" * 40, "previous_tag": "v1.0.3", "tools": frozen})
+    monkeypatch.setattr(release, "tools_snapshot", lambda: changed)
+    monkeypatch.setattr(release, "run", lambda *_a, **_kw: pytest.fail("No build or external command allowed"))
+    monkeypatch.setattr(release, "ensure_tag", lambda *_: pytest.fail("No tag allowed"))
+    with pytest.raises(release.ReleaseError, match="Tool environment changed"):
+        if operation == "candidate":
+            release.candidate(argparse.Namespace(source="a" * 40, previous_tag="v1.0.3", output=root))
+        else:
+            release.publish(argparse.Namespace(candidate=manifest, acceptance=root / "acceptance.json", confirm_version="v1.0.4"))
+    assert sorted(p.name for p in root.iterdir()) == ["candidate-manifest.json"]

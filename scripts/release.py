@@ -234,13 +234,30 @@ def github_release(github, tag):
 
 def tools_snapshot():
     require(platform.system() == "Darwin" and platform.machine() == "arm64", "macOS arm64 required")
+    require(not any(os.environ.get(key) for key in ("DEVELOPER_DIR", "SDKROOT", "TOOLCHAINS")),
+            "Remove Apple toolchain overrides; builds use the system developer directory")
     commands = {"python": ["python3.11", "--version"], "node": ["node", "--version"], "npm": ["npm", "--version"],
-                "git": ["git", "--version"], "gh": ["gh", "--version"], "xcode": ["xcodebuild", "-version"]}
+                "git": ["git", "--version"], "gh": ["gh", "--version"]}
     values = {key: run(cmd, timeout=60).strip() for key, cmd in commands.items()}
     require(values["python"].startswith("Python 3.11.") and values["node"].startswith("v24.") and values["npm"].startswith("11."), "Python 3.11 / Node 24 / npm 11 required")
-    for executable in ("codesign", "security", "xcrun", "ditto", "hdiutil", "spctl", "lipo", "lsof"):
-        require(shutil.which(executable), f"Missing {executable}")
+    # Match build-media-tools.py's system environment, without creating a build home.
+    apple_env = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"}
+    apple_commands = {"developer_dir": ["/usr/bin/xcode-select", "-p"],
+                      "clang": ["/usr/bin/clang", "--version"],
+                      "sdk_version": ["/usr/bin/xcrun", "--show-sdk-version"],
+                      "sdk_path": ["/usr/bin/xcrun", "--show-sdk-path"]}
+    for key, command in apple_commands.items():
+        values[key] = run(command, env=apple_env, timeout=60).strip()
+    require(all(values.values()), "Required tool probe returned empty output")
+    paths = {}
+    for executable in ("codesign", "security", "xcrun", "ditto", "hdiutil", "spctl", "lipo", "lsof", "make", "otool"):
+        paths[executable] = shutil.which(executable, path=apple_env["PATH"] if executable in ("make", "otool") else None)
+        require(paths[executable], f"Missing {executable}")
+    for executable in ("clang", "vtool", "notarytool", "stapler"):
+        paths[executable] = run(["/usr/bin/xcrun", "--find", executable], env=apple_env, timeout=60).strip()
+        require(paths[executable], f"Missing {executable}")
     run(["gh", "auth", "status"], timeout=60)
+    values["tool_paths"] = paths
     values["os"] = platform.mac_ver()[0]
     return values
 
