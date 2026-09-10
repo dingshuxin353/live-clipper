@@ -1579,23 +1579,16 @@ def _run_service_tick_locked(settings: Settings, *, service_dir: Path) -> dict[s
     validate_service_settings(settings)
     ensure_dir(service_dir)
     if project_mode_active(service_dir):
-        from . import scheduler
         from .project_runtime import tick_project_runtime
         from .project_scheduler import tick_project_schedules
 
         runtime_report = tick_project_runtime(settings, service_dir=service_dir)
         scheduler_report = tick_project_schedules(settings, service_dir=service_dir)
-        legacy_scheduler_report = scheduler.tick_scheduler(
-            settings,
-            service_dir=service_dir,
-            skip_job_types=frozenset({"scan_recordings"}),
-        )
         return {
             "ok": True,
             "mode": "projects",
             "runtime": runtime_report,
             "scheduler": scheduler_report,
-            "legacy_scheduler": legacy_scheduler_report,
             "service_dir": str(service_dir),
         }
     runs = load_runs(service_dir)

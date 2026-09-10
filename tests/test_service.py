@@ -654,3 +654,37 @@ def test_projects_mode_service_tick_uses_sqlite_runtime_without_runs_json(tmp_pa
     assert not (service_dir / "runs.json").exists()
     with pytest.raises(service.ProjectScopeRequiredError):
         service.run_service_once(Settings(), service_dir=service_dir)
+
+
+@pytest.mark.parametrize('job_type', ['review_due_check', 'maintenance_check'])
+def test_project_tick_does_not_create_legacy_index_or_block_first_run(tmp_path, monkeypatch, job_type):
+    from zoneinfo import ZoneInfo
+
+    from live_clipper import scheduler
+    from live_clipper.first_run_detection import inspect_startup
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 9, 10, 9, tzinfo=ZoneInfo('Asia/Shanghai')).astimezone(tz)
+
+    monkeypatch.setattr(scheduler, 'datetime', Clock)
+    service_dir = tmp_path / 'service'
+    with open_project_repository(service_dir) as repository:
+        session = repository.begin_first_run_session()
+        repository.update_first_run_draft(session.revision, {'project': {'name': '保留草稿'}}, current_step='ai')
+    write_json(service_dir / 'service.json', {'runtime_mode': 'projects'})
+    write_json(service_dir / 'scheduler_runs.json', {'jobs': {'due': {'next_run_at': '2026-09-10T08:00:00+08:00'}}})
+    settings = Settings(scheduler=SchedulerConfig(jobs=[SchedulerJobConfig(
+        id='due', name='旧任务', enabled=True, type=job_type, schedule='daily', time='08:00',
+    )]))
+    args = dict(config_path=tmp_path / 'missing.toml', env_path=tmp_path / 'missing.env', service_dir=service_dir)
+    assert inspect_startup(**args).onboarding == 'resume'
+    old_state = (service_dir / 'scheduler_runs.json').read_bytes()
+    report = service.run_service_tick(settings, service_dir=service_dir)
+    decision = inspect_startup(**args)
+    assert decision.onboarding == 'resume', (decision, (service_dir / 'runs.json').read_text())
+    assert not (service_dir / 'runs.json').exists()
+    assert (service_dir / 'scheduler_runs.json').read_bytes() == old_state
+    assert 'legacy_scheduler' not in report
+    assert report['runtime']['mode'] == report['scheduler']['mode'] == 'projects'

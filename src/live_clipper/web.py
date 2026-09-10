@@ -965,7 +965,7 @@ def handle_api_request(
         if method == "POST" and parts[:2] == ["api", "review-automation"]:
             return _json_response(_structured_error('resource_route_retired', '请在资源页验证用途，在项目中处理记录'), status=410)
         if method == "POST" and parts[:3] == ["api", "scheduler", "jobs"]:
-            return _json_response(_structured_error('project_route_required', '请在项目中设置定时与处理规则'), status=410)
+            return _json_response(_structured_error('project_route_required', '请在项目中管理和执行任务'), status=410)
 
         if method == "POST" and len(parts) == 5 and parts[:3] == ["api", "scheduler", "jobs"] and parts[4] == "pause":
             return _json_response(scheduler.pause_job(parts[3], service_dir=paths.service_dir))
@@ -1090,14 +1090,6 @@ def _restart_service_from_config(paths: WebPaths) -> dict[str, Any]:
     }
 
 
-
-
-def _run_scheduler_job_now(paths: WebPaths, job_id: str) -> dict[str, Any]:
-    settings = _settings_for_paths(paths)
-    job = next((job for job in settings.scheduler.jobs if job.id == job_id), None)
-    if job is None:
-        return _structured_error("scheduler_job_not_found", f"定时任务不存在: {job_id}")
-    return scheduler.run_job_now(job, settings, service_dir=paths.service_dir)
 
 
 def _render_run(run_dir: Path) -> dict[str, Any]:

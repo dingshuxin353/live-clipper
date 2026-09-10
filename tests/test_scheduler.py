@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from live_clipper import review_automation, service
 from live_clipper.config import SchedulerConfig, SchedulerJobConfig, Settings
 from live_clipper.scheduler import (
@@ -343,33 +345,20 @@ def test_manual_run_consumes_overdue_schedule_without_duplicate_tick(monkeypatch
     assert read_json(tmp_path / "scheduler_runs.json")["jobs"]["daily_scan"]["next_run_at"] == "2026-07-01T08:00:00+08:00"
 
 
-def test_project_mode_delegates_legacy_recording_scan_job(monkeypatch, tmp_path):
-    job = SchedulerJobConfig(
-        id="daily_scan",
-        name="每日扫描",
-        enabled=True,
-        type="scan_recordings",
-        schedule="daily",
-        time="08:00",
-    )
-    write_json(
-        tmp_path / "scheduler_runs.json",
-        {"jobs": {"daily_scan": {"next_run_at": "2026-06-30T08:00:00+08:00"}}},
-    )
-    monkeypatch.setattr(
-        service,
-        "run_service_once",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("global scan must not run")),
-    )
+@pytest.mark.parametrize('job_type', ['scan_recordings', 'review_due_check', 'maintenance_check', 'ai_review'])
+@pytest.mark.parametrize('manual', [False, True])
+def test_projects_reject_legacy_execution_before_writes(tmp_path, job_type, manual):
+    from live_clipper.project_service import open_project_repository
 
-    result = tick_scheduler(
-        _settings([job]),
-        service_dir=tmp_path,
-        now=datetime(2026, 6, 30, 9, 0, tzinfo=TZ),
-        skip_job_types=frozenset({"scan_recordings"}),
-    )
-
-    state = read_json(tmp_path / "scheduler_runs.json")["jobs"]["daily_scan"]
-    assert result["skipped_jobs"] == ["daily_scan"]
-    assert state["last_error"] == "delegated_to_project_scheduler"
-    assert state["next_run_at"] == "2026-07-01T08:00:00+08:00"
+    with open_project_repository(tmp_path):
+        pass
+    job = SchedulerJobConfig(id='old', name='旧任务', enabled=True, type=job_type, schedule='daily', time='08:00')
+    write_json(tmp_path / 'runs.json', {'runs': [{'run_id': 'preserve', 'phase': 'needs_review'}]})
+    write_json(tmp_path / 'scheduler_runs.json', {'jobs': {'old': {'next_run_at': '2026-06-30T08:00:00+08:00'}}})
+    before = {p.name: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()}
+    with pytest.raises(service.ProjectScopeRequiredError, match='请在项目中管理和执行任务'):
+        if manual:
+            run_job_now(job, _settings([job]), service_dir=tmp_path, now=datetime(2026, 6, 30, 9, tzinfo=TZ))
+        else:
+            tick_scheduler(_settings([job]), service_dir=tmp_path, now=datetime(2026, 6, 30, 9, tzinfo=TZ))
+    assert {p.name: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()} == before

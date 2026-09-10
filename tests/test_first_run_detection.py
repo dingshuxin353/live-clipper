@@ -217,3 +217,183 @@ def test_durable_active_migration_is_detected_read_only_and_routes_to_resume(tmp
     assert detection.migration_session_count == 1
     assert decision.entry == "migration_required" and decision.reason_code == "migration_resume"
     assert _fingerprint(tmp_path) == before
+
+
+def test_strict_empty_index_resumes_project_first_run_without_writes(tmp_path):
+    service_dir = tmp_path / 'service'
+    with open_project_repository(service_dir) as repository:
+        session = repository.begin_first_run_session()
+        repository.update_first_run_draft(session.revision, {'project': {'name': '原草稿'}}, current_step='ai')
+    (service_dir / 'service.json').write_text('{"runtime_mode":"projects"}')
+    (service_dir / 'runs.json').write_text(' { "runs" : [ ] } \n')
+    before = _fingerprint(tmp_path)
+    decision = inspect_startup(config_path=tmp_path / 'missing.toml', env_path=tmp_path / 'missing.env', service_dir=service_dir)
+    assert decision.entry == 'onboarding' and decision.onboarding == 'resume'
+    assert _fingerprint(tmp_path) == before
+
+
+@pytest.mark.parametrize('content', ['{"runs":[{}]}', '{', '[]', '{}', '{"runs":{}}', '{"runs":null}',
+                                     '{"runs":[],"unknown":1}', '{"runs":[1],"runs":[]}', '{"runs":[],"runs":[]}'])
+def test_uncertain_or_nonempty_index_keeps_conflict(tmp_path, content):
+    service_dir = tmp_path / 'service'
+    with open_project_repository(service_dir) as repo:
+        repo.begin_first_run_session()
+    (service_dir / 'service.json').write_text('{"runtime_mode":"projects"}')
+    (service_dir / 'runs.json').write_text(content)
+    before = _fingerprint(tmp_path)
+    decision = inspect_startup(config_path=tmp_path / 'config', env_path=tmp_path / 'env', service_dir=service_dir)
+    assert decision.reason_code == 'legacy_projects_conflict'
+    assert _fingerprint(tmp_path) == before
+
+
+@pytest.mark.parametrize('fault', ['directory', 'permission', 'disappears', 'changes'])
+def test_uncertain_read_never_becomes_empty_index(tmp_path, monkeypatch, fault):
+    from live_clipper import first_run_detection as detector
+
+    service_dir = tmp_path / 'service'
+    with open_project_repository(service_dir) as repo:
+        repo.begin_first_run_session()
+    (service_dir / 'service.json').write_text('{"runtime_mode":"projects"}')
+    target = service_dir / 'runs.json'
+    if fault == 'directory':
+        target.mkdir()
+    else:
+        target.write_text('{"runs":[]}')
+    if fault == 'permission':
+        original_open = detector.os.open
+        def denied(path, *args, **kwargs):
+            if Path(path) == target:
+                raise PermissionError('injected read denial')
+            return original_open(path, *args, **kwargs)
+        monkeypatch.setattr(detector.os, 'open', denied)
+    if fault in {'disappears', 'changes'}:
+        original_loads = detector.json.loads
+        def mutate(text, *args, **kwargs):
+            if text == '{"runs":[]}':
+                if fault == 'disappears':
+                    target.unlink()
+                else:
+                    target.write_text('{"runs":[1]}')
+            return original_loads(text, *args, **kwargs)
+        monkeypatch.setattr(detector.json, 'loads', mutate)
+    decision = inspect_startup(config_path=tmp_path / 'config', env_path=tmp_path / 'env', service_dir=service_dir)
+    assert decision.reason_code == 'legacy_projects_conflict'
+
+
+@pytest.mark.parametrize('independent', ['onboarding.json', 'global_config', 'missing_runtime', 'invalid_runtime'])
+def test_empty_index_does_not_override_other_evidence(tmp_path, independent):
+    service_dir = tmp_path / 'service'
+    with open_project_repository(service_dir) as repo:
+        repo.begin_first_run_session()
+    (service_dir / 'runs.json').write_text('{"runs":[]}')
+    marker = service_dir / 'service.json'
+    marker.write_text('{"runtime_mode":"projects"}')
+    config = tmp_path / 'config'
+    if independent == 'onboarding.json':
+        (service_dir / independent).write_text('{}')
+    elif independent == 'global_config':
+        config.write_text('[recording_source.default]\nsource_dir="/old/source"\n')
+    elif independent == 'missing_runtime':
+        marker.unlink()
+    else:
+        marker.write_text('not JSON')
+    before = _fingerprint(tmp_path)
+    assert inspect_startup(config_path=config, env_path=tmp_path / 'env', service_dir=service_dir).entry == 'diagnostic_required'
+    assert _fingerprint(tmp_path) == before
+
+
+@pytest.mark.parametrize(('state', 'project_exists', 'expected'), [
+    ('paused', False, ('onboarding', 'paused', None)),
+    ('activation_pending', True, ('onboarding', 'activation_pending', None)),
+    ('completed', True, ('workbench', None, None)),
+    ('completed', False, ('diagnostic_required', None, 'completed_project_missing')),
+    (None, True, ('workbench', None, None)),
+])
+def test_empty_index_preserves_existing_startup_state(tmp_path, state, project_exists, expected):
+    service_dir = tmp_path / 'service'
+    with open_project_repository(service_dir) as repo:
+        session = repo.begin_first_run_session() if state else None
+        project_id = repo.create_project('已有项目', default_project_config(tmp_path/'source', tmp_path/'output')).project_id if project_exists else 'missing'
+        if state:
+            if state == 'paused':
+                repo.pause_first_run(session.revision)
+            else:
+                repo.connection.execute("UPDATE first_run_sessions SET state=?, current_step='complete', project_request_id='request', project_request_hash='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', first_project_id=?, completed_at=?",
+                                        (state, project_id, '2026-09-10T00:00:00Z' if state == 'completed' else None))
+                repo.connection.commit()
+    (service_dir / 'service.json').write_text('{"runtime_mode":"projects"}')
+    (service_dir / 'runs.json').write_text('{"runs":[]}')
+    before = _fingerprint(tmp_path)
+    result = inspect_startup(config_path=tmp_path/'config', env_path=tmp_path/'env', service_dir=service_dir)
+    assert (result.entry, result.onboarding, result.reason_code) == expected
+    assert _fingerprint(tmp_path) == before
+
+
+def test_real_app_startup_converts_saved_choice_and_resumes_again(tmp_path):
+    import os
+    import signal
+    import socket
+    import subprocess
+    import sys
+    import threading
+    import time
+    import urllib.request
+
+    from live_clipper.resource_store import ResourceStore
+
+    home = tmp_path / 'app-home'
+    home.mkdir()
+    service_dir = home / 'work/service'
+    config = home / 'live-clipper.toml'
+    config.write_text(f'[paths]\nworkspace_root = "{home / "workspace"}"\n[llm]\nmodel="saved-model"\napi_base="https://saved.test/v1"\n')
+    (home / '.env').write_text('CHEAP_MODEL_API_KEY=isolated-test-credential\n')
+    with open_project_repository(service_dir) as repo:
+        repo.begin_first_run_session()
+        saved = repo.update_first_run_draft(1, {'ai': {'model': 'saved-model', 'api_base': 'https://saved.test/v1'}, 'project': {'name': '原来的项目'}}, current_step='ai')
+    (service_dir / 'service.json').write_text('{"runtime_mode":"projects"}')
+    index = service_dir / 'runs.json'
+    index.write_text('{"runs":[]}')
+    original_index = index.read_bytes()
+    env = {'PATH': os.environ['PATH'], 'HOME': str(home), 'LIVE_CLIPPER_HOME': str(home),
+           'HF_HUB_OFFLINE': '1', 'PYTHONNOUSERSITE': '1'}
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    snapshots = []
+    for attempt in range(2):
+        with socket.socket() as reservation:
+            reservation.bind(('127.0.0.1', 0))
+            port = reservation.getsockname()[1]
+        with (tmp_path / f'startup-{attempt}.log').open('w') as log:
+            process = subprocess.Popen([str(Path(sys.executable).with_name('live-clipper')), 'app', '--host', '127.0.0.1', '--port', str(port)],
+                                       cwd=home, env=env, stdout=log, stderr=log, start_new_session=True)
+            try:
+                deadline = time.monotonic() + 15
+                while True:
+                    assert process.poll() is None, 'App exited; see isolated startup log'
+                    try:
+                        with opener.open(f'http://127.0.0.1:{port}/api/onboarding', timeout=1) as response:
+                            snapshot = json.load(response)
+                        break
+                    except OSError:
+                        assert time.monotonic() < deadline, 'App readiness timed out'
+                        threading.Event().wait(0.05)
+                assert snapshot['entry']['onboarding'] == 'resume', snapshot['entry']
+                assert snapshot['session']['current_step'] == saved.current_step
+                assert snapshot['session']['draft']['project'] == saved.draft['project']
+                snapshots.append(snapshot['session'])
+            finally:
+                if process.poll() is None:
+                    os.killpg(process.pid, signal.SIGTERM)
+                process.wait(timeout=5)
+        with socket.socket() as probe:
+            assert probe.connect_ex(('127.0.0.1', port)) != 0
+        assert index.read_bytes() == original_index
+    assert snapshots[0] == snapshots[1]
+    with ProjectRepository(service_dir) as repo:
+        session = repo.get_first_run_session()
+        resource = ResourceStore(repo).get(session.draft['ai']['resource_id'])
+        assert not resource['ready']
+        assert resource['config']['model'] == 'saved-model'
+        assert repo.connection.execute("SELECT value FROM system_state WHERE key='named_resources_migration'").fetchone()[0] == 'completed'
+        assert repo.connection.execute('SELECT count(*) FROM first_run_sessions').fetchone()[0] == 1
+        assert repo.connection.execute('SELECT count(*) FROM projects').fetchone()[0] == 0
+        assert repo.connection.execute('SELECT count(*) FROM migration_sessions').fetchone()[0] == 0

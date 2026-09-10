@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import stat
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -137,8 +139,8 @@ def _is_current_project_runtime(service: Path, facts: _DatabaseFacts) -> bool:
     The service and scheduler intentionally retain their historical filenames,
     but those files are not legacy evidence once the authoritative database is
     in projects mode and ``service.json`` carries the provenance marker. A
-    legacy ``runs.json`` remains an independent signal so mixed installations
-    still route to migration/diagnostics.
+    legacy ``runs.json`` remains independent evidence unless verified as a
+    strictly empty index; mixed installations still require diagnosis.
     """
     if facts.data_mode != "projects":
         return False
@@ -147,6 +149,41 @@ def _is_current_project_runtime(service: Path, facts: _DatabaseFacts) -> bool:
     except (OSError, UnicodeError, json.JSONDecodeError):
         return False
     return isinstance(payload, dict) and payload.get("runtime_mode") == "projects"
+
+
+def _runs_are_legacy(path: Path, *, current_project_runtime: bool) -> bool:
+    try:
+        before = path.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    if not current_project_runtime or not stat.S_ISREG(before.st_mode):
+        return True
+
+    def identity(info: os.stat_result) -> tuple[int, ...]:
+        return (info.st_dev, info.st_ino, info.st_mode, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result = dict(pairs)
+        if len(result) != len(pairs):
+            raise ValueError("duplicate JSON key")
+        return result
+
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
+        with os.fdopen(os.open(path, flags), "rb") as stream:
+            opened = os.fstat(stream.fileno())
+            if identity(opened) != identity(before):
+                return True
+            payload = json.loads(stream.read().decode("utf-8"), object_pairs_hook=unique_object)
+            if identity(os.fstat(stream.fileno())) != identity(before):
+                return True
+        if identity(path.lstat()) != identity(before):
+            return True
+    except (OSError, UnicodeError, ValueError, RecursionError):
+        return True
+    return not (isinstance(payload, dict) and set(payload) == {"runs"} and payload["runs"] == [])
 
 
 def _inspect(
@@ -167,8 +204,8 @@ def _inspect(
     db_path = database_path(service)
     facts = _read_database_facts(db_path)
     current_project_runtime = _is_current_project_runtime(service, facts)
-    if any((service / name).exists() for name in LEGACY_METADATA_FILES) and (
-        not current_project_runtime or (service / "runs.json").exists()
+    if _runs_are_legacy(service / "runs.json", current_project_runtime=current_project_runtime) or (
+        not current_project_runtime and any((service / name).exists() for name in LEGACY_METADATA_FILES)
     ):
         evidence.add("legacy_metadata")
     if facts.has_blocked_legacy_import:

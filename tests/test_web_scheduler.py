@@ -34,6 +34,7 @@ def test_legacy_scheduler_mutations_require_project_and_leave_config_unchanged(t
             paths, body={"job": {"id": "daily_review"}})
         assert status == 410
         assert payload["error_code"] == "project_route_required"
+        assert payload["message"] == "请在项目中管理和执行任务"
     assert paths.config_path.read_bytes() == before
     status, _, payload = handle_api_request("GET", "/api/scheduler/events", paths)
     assert status == 200

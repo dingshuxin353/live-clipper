@@ -183,13 +183,20 @@ def get_scheduler_status(
     }
 
 
+def _require_legacy_scope(service_dir: Path) -> None:
+    from .service import ProjectScopeRequiredError, project_mode_active
+
+    if project_mode_active(service_dir):
+        raise ProjectScopeRequiredError("请在项目中管理和执行任务")
+
+
 def tick_scheduler(
     settings: Settings,
     *,
     service_dir: Path,
     now: datetime | None = None,
-    skip_job_types: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
+    _require_legacy_scope(service_dir)
     current = now or datetime.now(ZoneInfo(settings.scheduler.timezone))
     ensure_dir(service_dir)
     if not settings.scheduler.enabled:
@@ -207,24 +214,6 @@ def tick_scheduler(
         due_at = _ensure_next_run_at(job, settings=settings, state=state, now=current)
         save_scheduler_runs(service_dir, runs_state)
         if due_at > current:
-            continue
-        if job.type in skip_job_types:
-            state.update(
-                {
-                    "status": "skipped",
-                    "last_error": "delegated_to_project_scheduler",
-                    "last_scheduled_for": due_at.isoformat(),
-                    "next_run_at": _advance_next_run(job, due_at=due_at, now=current).isoformat(),
-                }
-            )
-            save_scheduler_runs(service_dir, runs_state)
-            append_scheduler_event(
-                service_dir,
-                "scheduler_job_skipped",
-                job_id=job.id,
-                reason="delegated_to_project_scheduler",
-            )
-            skipped_jobs.append(job.id)
             continue
         if settings.scheduler.missed_policy == "skip":
             state.update(
@@ -266,6 +255,7 @@ def run_job_now(
     now: datetime | None = None,
     scheduled_due_at: datetime | None = None,
 ) -> dict[str, Any]:
+    _require_legacy_scope(service_dir)
     current = now or datetime.now(ZoneInfo(settings.scheduler.timezone))
     runs_state = load_scheduler_runs(service_dir)
     entry = _job_state(runs_state, job.id)
