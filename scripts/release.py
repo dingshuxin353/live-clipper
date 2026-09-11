@@ -302,19 +302,22 @@ def tools_snapshot():
     return values
 
 
-def signature_facts(details, bundle_id):
+def signature_facts(details, bundle_id=None):
     def field(name):
         match = re.search(rf"^{name}=(.+)$", details, re.M)
         require(match, f"Missing codesign {name}")
         return match[1]
 
-    flags = re.search(r"\bflags=0x([0-9a-fA-F]+)", details)
-    require(flags and int(flags[1], 16) & 0x10000, "Hardened Runtime is absent")
-    require(field("Identifier") == bundle_id, "Signed Bundle ID mismatch")
     require("Authority=Developer ID Application:" in details and field("Timestamp"), "Developer ID / trusted timestamp absent")
     cdhash = field("CDHash")
     require(re.fullmatch(r"[0-9a-f]{40}", cdhash), "Invalid CDHash")
-    return {"hardened_runtime": True, "cdhash": cdhash, "timestamp": field("Timestamp")}
+    facts = {"cdhash": cdhash, "timestamp": field("Timestamp")}
+    if bundle_id is not None:
+        flags = re.search(r"\bflags=0x([0-9a-fA-F]+)", details)
+        require(flags and int(flags[1], 16) & 0x10000, "Hardened Runtime is absent")
+        require(field("Identifier") == bundle_id, "Signed Bundle ID mismatch")
+        facts["hardened_runtime"] = True
+    return facts
 
 
 # Local P1 footprint was ~4.2 GiB; measured cold/hot Desktop + pinned MLX
@@ -651,7 +654,7 @@ def mounted_dmg(dmg, mount, evidence):
         require(remove_owned(root, mount.relative_to(root).as_posix())['removed'], 'Mount directory cleanup failed')
 
 
-def check_packages(root, directory, info, source, label):
+def check_packages(root, directory, info, source, label, signing_identity):
     evidence = root / "evidence"
     app = directory / "mac-arm64/Venus.app"
     facts = app_facts(app, info, evidence, label)
@@ -659,6 +662,10 @@ def check_packages(root, directory, info, source, label):
     require(read_updater_config(app / "Contents/Resources/app-update.yml") == read_updater_config(source / "desktop/build/app-update.yml"), "Packaged updater configuration differs")
     run([source / ".venv/bin/python", source / "scripts/ci/assert_backend_bundle.py", "--bundle", app / "Contents/Resources/backend"], log=evidence / f"{label}-backend-bundle.log")
     files = release_assets(directory, info["version"])
+    dmg = directory / files["dmg"]
+    run(["codesign", "--verify", "--strict", "--verbose=2", "-R",
+         f'=certificate leaf = H"{signing_identity}"', app, dmg], log=evidence / f"{label}-container-signature.log")
+    signature_facts(run(["codesign", "-d", "--verbose=4", dmg], log=evidence / f"{label}-dmg-codesign.log"))
     check_media_source(directory, app, info)
     run(['node', source / 'desktop/media-runtime.js', app / 'Contents/Resources'], log=evidence / f'{label}-media.log')
     check_dir = root / f"{label}-unpacked"
@@ -918,7 +925,7 @@ def candidate(args):
     media_identity = read_json(media / 'build-manifest.json')
     shutil.copy2(media / 'media-sources.tar.gz', directory / f"Venus-{info['version']}-media-sources.tar.gz")
     update_metadata(directory, info["version"], source, evidence)
-    signature = check_packages(output, directory, info, source, "candidate")
+    signature = check_packages(output, directory, info, source, "candidate", matches[0][0])
     app = directory / "mac-arm64/Venus.app"
     backend = backend_smoke(output, app)
     previous = previous_app(output, info["github"], args.previous_tag, info)

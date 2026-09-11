@@ -23,6 +23,47 @@ def test_signature_runtime_is_parsed_from_codesign_flags():
         release.signature_facts(details.replace("0x10000(runtime)", "0x0(none)"), "example")
 
 
+@pytest.mark.parametrize('state', ['signed', 'unsigned', 'no_timestamp'])
+def test_packages_require_signed_dmg_before_freezing(tmp_path, monkeypatch, state):
+    directory = tmp_path / 'candidate'
+    app = directory / 'mac-arm64/Venus.app'
+    dmg = directory / 'Venus-1.0.4-arm64.dmg'
+    identity = 'A' * 40
+    monkeypatch.setattr(release, 'app_facts', lambda *_: {})
+    monkeypatch.setattr(release, 'check_packaged_privacy', lambda *_: None)
+    monkeypatch.setattr(release, 'read_updater_config', lambda *_: {})
+    monkeypatch.setattr(release, 'release_assets', lambda *_: {'dmg': dmg.name})
+    calls = []
+
+    def command(args, **kwargs):
+        calls.append(args)
+        if args[0] != 'codesign':
+            return ''
+        if '--verify' in args:
+            assert args == ['codesign', '--verify', '--strict', '--verbose=2',
+                            '-R', f'=certificate leaf = H"{identity}"', app, dmg]
+            if state == 'unsigned':
+                raise release.ReleaseError('code object is not signed at all')
+            return ''
+        assert args == ['codesign', '-d', '--verbose=4', dmg]
+        details = 'CodeDirectory v=20100 flags=0x0(none)\nCDHash=' + 'b' * 40
+        details += '\nAuthority=Developer ID Application: Test\n'
+        return details + ('Timestamp=today\n' if state != 'no_timestamp' else '')
+
+    def after_signature(*_):
+        raise release.ReleaseError('Reached verified container boundary')
+
+    monkeypatch.setattr(release, 'run', command)
+    monkeypatch.setattr(release, 'check_media_source', after_signature)
+    expected = {'signed': 'Reached verified container boundary',
+                'unsigned': 'not signed at all', 'no_timestamp': 'Timestamp'}[state]
+    with pytest.raises(release.ReleaseError, match=expected):
+        release.check_packages(tmp_path, directory, {'version': '1.0.4'}, tmp_path / 'source',
+                               'candidate', identity)
+    assert any('-R' in args for args in calls)
+    assert not (tmp_path / 'candidate-manifest.json').exists()
+
+
 @pytest.mark.parametrize("value", ["1.0", "v1.2.3", "1.2.3-beta", "01.2.3", "../1.2.3"])
 def test_version_rejects_ambiguous_names(value):
     with pytest.raises(release.ReleaseError):
@@ -185,7 +226,7 @@ def test_packaged_updater_compares_complete_configuration(tmp_path, monkeypatch,
     monkeypatch.setattr(release, 'run', next_package_check)
     expected = 'Reached backend bundle check' if change == 'reordered' else 'updater configuration'
     with pytest.raises(release.ReleaseError, match=expected):
-        release.check_packages(tmp_path, tmp_path / 'candidate', {}, source, 'candidate')
+        release.check_packages(tmp_path, tmp_path / 'candidate', {}, source, 'candidate', 'A' * 40)
 
 
 def test_anonymous_download_rejects_non_https_before_writing(tmp_path):
@@ -806,6 +847,8 @@ def test_candidate_uses_preflight_identities(tmp_path, monkeypatch, boundary):
         if Path(args[0]).name == 'electron-builder':
             assert kwargs['env']['CSC_NAME'] == 'A' * 40
             assert '-c.forceCodeSigning=true' in args and '-c.mac.notarize=false' in args
+            builder = (Path(__file__).parents[1] / 'desktop/electron-builder.yml').read_text()
+            assert '\ndmg:\n  sign: true\n' in builder
             raise release.ReleaseError('Reached selected signing boundary')
         if 'audit' in args:
             return '{"metadata": {"vulnerabilities": {"total": 0}}}'
