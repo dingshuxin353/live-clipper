@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Kept all five setup step titles visible, with descriptions below them, at the default and minimum window sizes.
 - Fixed an empty task index blocking unfinished setup with `legacy_projects_conflict` in project mode. Setup resumes at the saved step without deleting the index or resetting settings ([#2](https://github.com/dingshuxin353/live-clipper/issues/2)).
 - Stopped project mode from running legacy global tasks that could recreate the empty index ([f277f6b](https://github.com/dingshuxin353/live-clipper/commit/f277f6b37f9b1eb74990cca9ba44f9b7aeea9e49)).
 - Preserved selected recording and output folders in migration sessions so repeated requests and retries after rollback use the original plan. Sessions whose folders were already replaced with `[redacted-path]` remain blocked; this fix cannot recover lost paths.

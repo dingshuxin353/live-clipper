@@ -59,6 +59,14 @@ describe("five-step first-run setup", () => {
     for (const label of ["开始", "语音识别", "AI 服务", "第一个项目", "完成"]) expect(screen.getAllByText(label).length).toBeGreaterThan(0);
     expect(await screen.findByRole("dialog", { name: "开始" })).toHaveAttribute("aria-modal", "true");
     expect(screen.queryByText("新建项目")).not.toBeInTheDocument();
+    const steps = screen.getByLabelText("首次设置步骤");
+    for (const label of ["语音识别", "AI 服务", "第一个项目", "完成"]) {
+      expect(within(steps).getByRole("button", { name: label })).toBeDisabled();
+    }
+    fireEvent.click(screen.getByRole("button", { name: "开始设置" }));
+    await screen.findByRole("dialog", { name: "语音识别" });
+    fireEvent.click(within(steps).getByRole("button", { name: "开始" }));
+    await screen.findByRole("dialog", { name: "开始" });
   });
 
   it("blocks the first action on a real environment blocker and can recheck", async () => {

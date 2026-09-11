@@ -1037,6 +1037,9 @@ textarea.form-control { height: auto; min-height: 88px; padding: 8px; resize: ve
 .onboarding-conflict { display: flex; align-items: center; justify-content: center; gap: 14px; padding: 9px 18px; background: #fff2df; color: #7f5b1b; }
 .onboarding-layout { display: grid; grid-template-columns: 240px minmax(0, 1fr); min-height: 0; flex: 1; }
 .onboarding-steps { display: flex; flex-direction: column; gap: 6px; padding: 22px 16px; border-right: 1px solid var(--venus-line); background: #faf9fb; }
+.onboarding-steps .onboarding-step-button { height: auto; flex-shrink: 0; justify-content: flex-start; text-align: left; white-space: normal; }
+.onboarding-step-text { display: grid; gap: 4px; }
+.onboarding-step-text small { color: inherit; }
 .onboarding-steps > p { margin-top: auto; padding: 14px; border-radius: 10px; background: #f0edf4; color: var(--venus-muted); font-size: 11px; line-height: 1.5; }
 .onboarding-steps > p strong { display: block; margin-bottom: 4px; color: var(--venus-text); }
 .onboarding-content { display: flex; min-width: 0; min-height: 0; flex-direction: column; }
