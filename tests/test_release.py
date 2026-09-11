@@ -145,6 +145,12 @@ def test_source_versions_are_dynamic_and_all_seven_checked(tmp_path):
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(repo / name, destination)
     original = release.metadata(tmp_path)
+    updater = tmp_path / "desktop/build/app-update.yml"
+    original_updater = updater.read_text()
+    updater.write_text(original_updater + "unparsed content\n")
+    with pytest.raises(release.ReleaseError, match="updater configuration"):
+        release.metadata(tmp_path)
+    updater.write_text(original_updater)
     lock = tmp_path / "frontend/package-lock.json"
     data = json.loads(lock.read_text())
     data["packages"][""]["version"] = "0.0.0"
@@ -152,6 +158,34 @@ def test_source_versions_are_dynamic_and_all_seven_checked(tmp_path):
     assert original["version"] != "0.0.0"
     with pytest.raises(release.ReleaseError, match="Seven"):
         release.metadata(tmp_path)
+
+
+@pytest.mark.parametrize('change', ['reordered', 'value', 'missing', 'unparsed', 'duplicate', 'extra'])
+def test_packaged_updater_compares_complete_configuration(tmp_path, monkeypatch, change):
+    source = Path(__file__).parents[1]
+    updater = tmp_path / 'candidate/mac-arm64/Venus.app/Contents/Resources/app-update.yml'
+    updater.parent.mkdir(parents=True)
+    # The signed builder output has the same four values, in this different order.
+    text = ('owner: dingshuxin353\nrepo: live-clipper\nprovider: github\n'
+            'updaterCacheDirName: live-clipper-desktop-updater\n')
+    if change == 'value':
+        text = text.replace('live-clipper-desktop-updater', 'different-updater')
+    elif change == 'missing':
+        text = text.replace('provider: github\n', '')
+    elif change in ('unparsed', 'duplicate', 'extra'):
+        text += {'unparsed': 'unparsed content\n', 'duplicate': 'provider: github\n',
+                 'extra': 'extra: value\n'}[change]
+    updater.write_text(text)
+    monkeypatch.setattr(release, 'app_facts', lambda *_: {})
+    monkeypatch.setattr(release, 'check_packaged_privacy', lambda *_: None)
+
+    def next_package_check(*args, **kwargs):
+        raise release.ReleaseError('Reached backend bundle check')
+
+    monkeypatch.setattr(release, 'run', next_package_check)
+    expected = 'Reached backend bundle check' if change == 'reordered' else 'updater configuration'
+    with pytest.raises(release.ReleaseError, match=expected):
+        release.check_packages(tmp_path, tmp_path / 'candidate', {}, source, 'candidate')
 
 
 def test_anonymous_download_rejects_non_https_before_writing(tmp_path):

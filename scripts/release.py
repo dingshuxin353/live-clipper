@@ -191,6 +191,20 @@ def git(repo, *args):
     return run(["git", "-C", repo, *args], timeout=120).strip()
 
 
+def read_updater_config(path):
+    # This project's updater config is a flat mapping of unquoted identifier values.
+    result = {}
+    for line in path.read_text().splitlines():
+        if not line.strip():
+            continue
+        match = re.fullmatch(r"([A-Za-z][A-Za-z0-9]*):[ \t]+([\w.-]+)[ \t]*", line)
+        require(match and match[1] not in result, "Unsupported or duplicate updater configuration field")
+        result[match[1]] = match[2]
+    require(set(result) == {"provider", "owner", "repo", "updaterCacheDirName"},
+            "Missing or unexpected updater configuration fields")
+    return result
+
+
 def metadata(repo):
     version = tomllib.loads((repo / "pyproject.toml").read_text())["project"]["version"]
     version_tuple(version)
@@ -204,7 +218,7 @@ def metadata(repo):
     section = re.search(rf"^## {re.escape(version)}(?: - [^\n]+)?\n(.*?)(?=^## |\Z)", changelog, re.M | re.S)
     require(section and section[1].strip(), "Release CHANGELOG entry missing")
     config = (repo / "desktop/electron-builder.yml").read_text()
-    update = dict(re.findall(r"^(\w+):\s*(\S+)\s*$", (repo / "desktop/build/app-update.yml").read_text(), re.M))
+    update = read_updater_config(repo / "desktop/build/app-update.yml")
     require(update.get("provider") == "github", "Only the configured GitHub provider is supported")
     for key in ("owner", "repo"):
         require(re.fullmatch(r"[\w.-]+", update[key]), "Invalid configured repository")
@@ -642,7 +656,7 @@ def check_packages(root, directory, info, source, label):
     app = directory / "mac-arm64/Venus.app"
     facts = app_facts(app, info, evidence, label)
     check_packaged_privacy(app)
-    require((app / "Contents/Resources/app-update.yml").read_bytes() == (source / "desktop/build/app-update.yml").read_bytes(), "Packaged updater configuration differs")
+    require(read_updater_config(app / "Contents/Resources/app-update.yml") == read_updater_config(source / "desktop/build/app-update.yml"), "Packaged updater configuration differs")
     run([source / ".venv/bin/python", source / "scripts/ci/assert_backend_bundle.py", "--bundle", app / "Contents/Resources/backend"], log=evidence / f"{label}-backend-bundle.log")
     files = release_assets(directory, info["version"])
     check_media_source(directory, app, info)
