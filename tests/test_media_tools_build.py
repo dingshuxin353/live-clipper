@@ -18,6 +18,14 @@ def load_recipe():
     return module
 
 
+@pytest.fixture(autouse=True)
+def archive_cache(tmp_path, monkeypatch):
+    cache = (tmp_path / "archive-cache").resolve()
+    cache.mkdir()
+    monkeypatch.setenv("VENUS_RELEASE_ARCHIVE_CACHE", str(cache))
+    return cache
+
+
 def test_source_recipe_and_locked_inputs_replace_prebuilt_supply():
     module = load_recipe()
     desktop = RECIPE.parent.parent
@@ -47,7 +55,7 @@ def test_archive_rejects_paths_links_and_special_files(tmp_path, kind, name, lin
     assert not (tmp_path / "escape").exists()
 
 
-def test_regular_archive_and_source_hash_validation(tmp_path):
+def test_regular_archive_and_source_hash_validation(tmp_path, monkeypatch, archive_cache):
     module = load_recipe()
     file = tmp_path / "source.tar"
     with tarfile.open(file, "w") as output:
@@ -55,12 +63,29 @@ def test_regular_archive_and_source_hash_validation(tmp_path):
         member.size = 2
         output.addfile(member, io.BytesIO(b"ok"))
     identity = module.digest(file)
-    module.verify_source(file, identity)
-    assert (module.unpack(file, tmp_path / "out") / "README").read_text() == "ok"
-    with file.open("ab") as output:
+    cached = archive_cache / (identity["sha256"] + "-" + file.name)
+    shutil.copyfile(file, cached)
+    lock = {"sources": {"source": {"file": file.name, **identity}}}
+
+    def unexpected_fetch(*args, **kwargs):
+        pytest.fail("Cached archives must not invoke download or Git")
+
+    monkeypatch.setattr(module, "download", unexpected_fetch)
+    monkeypatch.setattr(module, "run", unexpected_fetch)
+    work = tmp_path / "valid"
+    work.mkdir()
+    sources = module.obtain_sources(lock, work, {})
+    assert (sources["source"] / "README").read_text() == "ok"
+    assert cached.read_bytes() == file.read_bytes()
+    with cached.open("ab") as output:
         output.write(b"bad")
+    damaged = cached.read_bytes()
+    work = tmp_path / "damaged"
+    work.mkdir()
     with pytest.raises(ValueError, match="identity mismatch"):
-        module.verify_source(file, identity)
+        module.obtain_sources(lock, work, {})
+    assert cached.read_bytes() == damaged
+    assert not (work / "archives" / file.name).exists()
 
 
 @pytest.mark.parametrize("body,status", [(b"short", 200), (b"toolong", 200), (b"", 302), (b"", 500)])
