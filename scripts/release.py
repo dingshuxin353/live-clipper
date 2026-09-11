@@ -896,7 +896,7 @@ def candidate(args):
     step("frontend-audit", ["npm", "--prefix", "frontend", "audit", "--omit=dev", "--audit-level=high"])
     step("bundle-check", [".venv/bin/python", "scripts/ci/assert_backend_bundle.py"])
     # Use the login keychain for signing, without passing any password or enabling notarization.
-    sign_env = {**env, "HOME": str(Path.home()), "CSC_NAME": matches[0][1], "CSC_IDENTITY_AUTO_DISCOVERY": "true"}
+    sign_env = {**env, "HOME": str(Path.home()), "CSC_NAME": matches[0][0], "CSC_IDENTITY_AUTO_DISCOVERY": "true"}
     directory = owned_directory(output, "candidate")
     run([source / "desktop/node_modules/.bin/electron-builder", "--mac", "--arm64", "--publish", "never",
          "-c.mac.notarize=false", "-c.forceCodeSigning=true", f"-c.directories.output={directory}"], cwd=source / "desktop", env=sign_env, log=evidence / "electron-builder.log", timeout=14400)

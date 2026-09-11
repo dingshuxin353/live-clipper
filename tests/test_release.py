@@ -743,7 +743,8 @@ def test_cache_purge_uses_selected_base_python(tmp_path, monkeypatch, pinned):
 
 
 
-def test_candidate_venv_uses_frozen_python_identity(tmp_path, monkeypatch):
+@pytest.mark.parametrize('boundary', ['venv', 'signing'])
+def test_candidate_uses_preflight_identities(tmp_path, monkeypatch, boundary):
     import argparse
 
     monkeypatch.setattr(release, 'ROOT', tmp_path / 'repo')
@@ -766,11 +767,19 @@ def test_candidate_venv_uses_frozen_python_identity(tmp_path, monkeypatch):
         if 'venv' in args:
             assert args == ['/selected/bin/python3.11', '-I', '-m', 'venv', '--copies', '.venv']
             assert kwargs['env']['PATH'].split(os.pathsep)[0] == '/selected/bin'
-            raise release.ReleaseError('Reached selected venv boundary')
-        assert args[0] in ('xcrun', 'git')
+            if boundary == 'venv':
+                raise release.ReleaseError('Reached selected venv boundary')
+        if Path(args[0]).name == 'electron-builder':
+            assert kwargs['env']['CSC_NAME'] == 'A' * 40
+            assert '-c.forceCodeSigning=true' in args and '-c.mac.notarize=false' in args
+            raise release.ReleaseError('Reached selected signing boundary')
+        if 'audit' in args:
+            return '{"metadata": {"vulnerabilities": {"total": 0}}}'
+        assert args[0] in ('xcrun', 'git', 'npm', 'bash', '/selected/bin/python3.11',
+                          '.venv/bin/pip', '.venv/bin/python', '.venv/bin/ruff')
         return ''
 
     monkeypatch.setattr(release, 'run', command)
-    with pytest.raises(release.ReleaseError, match='Reached selected venv boundary'):
+    with pytest.raises(release.ReleaseError, match=f'Reached selected {boundary} boundary'):
         release.candidate(argparse.Namespace(source='a' * 40, previous_tag='v1.0.3', output=tmp_path / 'release'))
-    assert purges == ['/selected/bin/python3.11']
+    assert purges and set(purges) == {'/selected/bin/python3.11'}
