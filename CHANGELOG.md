@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.0.5 - 2026-09-18
+
+### Changed
+
+- Renamed Resources to Models & Tools and clarified processing stages, unseen results, and comparisons between processing runs.
+- Separated loading failures from empty results, and model download completion from validation and readiness to use.
+
+### Fixed
+
+- Preserved edits when checking an earlier request's outcome or resolving conflicting changes. Uncertain responses no longer trigger duplicate operations. Entering more than 20 tags now shows an error without discarding input.
+- Prevented results from an earlier model check from marking a newer configuration ready. Repairing a model connection no longer implies that processing has resumed.
+- Kept the original upgrade session, choices, and backup when retrying, corrected progress and result counts, and fixed navigation after completion. Changing the source or upgrade choices still prevents resuming the original failed session.
+- Distinguished update check, download, and installation failures, and kept setup instructions and long upgrade summaries readable at the minimum window size.
+
 ## 1.0.4 - 2026-09-10
 
 ### Fixed
