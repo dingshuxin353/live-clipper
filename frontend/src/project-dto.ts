@@ -188,7 +188,7 @@ export interface MigrationHistoryEntry { display_identity: string; category: "im
 export interface MigrationPlan {
   plan_version: number; source_fingerprint: string; plan_hash: string;
   project: Omit<MigrationChoices, "project_name"> & { name: string; timezone: string };
-  resources: Record<string, { label: string; model: string | null; credential_present: boolean; status: "ready" | "problem" }>;
+  resources: Record<string, { label: string; connection_type: "local" | "cloud" | "unknown"; model: string | null; credential_present: boolean; status: "ready" | "problem" }>;
   discovery: { legacy_weekly_detected: boolean; default_trigger_mode: "manual"; existing_recordings_scanned: boolean };
   history: { counts: { importable: number; compatibility: number; quarantined: number; safe_result: number }; entries: MigrationHistoryEntry[]; quarantine_reason_codes: string[] };
   backup: { target_display: string; source_bytes: number; required_bytes: number; available_bytes: number; space_status: "ready" | "insufficient" };
@@ -202,7 +202,7 @@ export interface MigrationSession {
 }
 export interface MigrationReport {
   plan_version: number; plan_hash: string; project: { project_id: string; name: string };
-  discovery: { legacy_weekly_detected: boolean; existing_recordings_scanned: boolean; trigger_mode: "manual" | "scheduled"; schedule_mode: "daily" | "interval" | null; daily_time: string | null; interval_minutes: number | null };
+  discovery: { timezone?: string; legacy_weekly_detected: boolean; existing_recordings_scanned: boolean; trigger_mode: "manual" | "scheduled"; schedule_mode: "daily" | "interval" | null; daily_time: string | null; interval_minutes: number | null };
   imported: number; compatibility: number; quarantined: number; safe_results: number; history_total: number;
   quarantine_reason_codes: string[]; backup_created: boolean; readiness: "ready" | "attention";
   blocker_count: number; blocker_codes: string[]; completed_at: string; acknowledged_at: string | null;

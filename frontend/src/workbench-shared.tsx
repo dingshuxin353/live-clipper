@@ -1,17 +1,18 @@
 import { RemixIcon } from "./ui/RemixIcon";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { Button } from "@astryxdesign/core/Button";
-import { TextInput } from "@astryxdesign/core/TextInput";
+import { Field } from "@astryxdesign/core/Field";
+import { ApiError, type ApiErrorCode } from "./api";
 
 import type { FormOptionsPayload, ProjectConfig, ProjectMainStatus, ProjectSummary, Run, RunStage, ScanEvent } from "./project-dto";
 import { formatLocalTime } from "./ui/presentation";
 
 export const DRAFT_KEY = "venus.project-draft.v1";
 export const VIDEO_EXTENSIONS = [".m4v", ".mkv", ".mov", ".mp4", ".webm"];
-export const STAGES: Array<[RunStage, string]> = [["read_source", "读取录像"], ["transcribe", "语音转写"], ["analyze", "内容分析"], ["arbitrate", "结果仲裁"], ["review", "AI 审阅"], ["render", "渲染成片"]];
-export const STATUS_LABELS: Record<ProjectMainStatus, string> = { blocked: "需要处理", failed: "处理失败", processing: "处理中", queued: "排队中", new_results: "有新成片", paused: "已暂停", inactive: "未启用", idle: "空闲" };
-export const RUN_LABELS: Record<Run["status"], string> = { queued: "排队中", processing: "处理中", awaiting_review: "等待审阅", failed: "处理失败", completed: "已完成" };
+export const STAGES: Array<[RunStage, string]> = [["read_source", "读取录像"], ["transcribe", "语音识别"], ["analyze", "内容分析"], ["arbitrate", "整理候选片段"], ["review", "片段筛选"], ["render", "生成成片"]];
+export const STATUS_LABELS: Record<ProjectMainStatus, string> = { blocked: "有待处理问题", failed: "处理失败", processing: "处理中", queued: "排队中", new_results: "有未查看结果", paused: "已暂停", inactive: "未启用", idle: "空闲" };
+export const RUN_LABELS: Record<Run["status"], string> = { queued: "排队中", processing: "处理中", awaiting_review: "旧版待审", failed: "处理失败", completed: "已完成" };
 
 export interface ProjectDraft {
   name: string; description: string; sourceDirectory: string; outputDirectory: string;
@@ -42,45 +43,47 @@ export function draftFromProject(project: ProjectSummary): ProjectDraft {
 }
 
 export interface PollingState<T> {
-  data: T | null; error: string; loading: boolean; refresh(): Promise<void>;
+  data: T | null; error: string; errorCode: ApiErrorCode | null; loading: boolean; refresh(): Promise<void>;
   setData: React.Dispatch<React.SetStateAction<T | null>>;
 }
 
 export function usePolling<T>(load: (signal: AbortSignal) => Promise<T>, interval: number, resourceKey = "default"): PollingState<T> {
+  const [errorCode, setErrorCode] = useState<ApiErrorCode | null>(null);
   const [data, setData] = useState<T | null>(null); const [error, setError] = useState(""); const [loading, setLoading] = useState(true); const loadRef = useRef(load); const controllerRef = useRef<AbortController | null>(null); const sequenceRef = useRef(0); loadRef.current = load;
   const refresh = useCallback(async () => {
     controllerRef.current?.abort(); const controller = new AbortController(); controllerRef.current = controller; const sequence = ++sequenceRef.current;
-    try { const next = await loadRef.current(controller.signal); if (sequence === sequenceRef.current) { setData(next); setError(""); } }
-    catch (reason) { if (!(reason instanceof DOMException && reason.name === "AbortError") && sequence === sequenceRef.current) setError((reason as Error).message); }
+    try { const next = await loadRef.current(controller.signal); if (sequence === sequenceRef.current) { setData(next); setError(""); setErrorCode(null); } }
+    catch (reason) { if (!(reason instanceof DOMException && reason.name === "AbortError") && sequence === sequenceRef.current) { setError((reason as Error).message); setErrorCode(reason instanceof ApiError ? reason.code : null); } }
     finally { if (sequence === sequenceRef.current) setLoading(false); }
   }, []);
-  useEffect(() => { setData(null); setError(""); setLoading(true); void refresh(); return () => controllerRef.current?.abort(); }, [refresh, resourceKey]);
+  useEffect(() => { setData(null); setError(""); setErrorCode(null); setLoading(true); void refresh(); return () => controllerRef.current?.abort(); }, [refresh, resourceKey]);
   useEffect(() => {
     let timer = 0; const schedule = () => { window.clearInterval(timer); if (!document.hidden) timer = window.setInterval(() => void refresh(), interval); };
     const visibilityChanged = () => { if (!document.hidden) void refresh(); schedule(); };
     schedule(); document.addEventListener("visibilitychange", visibilityChanged);
     return () => { window.clearInterval(timer); document.removeEventListener("visibilitychange", visibilityChanged); };
   }, [interval, refresh]);
-  return { data, error, loading, refresh, setData };
+  return { data, error, errorCode, loading, refresh, setData };
 }
 
 export function statusTone(status: ProjectMainStatus | Run["status"] | ScanEvent["status"]) { if (["blocked", "failed"].includes(status)) return "error"; if (["awaiting_review", "partial", "paused", "inactive"].includes(status)) return "warning"; if (["processing", "queued", "running"].includes(status)) return "accent"; if (["idle", "completed", "success", "new_results"].includes(status)) return "success"; return "neutral"; }
-export function StatusPill({ status, label }: { status: ProjectMainStatus | Run["status"] | ScanEvent["status"]; label?: string }) { const known = STATUS_LABELS[status as ProjectMainStatus] ?? RUN_LABELS[status as Run["status"]] ?? ({ running: "扫描中", success: "已完成", partial: "部分完成" } as Record<string, string>)[status]; if (!known && !label) console.warn("Venus received an unknown status enum", String(status)); return <span className={`status-pill tone-${statusTone(status)}`}><span className="status-dot" />{label ?? known ?? `未知状态（${String(status)}）`}</span>; }
+export function StatusPill({ status, label, context }: { status: ProjectMainStatus | Run["status"] | ScanEvent["status"]; label?: string; context?: "scan" }) { const scanLabels: Record<ScanEvent["status"], string> = { running: "扫描中", success: "扫描完成", partial: "扫描有错误", failed: "扫描失败" }; const known = context === "scan" ? scanLabels[status as ScanEvent["status"]] : STATUS_LABELS[status as ProjectMainStatus] ?? RUN_LABELS[status as Run["status"]]; if (!known && !label) console.warn("Venus received an unknown status enum", String(status)); return <span className={`status-pill tone-${statusTone(status)}`}><span className="status-dot" />{label ?? known ?? "状态暂时无法识别"}</span>; }
 export function basename(path: string) { return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path; }
 export function time(value?: string | null) { return value ? formatLocalTime(value) : "—"; }
 export function formatBytes(bytes: number) { return bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`; }
-export function scanMessage(scan: ScanEvent) { if (scan.status === "running") return "正在扫描录像目录"; if (scan.status === "failed") return scan.error_summary ?? "扫描失败"; return `新增 ${scan.created_count ?? 0} · 已处理过 ${scan.duplicate_count ?? 0} · 等待稳定 ${scan.unstable_count ?? 0}`; }
+export function scanMessage(scan: ScanEvent) { if (scan.status === "running") return "正在扫描录像文件夹"; if (scan.status === "failed") return scan.error_summary ?? "扫描失败"; return `新增 ${scan.created_count ?? 0} 条记录 · ${scan.duplicate_count ?? 0} 个已有记录 · ${scan.unstable_count ?? 0} 个需稍后扫描`; }
 
-export function PageHeading({ eyebrow, title, description, actions }: { eyebrow?: string; title: string; description: string; actions?: React.ReactNode }) { return <header className="page-heading"><div>{eyebrow && <span className="eyebrow">{eyebrow}</span>}<h1>{title}</h1><p>{description}</p></div>{actions && <div className="actions">{actions}</div>}</header>; }
-export function SectionHeading({ title, subtitle, action }: { title: string; subtitle: string; action?: React.ReactNode }) { return <div className="section-heading"><div><h2>{title}</h2><p>{subtitle}</p></div>{action}</div>; }
+export function PageHeading({ eyebrow, title, description, actions }: { eyebrow?: string; title: string; description?: string; actions?: React.ReactNode }) { return <header className="page-heading"><div>{eyebrow && <span className="eyebrow">{eyebrow}</span>}<h1>{title}</h1>{description && <p>{description}</p>}</div>{actions && <div className="actions">{actions}</div>}</header>; }
+export function SectionHeading({ title, subtitle, action }: { title: string; subtitle?: string; action?: React.ReactNode }) { return <div className="section-heading"><div><h2>{title}</h2>{subtitle && <p>{subtitle}</p>}</div>{action}</div>; }
 export function Metric({ label, value, tone = "default" }: { label: string; value: number; tone?: string }) { return <div className={`metric tone-${tone}`}><span>{label}</span><strong>{value}</strong></div>; }
 export function LoadingState() { return <div className="empty-state" role="status">正在加载…</div>; }
 export function ErrorState({ message, retry }: { message: string; retry(): void }) { return <div className="error-state" role="alert"><strong>暂时无法读取数据</strong><p>{message}</p><Button label="重试" onClick={retry} /></div>; }
 export function PathField({ label, value, onChange, choose, description, error, isReadOnly = false, isRequired = true }: { label: string; value: string; onChange?(value: string): void; choose?(): void | Promise<void>; description?: string; error?: string; isReadOnly?: boolean; isRequired?: boolean }) {
-  return <div className="form-path-field"><TextInput label={label} value={value} onChange={onChange} isDisabled={isReadOnly} disabledMessage={isReadOnly ? "请使用选择按钮更改目录" : undefined} isRequired={isRequired} description={description} status={error ? {type: "error", message: error} : undefined} width="100%" placeholder="选择文件夹" />{choose && <Button label="选择…" onClick={() => void choose()} />}</div>;
+  const id = useId();
+  return <div className="form-path-field"><Field inputID={id} label={label} isRequired={isRequired} description={description} status={error ? { type: "error", message: error } : undefined} width="100%"><input id={id} className="form-control" value={value} readOnly={isReadOnly} onChange={event => onChange?.(event.target.value)} title={value} aria-describedby={isReadOnly && choose ? `${id}-hint` : undefined} placeholder="选择文件夹" />{isReadOnly && choose && <small id={`${id}-hint`}>请点击「选择文件夹」更改位置。</small>}</Field>{choose && <Button label="选择文件夹" onClick={() => void choose()} />}</div>;
 }
 export function RunCard({ run, project }: { run: Run; project?: ProjectSummary }) { return <Link className="run-card" to={`/projects/${run.project_id}/runs/${run.run_id}`}><div><span className="overline">{project?.name ?? "项目"}</span><strong>{run.source_name}</strong><small>{time(run.updated_at)}</small></div><StatusPill status={run.status} label={run.status === "queued" && run.queue_position ? `队列第 ${run.queue_position} 位` : undefined} /></Link>; }
 
 const PRIORITY: Record<ProjectMainStatus, number> = { blocked: 0, failed: 1, processing: 2, queued: 3, new_results: 4, paused: 5, inactive: 6, idle: 7 };
 export function sortProjects(projects: ProjectSummary[]) { return [...projects].sort((a, b) => (PRIORITY[a.main_status] ?? 99) - (PRIORITY[b.main_status] ?? 99) || b.updated_at.localeCompare(a.updated_at) || a.project_id.localeCompare(b.project_id)); }
-export function ProjectRow({ project, detailed = false }: { project: ProjectSummary; detailed?: boolean }) { const next = project.schedule?.enabled ? `下次扫描 ${time(project.schedule.next_scan_at)}` : "仅手动扫描"; return <Link className="project-row" to={`/projects/${project.project_id}`}><span className={`project-indicator tone-${statusTone(project.main_status)}`} /><div className="project-copy"><strong>{project.name}</strong><p>{project.description || "未填写项目描述"}</p>{detailed && <small>{next} · 更新于 {time(project.updated_at)}</small>}</div><div className="workload"><span>{project.workload.processing}<small>处理中</small></span><span>{project.workload.queued}<small>排队</small></span><span>{project.workload.failed}<small>失败</small></span><span>{project.workload.completed}<small>已完成</small></span><span>{project.workload.new_results}<small>新成片</small></span></div><StatusPill status={project.main_status} /><b><RemixIcon name="chevronRight" /></b></Link>; }
+export function ProjectRow({ project, detailed = false }: { project: ProjectSummary; detailed?: boolean }) { const next = project.schedule?.enabled ? project.schedule.next_scan_at ? `下次扫描：${time(project.schedule.next_scan_at)}` : "下次扫描时间待确定" : project.schedule?.enabled === false ? "手动扫描" : ""; return <Link className="project-row" to={`/projects/${project.project_id}`}><span className={`project-indicator tone-${statusTone(project.main_status)}`} /><div className="project-copy"><strong>{project.name}</strong>{project.description && <p>{project.description}</p>}{detailed && <small>{next && `${next} · `}更新于 {time(project.updated_at)}</small>}</div><div className="workload"><span>{project.workload.processing}<small>处理中</small></span><span>{project.workload.queued}<small>排队中</small></span><span>{project.workload.failed}<small>处理失败</small></span><span>{project.workload.completed}<small>处理完成</small></span><span>{project.workload.new_results}<small>未查看结果</small></span></div><StatusPill status={project.main_status} /><b><RemixIcon name="chevronRight" /></b></Link>; }

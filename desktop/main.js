@@ -4,7 +4,7 @@ const fs = require("fs");
 const https = require("https");
 const net = require("net");
 const path = require("path");
-const { BackendClient, redactText } = require("./backend-client");
+const { BackendClient, BackendError, redactText } = require("./backend-client");
 const { checkMediaTools } = require("./media-runtime");
 const {
   appUrl,
@@ -92,7 +92,7 @@ function startBackend(port) {
   backendProcess.on("exit", (code) => {
     backendProcess = null;
     if (!runtime.isQuitting()) {
-      dialog.showErrorBox("Venus", `Venus 服务已停止（代码 ${code ?? "未知"}）。请重新打开应用。`);
+      dialog.showErrorBox("Venus", `Venus 后台服务已停止，请重新打开 Venus。退出代码：${code ?? "未知"}。`);
       runtime.beginQuit();
       badgePoller?.stop();
       exitingNow = true;
@@ -108,7 +108,7 @@ function assertTrustedRenderer(event) {
     || event.sender !== mainWindow.webContents
     || !isInternalAppUrl(event.senderFrame?.url, backendPort)
   ) {
-    throw new Error("桌面操作来源无效");
+    throw new Error("无法执行此操作，请重新打开 Venus 后重试。");
   }
 }
 
@@ -119,7 +119,7 @@ ipcMain.handle("lc:application-info", (event) => {
 });
 ipcMain.handle("lc:open-data-directory", (event, id) => {
   assertTrustedRenderer(event);
-  if (!dataDirectoryActions) throw new Error("Venus 服务尚未启动，请稍后重试");
+  if (!dataDirectoryActions) throw new Error("后台服务暂时不可用，请稍后重试。");
   return dataDirectoryActions.open(id);
 });
 ipcMain.handle("lc:check-for-updates", (event) => {
@@ -129,7 +129,7 @@ ipcMain.handle("lc:check-for-updates", (event) => {
 
 ipcMain.handle("lc:select-folder", async (event, title) => {
   assertTrustedRenderer(event);
-  if (!folderSelection) throw new Error("桌面文件夹选择尚未就绪");
+  if (!folderSelection) throw new Error("暂时无法打开文件夹选择窗口，请稍后重试。");
   return folderSelection.select(title);
 });
 
@@ -143,28 +143,28 @@ ipcMain.handle("lc:write-clipboard-text", (event, value) => {
 });
 ipcMain.handle("lc:open-output", (event, outputId) => {
   assertTrustedRenderer(event);
-  if (!outputActions) throw new Error("Venus 服务尚未启动，请稍后重试");
+  if (!outputActions) throw new Error("后台服务暂时不可用，请稍后重试。");
   return outputActions.openOutput(outputId);
 });
 ipcMain.handle("lc:reveal-output", (event, outputId) => {
   assertTrustedRenderer(event);
-  if (!outputActions) throw new Error("Venus 服务尚未启动，请稍后重试");
+  if (!outputActions) throw new Error("后台服务暂时不可用，请稍后重试。");
   return outputActions.revealOutput(outputId);
 });
 ipcMain.handle("lc:select-issue-source", (event, issueId) => {
   assertTrustedRenderer(event);
-  if (!fileSelections) throw new Error("Venus 服务尚未启动，请稍后重试");
+  if (!fileSelections) throw new Error("后台服务暂时不可用，请稍后重试。");
   return fileSelections.selectIssueSource(issueId);
 });
 ipcMain.handle("lc:select-recovery-output", (event, issueId) => {
   assertTrustedRenderer(event);
-  if (!fileSelections) throw new Error("Venus 服务尚未启动，请稍后重试");
+  if (!fileSelections) throw new Error("后台服务暂时不可用，请稍后重试。");
   return fileSelections.selectRecoveryOutput(issueId);
 });
 ipcMain.handle("lc:show-migration-backup", (event, migrationId) => {
   assertTrustedRenderer(event);
-  if (!migrationActions) throw new Error("Venus 服务尚未启动，请稍后重试");
-  return migrationActions.showBackup(migrationId);
+  if (!migrationActions) throw new Error("后台服务暂时不可用，请稍后重试。");
+  return migrationActions.showBackup(migrationId).catch(error => ({ ok: false, message: error.message, code: error.code || "backup_display_failed" }));
 });
 ipcMain.handle("lc:quit-app", (event) => {
   assertTrustedRenderer(event);
@@ -212,19 +212,40 @@ let updateDownloaded = false;
 let updateCheckPromise = null;
 let interactiveUpdatePromise = null;
 let updateConfirmation = null;
+let updatePhase = "idle";
+let updateFailure = null;
+
+function updateError(code) {
+  const messages = {
+    check: "暂时无法检查更新，请稍后重试。",
+    download: "更新下载失败。请检查网络连接，再次检查更新以重试下载。",
+    page: "无法打开下载页，请稍后重试。",
+    prepare: "暂时无法准备重启，更新尚未安装。请稍后重新打开 Venus 后检查更新。",
+    install: "暂时无法安装更新。后台处理已停止，请重新打开 Venus 后检查更新。",
+    restricted: "当前无法安装更新，请先完成首次设置或数据升级。",
+  };
+  return { ok: false, code, message: messages[code] };
+}
+function reportUpdateError(result) {
+  dialog.showErrorBox(result.code === "check" ? "检查更新" : "更新 Venus", result.message);
+  return result;
+}
 
 function setupAutoUpdater() {
   ({ autoUpdater: updater } = require("electron-updater"));
   updater.autoDownload = true;
   updater.autoInstallOnAppQuit = false;
+  updater.on("update-available", () => { updatePhase = "download"; updateFailure = null; });
   updater.on("update-downloaded", () => {
-    updateDownloaded = true;
-    if (runtime.canUseProjectFeatures()) void confirmDownloadedUpdate().catch(() => {
-      dialog.showErrorBox("更新", "暂时无法重启更新，请稍后重试。");
-    });
+    updatePhase = "idle"; updateFailure = null; updateDownloaded = true;
+    if (runtime.canUseProjectFeatures()) void confirmDownloadedUpdate().catch(() => reportUpdateError(updateError("install")));
   });
   updater.on("error", () => {
-    // Silent: update failures must never disturb normal usage.
+    if (["download", "install"].includes(updatePhase)) {
+      updateFailure = updateError(updatePhase);
+      updatePhase = "idle";
+      reportUpdateError(updateFailure);
+    }
   });
 }
 
@@ -232,19 +253,26 @@ function confirmDownloadedUpdate() {
   if (updateConfirmation) return updateConfirmation;
   updateConfirmation = (async () => {
     const { response } = await dialog.showMessageBox(mainWindow, {
-      type: "info", message: "新版本已下载完成", detail: "重启 Venus 即可完成更新。",
-      buttons: ["重启并更新", "稍后"], defaultId: 1, cancelId: 1,
+      type: "info", message: "更新已下载", detail: "重启 Venus 以安装更新。重启会中断正在处理的任务，请在处理完成后更新。",
+      buttons: ["重启并安装", "稍后"], defaultId: 1, cancelId: 1,
     });
-    if (response === 0) await installDownloadedUpdate();
+    return response === 0 ? installDownloadedUpdate() : { ok: true, deferred: true };
   })().finally(() => { updateConfirmation = null; });
   return updateConfirmation;
 }
 
 async function installDownloadedUpdate() {
-  if (runtime.isRestricted()) return false;
-  if (!(await prepareForQuit())) return;
-  exitingNow = true;
-  updater.quitAndInstall();
+  if (runtime.isRestricted()) return reportUpdateError(updateError("restricted"));
+  try {
+    if (!(await prepareForQuit())) return reportUpdateError(updateError("prepare"));
+  } catch { return reportUpdateError(updateError("prepare")); }
+  try {
+    exitingNow = true;
+    updatePhase = "install";
+    updater.quitAndInstall();
+    if (updateFailure) return updateFailure;
+    return { ok: true };
+  } catch { return reportUpdateError(updateError("install")); }
 }
 
 const UPDATE_RELEASES_API = "https://api.github.com/repos/dingshuxin353/live-clipper/releases/latest";
@@ -296,7 +324,7 @@ function isNewerVersion(latest, current) {
 }
 
 function checkForUpdates(interactive) {
-  if (!runtime.canUseProjectFeatures()) return Promise.resolve({ ok: false });
+  if (!runtime.canUseProjectFeatures()) return Promise.resolve(updateError("restricted"));
   if (interactive && interactiveUpdatePromise) return interactiveUpdatePromise;
   if (!updateCheckPromise) updateCheckPromise = readUpdateInfo().finally(() => { updateCheckPromise = null; });
   if (!interactive) return updateCheckPromise;
@@ -308,39 +336,40 @@ async function readUpdateInfo() {
   try {
     if (app.isPackaged && !updater) setupAutoUpdater();
     if (updateDownloaded) return { ok: true, downloaded: true };
+    updateFailure = null;
     const latest = app.isPackaged ? (await updater.checkForUpdates())?.updateInfo?.version : await fetchLatestVersion();
     if (typeof latest !== "string" || !/^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(latest)) throw new Error("invalid version");
-    return { ok: true, latest };
+    return updateFailure || { ok: true, latest };
   } catch {
-    return { ok: false };
+    return updateFailure || updateError("check");
   }
 }
 
 async function showUpdateResult(result) {
-  if (!runtime.canUseProjectFeatures()) return { ok: false };
+  if (!runtime.canUseProjectFeatures()) return updateError("restricted");
+  if (!result.ok) return result.code === "download" ? result : reportUpdateError(result);
+  let operation = "check";
   try {
-    if (!result.ok) throw new Error("check failed");
     if (result.downloaded || updateDownloaded) {
-      await confirmDownloadedUpdate();
+      operation = "install";
+      return await confirmDownloadedUpdate();
     } else if (isNewerVersion(result.latest, app.getVersion())) {
       if (!app.isPackaged) {
         const { response } = await dialog.showMessageBox(mainWindow, {
           type: "info", message: `发现新版本 ${result.latest}`,
-          detail: `当前版本 ${app.getVersion()}。前往下载页获取更新。`,
-          buttons: ["去下载", "稍后"], defaultId: 1, cancelId: 1,
+          detail: `当前版本：${app.getVersion()}。请打开下载页获取新版本。`,
+          buttons: ["打开下载页", "稍后"], defaultId: 1, cancelId: 1,
         });
-        if (response === 0) await shell.openExternal(UPDATE_RELEASES_PAGE);
+        if (response === 0) { operation = "page"; await shell.openExternal(UPDATE_RELEASES_PAGE); }
       } else {
-        await dialog.showMessageBox(mainWindow, { type: "info", message: `发现新版本 ${result.latest}`, detail: "下载完成后将提示你确认重启更新。" });
+        await dialog.showMessageBox(mainWindow, { type: "info", message: `发现新版本 ${result.latest}`, detail: "Venus 将自动下载更新，下载完成后会提示你重启安装。" });
+        if (updateFailure) return updateFailure;
       }
     } else {
-      await dialog.showMessageBox(mainWindow, { type: "info", message: "已是最新版本", detail: `当前版本 ${app.getVersion()}。` });
+      await dialog.showMessageBox(mainWindow, { type: "info", message: "未发现新版本", detail: `当前版本：${app.getVersion()}。` });
     }
     return { ok: true };
-  } catch {
-    await dialog.showMessageBox(mainWindow, { type: "error", message: "检查更新", detail: "暂时无法检查更新，请稍后重试。" });
-    return { ok: false };
-  }
+  } catch { return reportUpdateError(updateError(operation)); }
 }
 
 function showWindow(route = null) {
@@ -406,7 +435,7 @@ function createTray() {
   }
   const items = runtime.isRestricted()
     ? [
-      { label: "继续升级", click: () => showWindow("/studio") },
+      { label: "打开 Venus", click: () => showWindow("/studio") },
       { type: "separator" },
       { label: "退出 Venus", click: () => app.quit() },
     ]
@@ -540,7 +569,7 @@ if (!app.requestSingleInstanceLock()) {
       migrationActions = createMigrationActions({ client: backendClient, shell, runtime, appHome });
       startBackend(backendPort);
       const startup = await backendClient.waitUntilReady({ isAlive: () => Boolean(backendProcess) });
-      if (!startup?.entry?.mode) throw new Error("无法读取 Venus 启动状态，请重新打开应用");
+      if (!startup?.entry?.mode) throw new Error("无法读取启动状态，请重新打开 Venus。");
       runtime.setStartup(startup);
       await session.defaultSession.cookies.set({
         url: `http://127.0.0.1:${backendPort}`,
@@ -553,7 +582,7 @@ if (!app.requestSingleInstanceLock()) {
       await refreshDesktopCapabilities();
       showWindow("/studio");
     } catch (error) {
-      dialog.showErrorBox("Venus", `启动失败：${error.message}`);
+      dialog.showErrorBox("Venus", `Venus 启动失败，请重新打开后重试。如仍失败，请联系开发者排查。${error instanceof BackendError || error.code === "media_tools_unavailable" ? `\n${error.message}` : ""}`);
       runtime.beginQuit();
       badgePoller?.stop();
       await shutdownBackend();

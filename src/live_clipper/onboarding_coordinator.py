@@ -45,12 +45,12 @@ _FINISH_LOCKS_GUARD = threading.Lock()
 
 def _strict_body(body: Any, allowed: set[str] | frozenset[str]) -> dict[str, Any]:
     if not isinstance(body, dict):
-        raise OnboardingError("validation_failed", "请求体必须是对象", status=422)
+        raise OnboardingError("validation_failed", "操作未完成：提交的数据格式不正确。", status=422)
     unknown = set(body) - set(allowed)
     if unknown:
         raise OnboardingError(
             "validation_failed",
-            "请求包含未知字段",
+            "操作未完成：提交了不支持的设置信息。",
             status=422,
             fields={str(key): "未知字段" for key in sorted(unknown, key=str)},
         )
@@ -94,13 +94,13 @@ def _safe_session_from_repository(repository: ProjectRepository, session: FirstR
 def _request_id(value: Any) -> str:
     normalized = str(value or "").strip()
     if not normalized or len(normalized) > 128:
-        raise OnboardingError("validation_failed", "操作信息无效，请重新打开首次设置", status=422, fields={"request_id": "无效"})
+        raise OnboardingError("validation_failed", "无法继续本次操作，请重新打开首次设置。", status=422, fields={"request_id": "无效"})
     return normalized
 
 
 def _revision(value: Any) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        raise OnboardingError("validation_failed", "首次设置状态无效，请重新打开", status=422, fields={"expected_revision": "无效"})
+        raise OnboardingError("validation_failed", "无法读取当前设置进度，请重新打开首次设置。", status=422, fields={"expected_revision": "无效"})
     return value
 
 
@@ -116,7 +116,7 @@ def _normalize_draft_patch(patch: dict[str, Any]) -> dict[str, Any]:
                 str(values["api_base"]), allow_loopback=True
             )
         except onboarding_resources.ResourceError as exc:
-            raise OnboardingError("validation_failed", "服务地址无效，无法保存首次设置草稿", status=422, fields={f"{section}.api_base": "URL 无效"}) from exc
+            raise OnboardingError("validation_failed", "服务地址无效，设置未保存。", status=422, fields={f"{section}.api_base": "请输入有效的服务地址"}) from exc
     return normalized
 
 
@@ -206,8 +206,8 @@ class OnboardingCoordinator:
 
         app_home_ok = writable_target(app_home)
         service_dir_ok = writable_target(self.service_dir)
-        check("app_home", app_home_ok, None if app_home_ok else "应用目录不可写")
-        check("service_dir", service_dir_ok, None if service_dir_ok else "服务目录不可创建")
+        check("app_home", app_home_ok, None if app_home_ok else "无法写入应用数据目录")
+        check("service_dir", service_dir_ok, None if service_dir_ok else "无法写入后台服务的数据目录")
         if settings is None:
             try:
                 settings = self.settings()
@@ -218,7 +218,7 @@ class OnboardingCoordinator:
             workspace_root = app_home / "workspace"
         workspace_root = workspace_root.expanduser()
         workspace_ok = writable_target(workspace_root)
-        check("workspace_root", workspace_ok, None if workspace_ok else "任务工作区不可创建")
+        check("workspace_root", workspace_ok, None if workspace_ok else "无法写入任务文件目录")
         db = database_path(self.service_dir)
         if db.exists():
             try:
@@ -226,9 +226,9 @@ class OnboardingCoordinator:
 
                 with sqlite3.connect(db) as connection:
                     quick = connection.execute("PRAGMA quick_check").fetchone()
-                check("sqlite", bool(quick and quick[0] == "ok"), "SQLite 检查失败")
+                check("sqlite", bool(quick and quick[0] == "ok"), "本地数据库检查未通过")
             except (OSError, sqlite3.DatabaseError):
-                check("sqlite", False, "SQLite 不可读")
+                check("sqlite", False, "无法读取本地数据库")
         else:
             check("sqlite", True)
         if run_probes:
@@ -241,17 +241,17 @@ class OnboardingCoordinator:
                     subprocess.run([ffmpeg, "-version"], capture_output=True, timeout=5, check=False)
                     check("ffmpeg", True)
                 except (OSError, subprocess.SubprocessError):
-                    check("ffmpeg", False, "FFmpeg 不可执行")
+                    check("ffmpeg", False, "无法启动音视频处理组件（FFmpeg）")
             else:
-                check("ffmpeg", False, "找不到 FFmpeg")
-            check("ffprobe", bool(shutil.which("ffprobe")), "找不到 ffprobe")
+                check("ffmpeg", False, "缺少音视频处理组件（FFmpeg）")
+            check("ffprobe", bool(shutil.which("ffprobe")), "缺少视频信息读取组件（ffprobe）")
             if settings.asr.backend == "openai":
                 check("asr_runtime", True)
             else:
                 try:
                     import mlx_whisper  # type: ignore[import-not-found]  # noqa: F401
                 except ImportError:
-                    check("asr_runtime", False, "本地 ASR 运行时未安装")
+                    check("asr_runtime", False, "本地语音识别组件不可用")
                 else:
                     check("asr_runtime", True)
         else:
@@ -266,7 +266,7 @@ class OnboardingCoordinator:
         try:
             initial_local_model = asr_models.recommended_model()["id"]
         except ValueError as exc:
-            raise OnboardingError("diagnostic_required", "本地 ASR 模型目录缺少唯一推荐项", status=409) from exc
+            raise OnboardingError("diagnostic_required", "无法确定推荐的语音识别模型", status=409) from exc
         repo, session = self._read_session(decision)
         if repo is not None and session is not None and session.state == "in_progress" and session.project_request_id and session.project_request_hash and session.first_project_id is None:
             durable = repo.get_idempotency_key("project.create", session.project_request_id)
@@ -278,12 +278,12 @@ class OnboardingCoordinator:
                     or project is None
                 ):
                     repo.close()
-                    raise OnboardingError("diagnostic_required", "无法恢复首次设置创建的项目，请记录问题编号并联系支持", status=409)
+                    raise OnboardingError("diagnostic_required", "无法恢复上次创建的项目，请提供问题编号以便排查。", status=409)
                 try:
                     session = repo.bind_first_project(session.revision, session.project_request_id, project.project_id)
                 except (FirstRunStateError, ValueError) as exc:
                     repo.close()
-                    raise OnboardingError("diagnostic_required", "无法恢复首次设置创建的项目，请记录问题编号并联系支持", status=409) from exc
+                    raise OnboardingError("diagnostic_required", "无法恢复上次创建的项目，请提供问题编号以便排查。", status=409) from exc
         session_payload = _safe_session_from_repository(repo, session) if repo is not None else _safe_session(session)
         if repo is not None:
             repo.close()
@@ -332,7 +332,7 @@ class OnboardingCoordinator:
     ) -> ProjectRepository:
         decision, _detection = self.decision()
         if decision.entry in {"migration_required", "diagnostic_required"}:
-            raise OnboardingError(decision.entry, "当前数据需要先完成诊断或迁移", status=409)
+            raise OnboardingError(decision.entry, "需要先检查或迁移旧数据，暂时无法继续设置。", status=409)
         if decision.onboarding == "new" and not database_path(self.service_dir).exists():
             # Do not let a rejected write create the schema/data_mode as a
             # side effect of merely opening the repository.
@@ -354,17 +354,17 @@ class OnboardingCoordinator:
                 return repo
         if allowed_states and session.state not in allowed_states:
             repo.close()
-            raise OnboardingError("onboarding_state_conflict", "当前首次设置状态不允许此操作", status=409)
+            raise OnboardingError("onboarding_state_conflict", "当前设置进度不支持此操作，请重新打开首次设置。", status=409)
         if session.revision != expected_revision:
             repo.close()
-            raise OnboardingError("onboarding_revision_conflict", "首次设置内容已更新，请重新读取", status=409)
+            raise OnboardingError("onboarding_revision_conflict", "设置已更新，请重新加载。", status=409)
         return repo
 
     def start(self, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         _strict_body(body, _COMMON_REQUEST_FIELDS)
         decision, _ = self.decision()
         if decision.entry != "onboarding" or decision.onboarding not in {"new", "resume"}:
-            raise OnboardingError("onboarding_state_conflict", "当前启动分流不允许建立新的首次设置", status=409)
+            raise OnboardingError("onboarding_state_conflict", "当前无法开始首次设置", status=409)
         repo = self._repo()
         try:
             existing = repo.get_first_run_session()
@@ -390,7 +390,7 @@ class OnboardingCoordinator:
         patch = body.get("patch", {})
         current_step = body.get("current_step")
         if not isinstance(patch, dict):
-            raise OnboardingError("validation_failed", "patch 必须是对象", status=422, fields={"patch": "类型错误"})
+            raise OnboardingError("validation_failed", "设置保存失败：提交的数据格式不正确。", status=422, fields={"patch": "类型错误"})
         patch = _normalize_draft_patch(patch)
         payload = {"patch": patch, "current_step": current_step}
         request_hash = _request_hash(payload)
@@ -414,10 +414,10 @@ class OnboardingCoordinator:
                         if resource['deleted'] or purpose not in resource['config']['purposes']:
                             raise ValueError('incompatible_resource')
                 session = repo.update_first_run_draft(expected, patch, current_step=current_step)
-            repo.save_idempotency_key("onboarding.session", request_id, request_hash=request_hash, object_type="session", object_id="primary")
+                repo.save_idempotency_key("onboarding.session", request_id, request_hash=request_hash, object_type="session", object_id="primary")
             return 200, {"ok": True, "session": _safe_session(session)}
         except (ValueError, KeyError) as exc:
-            raise OnboardingError("validation_failed", "首次设置草稿无效", status=422, fields={"patch": str(exc)}) from exc
+            raise OnboardingError("validation_failed", "当前设置无法保存，请检查填写内容。", status=422, fields={"patch": str(exc)}) from exc
         finally:
             repo.close()
 
@@ -438,8 +438,9 @@ class OnboardingCoordinator:
             existing = repo.get_idempotency_key("onboarding.pause", request_id)
             if existing:
                 return 200, {"ok": True, "session": _safe_session(repo.get_first_run_session()), "reused": True}
-            session = repo.pause_first_run(expected)
-            repo.save_idempotency_key("onboarding.pause", request_id, request_hash=request_hash, object_type="session", object_id="primary")
+            with repo.transaction():
+                session = repo.pause_first_run(expected)
+                repo.save_idempotency_key("onboarding.pause", request_id, request_hash=request_hash, object_type="session", object_id="primary")
             return 200, {"ok": True, "session": _safe_session(session)}
         finally:
             repo.close()
@@ -476,7 +477,7 @@ class OnboardingCoordinator:
             try:
                 settings = self.settings()
             except Exception as exc:  # noqa: BLE001 - report a stable readiness error, never parser details.
-                raise OnboardingError("environment_not_ready", "当前配置无法用于环境检查", status=422) from exc
+                raise OnboardingError("environment_not_ready", "无法读取设置，未能完成检查", status=422) from exc
             return 200, {"ok": True, "environment": self._environment_summary(run_probes=True, settings=settings)}
         finally:
             repo.close()
@@ -484,28 +485,28 @@ class OnboardingCoordinator:
     def _project_from_draft(self, draft: dict[str, Any]) -> tuple[str, dict[str, Any], dict[str, Any]]:
         project = draft.get("project")
         if not isinstance(project, dict):
-            raise OnboardingError("project_validation_failed", "请先填写首项目配置", status=422, fields={"project": "必填"})
+            raise OnboardingError("project_validation_failed", "请先填写项目信息", status=422, fields={"project": "必填"})
         allowed = {"name", "source_directory", "trigger_mode", "schedule_mode", "daily_time", "interval_minutes", "output_directory"}
         unknown = set(project) - allowed
         if unknown:
-            raise OnboardingError("project_validation_failed", "首项目包含未知字段", status=422, fields={key: "未知字段" for key in unknown})
+            raise OnboardingError("project_validation_failed", "设置保存失败：提交了不支持的项目信息。", status=422, fields={key: "未知字段" for key in unknown})
         name = str(project.get("name") or "").strip()
         source = str(project.get("source_directory") or "").strip()
         output = str(project.get("output_directory") or "").strip()
         trigger = str(project.get("trigger_mode") or "manual").strip()
         schedule_mode = project.get("schedule_mode")
         if trigger not in {"manual", "scheduled"}:
-            raise OnboardingError("project_validation_failed", "触发方式无效", status=422, fields={"trigger_mode": "无效"})
+            raise OnboardingError("project_validation_failed", "请选择有效的扫描方式", status=422, fields={"trigger_mode": "无效"})
         if not name or not source or not output:
-            raise OnboardingError("project_validation_failed", "项目名称、录像目录和输出目录均为必填", status=422)
+            raise OnboardingError("project_validation_failed", "请填写项目名称，并选择录像文件夹和成片保存位置", status=422)
         if not Path(source).expanduser().is_absolute():
-            raise OnboardingError("project_validation_failed", "录像目录必须是绝对路径", status=422, fields={"source_directory": "必须是绝对路径"})
+            raise OnboardingError("project_validation_failed", "请填写录像文件夹的完整路径，或点击按钮选择文件夹", status=422, fields={"source_directory": "必须是绝对路径"})
         if not Path(output).expanduser().is_absolute():
-            raise OnboardingError("project_validation_failed", "输出目录必须是绝对路径", status=422, fields={"output_directory": "必须是绝对路径"})
+            raise OnboardingError("project_validation_failed", "请填写成片保存位置的完整路径，或点击按钮选择文件夹", status=422, fields={"output_directory": "必须是绝对路径"})
         if schedule_mode is not None and schedule_mode not in {"daily", "interval"}:
-            raise OnboardingError("project_validation_failed", "定时方式无效", status=422, fields={"schedule_mode": "无效"})
+            raise OnboardingError("project_validation_failed", "请选择有效的定时方式", status=422, fields={"schedule_mode": "无效"})
         if trigger == "scheduled" and schedule_mode not in {"daily", "interval"}:
-            raise OnboardingError("project_validation_failed", "定时项目必须选择 daily 或 interval", status=422)
+            raise OnboardingError("project_validation_failed", "请选择每天固定时间或固定间隔", status=422)
         if trigger == "manual":
             schedule_mode = "daily"
             daily_time = "09:00"
@@ -513,12 +514,12 @@ class OnboardingCoordinator:
         elif schedule_mode == "daily":
             daily_time = project.get("daily_time")
             if not isinstance(daily_time, str) or not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", daily_time):
-                raise OnboardingError("project_validation_failed", "daily 定时项目必须填写有效时间", status=422, fields={"daily_time": "格式必须为 HH:MM"})
+                raise OnboardingError("project_validation_failed", "请设置每天的扫描时间，例如 22:00", status=422, fields={"daily_time": "格式必须为 HH:MM"})
             interval_minutes = None
         else:
             interval_minutes = project.get("interval_minutes")
             if interval_minutes not in {30, 60, 180, 360, 720}:
-                raise OnboardingError("project_validation_failed", "interval 定时项目必须选择受支持的间隔", status=422, fields={"interval_minutes": "无效"})
+                raise OnboardingError("project_validation_failed", "请选择扫描间隔：30 分钟、1 小时、3 小时、6 小时或 12 小时", status=422, fields={"interval_minutes": "无效"})
             daily_time = None
         timezone = self.settings().scheduler.timezone
         base = default_project_config(source, output)
@@ -561,7 +562,7 @@ class OnboardingCoordinator:
         except OnboardingError:
             raise
         except (KeyError, TypeError, ValueError) as exc:
-            raise OnboardingError("project_validation_failed", "首项目配置无效", status=422, fields={"project": str(exc)}) from exc
+            raise OnboardingError("project_validation_failed", "项目信息有误，请返回上一步检查", status=422, fields={"project": str(exc)}) from exc
         finally:
             repo.close()
 
@@ -577,7 +578,7 @@ class OnboardingCoordinator:
         expected = _revision(body.get("expected_revision"))
         decision, _ = self.decision()
         if decision.entry in {"migration_required", "diagnostic_required"}:
-            raise OnboardingError(decision.entry, "当前数据需要先完成诊断或迁移", status=409)
+            raise OnboardingError(decision.entry, "需要先检查或迁移旧数据，暂时无法继续设置。", status=409)
         effective_expected = expected
         if database_path(self.service_dir).exists():
             probe = self._repo()
@@ -613,11 +614,11 @@ class OnboardingCoordinator:
             manager = ProjectManager(repo, settings)
             validation = manager.validate_project(name=name, config=config, activation_state="active", allow_creatable_output=True)
             if validation.fatal or validation.blockers:
-                raise OnboardingError("project_validation_failed", "首项目配置未通过校验", status=422, fields={item.field: item.message for item in (*validation.fatal, *validation.blockers)})
+                raise OnboardingError("project_validation_failed", "项目信息未通过检查，请返回上一步修改", status=422, fields={item.field: item.message for item in (*validation.fatal, *validation.blockers)})
             raw_output = Path(raw["output_directory"]).expanduser()
             status = output_directory_status(raw_output)
             if status == "blocked":
-                raise OnboardingError("project_validation_failed", "输出目录不可用", status=422, fields={"output_directory": "blocked"})
+                raise OnboardingError("project_validation_failed", "成片保存位置不可用", status=422, fields={"output_directory": "blocked"})
             if status == "creatable":
                 output = raw_output.resolve(strict=False)
                 output.mkdir(parents=True, exist_ok=False)
@@ -630,11 +631,11 @@ class OnboardingCoordinator:
             except ProjectError:
                 raise
             except Exception as exc:
-                raise OnboardingError("project_creation_uncertain", "项目创建结果暂不可确认，请重试同一请求", status=500) from exc
+                raise OnboardingError("project_creation_uncertain", "暂时无法确认项目是否创建成功，请留在此页重试。", status=500) from exc
             bound = repo.bind_first_project(reserved.revision, request_id, project.project_id)
             readiness = service.ensure_service_ready(lambda: self.settings(), service_dir=self.service_dir, project_id=project.project_id)
             if not readiness.get("ok"):
-                failed = repo.record_activation_failure(bound.revision, str(readiness.get("error_code") or "service_not_ready"), str(readiness.get("message") or "服务尚未就绪"))
+                failed = repo.record_activation_failure(bound.revision, str(readiness.get("error_code") or "service_not_ready"), str(readiness.get("message") or "后台服务暂时不可用"))
                 return 202, {"ok": True, "project": asdict(project), "session": _safe_session_from_repository(repo, failed), "reused": False}
             try:
                 completed = repo.complete_first_run(bound.revision)
@@ -651,7 +652,7 @@ class OnboardingCoordinator:
         except RevisionConflictError as exc:
             if created_output is not None and created_output.is_dir() and not any(created_output.iterdir()):
                 created_output.rmdir()
-            raise OnboardingError("onboarding_revision_conflict", "首次设置内容已更新，请重新读取", status=409) from exc
+            raise OnboardingError("onboarding_revision_conflict", "设置已更新，请重新加载。", status=409) from exc
         except RequestConflictError as exc:
             if created_output is not None and created_output.is_dir() and not any(created_output.iterdir()):
                 created_output.rmdir()
@@ -659,7 +660,7 @@ class OnboardingCoordinator:
         except FirstRunStateError as exc:
             if created_output is not None and created_output.is_dir() and not any(created_output.iterdir()):
                 created_output.rmdir()
-            raise OnboardingError("onboarding_state_conflict", "当前首次设置状态不允许此操作", status=409) from exc
+            raise OnboardingError("onboarding_state_conflict", "当前设置进度不支持此操作，请重新打开首次设置。", status=409) from exc
         except ProjectError as exc:
             if created_output is not None and created_output.is_dir() and not any(created_output.iterdir()):
                 created_output.rmdir()
@@ -682,7 +683,7 @@ class OnboardingCoordinator:
         if repository is None:
             decision, _detection = self.decision()
             if decision.entry in {"migration_required", "diagnostic_required"}:
-                raise OnboardingError(decision.entry, "当前数据需要先完成诊断或迁移", status=409)
+                raise OnboardingError(decision.entry, "需要先检查或迁移旧数据，暂时无法继续设置。", status=409)
             if decision.onboarding == "new" and not database_path(self.service_dir).exists():
                 raise OnboardingError("onboarding_not_started", "首次设置尚未开始", status=409)
             repo = self._repo()
@@ -697,14 +698,14 @@ class OnboardingCoordinator:
             if session.state == "completed" and session.project_request_id == request_id:
                 return 200, {"ok": True, "reused": True, "session": _safe_session_from_repository(repo, session)}
             if session.state != "activation_pending" or session.first_project_id is None:
-                raise OnboardingError("onboarding_state_conflict", "当前没有可重试的首项目服务", status=409)
+                raise OnboardingError("onboarding_state_conflict", "当前没有需要重试的设置操作", status=409)
             if session.project_request_id != request_id:
                 raise OnboardingError("request_id_conflict", "无法继续上次操作，请重新打开首次设置后再试", status=409)
             # Reusing the reserved project request is safe across a lost
             # response: the durable session revision is the current CAS point.
             effective_expected = session.revision if expected <= session.revision else expected
             if effective_expected != session.revision:
-                raise OnboardingError("onboarding_revision_conflict", "首次设置内容已更新，请重新读取", status=409)
+                raise OnboardingError("onboarding_revision_conflict", "设置已更新，请重新加载。", status=409)
             readiness = service.ensure_service_ready(
                 lambda: self.settings(), service_dir=self.service_dir, project_id=session.first_project_id
             )
@@ -712,7 +713,7 @@ class OnboardingCoordinator:
                 failed = repo.record_activation_failure(
                     session.revision,
                     str(readiness.get("error_code") or "service_not_ready"),
-                    str(readiness.get("message") or "服务尚未就绪"),
+                    str(readiness.get("message") or "后台服务暂时不可用"),
                 )
                 return 202, {"ok": True, "session": _safe_session_from_repository(repo, failed)}
             try:
@@ -745,9 +746,9 @@ class OnboardingCoordinator:
                         'model': config.get('model'), 'model_id': config.get('model'), 'model_label': resource['name'],
                         'provider_label': config.get('provider'), 'api_base_display': config.get('endpoint'),
                         'mode': 'cloud' if resource['kind'] == 'cloud_asr' else 'local',
-                        'credential_present': resource['has_credential'], 'problem': None if ready else '资源尚未通过用途验证'}
+                        'credential_present': resource['has_credential'], 'problem': None if ready else '模型尚未通过检查'}
                 except ResourceError:
-                    result[section] = {'configured': False, 'ready': False, 'problem': '请选择资源'}
+                    result[section] = {'configured': False, 'ready': False, 'problem': '请选择模型'}
         result['model_catalog'] = asr_models.list_models(self.service_dir)
         return result
 
@@ -761,7 +762,7 @@ class OnboardingCoordinator:
                 store.freeze(identifier, 'analysis')
                 store.freeze(identifier, 'review')
             except ResourceError as exc:
-                raise OnboardingError(exc.code, '所选资源尚未就绪，请返回资源页准备', status=422) from None
+                raise OnboardingError(exc.code, '所选模型暂时无法使用，请返回模型详情检查。', status=422) from None
 
     def dispatch(self, method: str, path: str, body: dict[str, Any] | None = None) -> tuple[int, dict[str, Any]] | None:
         parts = [item for item in path.split("?")[0].split("/") if item]

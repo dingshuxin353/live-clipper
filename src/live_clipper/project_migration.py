@@ -220,14 +220,17 @@ def _safe_run(raw: Mapping[str, Any], index: int) -> Mapping[str, Any]:
 
 def _resource_facts(config: Mapping[str, Any]) -> Mapping[str, Any]:
     result: dict[str, Any] = {}
-    for key, config_key, label in (("asr", "asr", "语音识别"), ("ai", "llm", "AI 服务")):
+    for key, config_key, label in (("asr", "asr", "语音识别"), ("ai", "llm", "内容分析")):
         raw = config.get(config_key, {})
         if not isinstance(raw, Mapping):
             raw = {}
         model = raw.get("model") or raw.get("model_id")
         credential = raw.get("api_key")
+        backend = raw.get("backend")
+        connection_type = "cloud" if key == "ai" or backend == "openai" else "local" if backend == "mlx_whisper" else "unknown"
         result[key] = {
             "label": label,
+            "connection_type": connection_type,
             "model": str(model) if isinstance(model, str) and model.strip() else None,
             "credential_present": isinstance(credential, str) and bool(credential.strip()),
         }
@@ -531,7 +534,7 @@ def build_migration_plan(
     resources: dict[str, Any] = {}
     for key, value in inspection.resource_facts.items():
         item = dict(value)
-        ready = bool(item.get("model")) and bool(item.get("credential_present"))
+        ready = bool(item.get("model")) and (item.get("connection_type") == "local" or bool(item.get("credential_present")))
         resources[str(key)] = {**item, "status": "ready" if ready else "problem"}
     history = _history_summary(inspection)
     source_bytes = sum(item.size for item in inspection.source_manifest)

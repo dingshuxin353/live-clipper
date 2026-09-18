@@ -151,4 +151,4 @@ def application_config(config_path: Path) -> dict[str, Any]:
         settings = load_settings(config_path)
         return {"ok": True, "storage": {"work_dir": str(settings.paths.work_dir.resolve())}}
     except (OSError, ValueError, TypeError, KeyError):
-        return {"ok": False, "message": "数据位置未获取，请检查服务后重试"}
+        return {"ok": False, "message": "无法读取数据位置，请重试。"}

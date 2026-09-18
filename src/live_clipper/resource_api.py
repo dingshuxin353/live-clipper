@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import errno
+import logging
 from typing import Any
 
+import requests
+
+from .asr_models import ModelPreparationError
 from .cheap_model_client import CheapModelServiceError, discover_models
 from .config import Settings
 from .project_storage import ProjectRepository
@@ -10,18 +15,21 @@ from .resource_store import ResourceError, ResourceStore, normalize_proposal
 from .resource_validation import validate_resource
 
 MESSAGES = {
-    'validation_result_unknown': '上次验证结果尚未确认，请查询原操作，不要重复发起付费请求',
-    'resource_not_found': '资源不存在', 'resource_deleted': '资源已删除',
-    'revision_conflict': '资源已在其他位置修改，请查看最新配置后比较',
-    'request_conflict': '该操作的内容已改变，请重新提交',
-    'validation_changed': '配置已更改，请重新验证', 'validation_required': '请先验证新配置，当前生效版本保持不变',
-    'referenced_capability_required': '项目仍依赖该用途，请补齐验证或另建资源后调整项目分配',
-    'required_connection_fields': '请填写服务地址、模型标识和密钥',
-    'resource_in_use': '资源仍有引用或运行占用', 'failed_runs_confirmation_required': '请确认删除对失败记录恢复的影响',
-    'original_configuration_unknown': '原处理配置无法确认，请使用当前项目配置重新跑一次',
-    'same_identity_confirmation_required': '请确认新凭据仍属于原供应商的同一账号和业务空间',
-    'workspace_required': '请填写密钥所属的业务空间 ID', 'region_required': '请选择密钥所属地域',
-    'custom_endpoint_requires_custom_provider': '修改预设地址时，请选择自定义兼容服务',
+    'model_directory_unwritable': '无法写入模型文件夹，请检查访问权限。',
+    'insufficient_disk_space': '模型保存位置的可用空间不足。',
+    'model_integrity_failed': '模型文件检查未通过，暂时无法使用。',
+    'validation_result_unknown': '暂时无法确认上次检查结果，请查询检查结果。',
+    'resource_not_found': '找不到这个模型', 'resource_deleted': '这个模型已移除。',
+    'revision_conflict': '这个模型的配置已被其他操作修改，请核对最新设置后继续。',
+    'request_conflict': '本次提交内容与之前不同，无法按原操作继续提交。',
+    'validation_changed': '配置已更改，请重新检查。', 'validation_required': '请先检查新配置是否可用。已保存的配置不会改变。',
+    'referenced_capability_required': '仍有项目使用这项用途。请检查通过后保存，或为这些项目选择其他配置。',
+    'required_connection_fields': '请填写服务地址、模型 ID 和 API Key。',
+    'resource_in_use': '仍有项目或任务使用这个模型，暂时无法移除。', 'failed_runs_confirmation_required': '请先确认移除对失败记录的影响。',
+    'original_configuration_unknown': '无法确认原处理配置，请按当前项目设置重新处理。',
+    'same_identity_confirmation_required': '请确认新 API Key 属于原供应商的同一账号和业务空间。',
+    'workspace_required': '请填写 API Key 所属的业务空间 ID。', 'region_required': '请选择 API Key 所属地域。',
+    'custom_endpoint_requires_custom_provider': '如需修改服务地址，请选择“自定义 OpenAI 兼容服务”。',
 }
 
 
@@ -35,11 +43,14 @@ class ResourceAPI:
     def dispatch(self, method: str, parts: list[str], body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         try:
             return self._dispatch(method, parts, body)
-        except (ResourceError, CheapModelServiceError) as exc:
-            message = MESSAGES.get(exc.code, '资源操作未完成，请检查字段或准备状态')
+        except (ResourceError, CheapModelServiceError, ModelPreparationError) as exc:
+            message = MESSAGES.get(exc.code, '操作未完成，请查看模型和准备状态。')
+            proposal = body.get('proposal')
+            if exc.code == 'required_connection_fields' and isinstance(proposal, dict) and proposal.get('kind') == 'ai' and not proposal.get('config', {}).get('provider'):
+                message = '请选择供应商。'
             return 409, {'ok': False, 'error': {'code': exc.code, 'message': message}, 'message': message, 'detail': getattr(exc, 'detail', None)}
         except (ValueError, TypeError, KeyError):
-            return 422, {'ok': False, 'error': {'code': 'invalid_resource', 'message': '资源字段不完整或无效'}}
+            return 422, {'ok': False, 'error': {'code': 'invalid_resource', 'message': '配置不完整或格式不正确，请检查填写内容。'}}
 
     def _dispatch(self, method: str, parts: list[str], body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         tail = parts[2:]
@@ -99,11 +110,21 @@ class ResourceAPI:
                             store = ResourceStore(repo)
                             evidence = validate_resource(store, proposal, resource_id=resource['resource_id'], revision=resource['revision'], purposes=['asr'])
                             if evidence['results']['asr']['state'] != 'ready':
-                                return {'ok': False, 'message': '模型已下载，但加载验证未通过；文件已保留'}
+                                return {'ok': False, 'message': '模型已下载，但检查未通过，文件已保留。', 'code': evidence['results']['asr'].get('code') or 'capability_validation_failed', 'diagnostic_id': task_id}
                             store.accept_local_preparation(resource['resource_id'], resource['revision'], evidence['validation_id'])
                             return {'ok': True, 'resource_id': resource['resource_id'], 'revision': resource['revision']}
-                    except Exception:
-                        return {'ok': False, 'message': '模型准备未完成，请检查资源修订、网络、磁盘或运行环境；已下载文件保留'}
+                    except Exception as exc:
+                        code = 'model_preparation_failed'
+                        if isinstance(exc, (ResourceError, ModelPreparationError)):
+                            code = exc.code if exc.code in MESSAGES else code
+                        elif isinstance(exc, OSError) and exc.errno in {errno.EACCES, errno.EPERM, errno.ENOSPC}:
+                            code = 'insufficient_disk_space' if exc.errno == errno.ENOSPC else 'model_directory_unwritable'
+                        elif isinstance(exc, requests.Timeout):
+                            code = 'connection_timeout'
+                        elif isinstance(exc, requests.RequestException):
+                            code = 'model_download_unavailable'
+                        logging.getLogger(__name__).warning('Model preparation failed: task=%s code=%s exception=%s errno=%s', task_id, code, type(exc).__name__, getattr(exc, 'errno', None))
+                        return {'ok': False, 'message': '模型准备未完成，已下载的文件已保留。', 'code': code, 'diagnostic_id': task_id}
                     finally:
                         with ProjectRepository(service_dir) as repo:
                             with repo.transaction():
@@ -143,7 +164,7 @@ class ResourceAPI:
         if len(tail) == 2 and tail[1] == 'repair' and method == 'POST':
             self._strict(body, {'revision', 'credential', 'validation_id', 'request_id', 'confirm_same_account'})
             return 200, {'ok': True, **self.store.repair(tail[0], **body)}
-        return 404, {'ok': False, 'error': {'code': 'route_not_found', 'message': '资源操作不存在'}}
+        return 404, {'ok': False, 'error': {'code': 'route_not_found', 'message': '找不到这次操作的记录。'}}
 
     def detail(self, resource_id: str) -> dict[str, Any]:
         from . import asr_models, jobs

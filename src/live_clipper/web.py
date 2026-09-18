@@ -207,7 +207,7 @@ def _restricted_onboarding_snapshot(paths: WebPaths, expected_mode: str) -> dict
                 {
                     "name": "startup_safety",
                     "status": "blocked",
-                    "problem": "当前数据需要先完成迁移或诊断",
+                    "problem": "请先完成数据升级或问题排查，再继续操作。",
                 }
             ],
         },
@@ -219,7 +219,7 @@ def _restricted_onboarding_snapshot(paths: WebPaths, expected_mode: str) -> dict
                 "model_id": None,
                 "model_label": None,
                 "credential_present": False,
-                "problem": "安全模式下未读取处理资源",
+                "problem": "暂未读取模型设置。",
             },
             "ai": {
                 "configured": False,
@@ -228,7 +228,7 @@ def _restricted_onboarding_snapshot(paths: WebPaths, expected_mode: str) -> dict
                 "api_base_display": None,
                 "model": None,
                 "credential_present": False,
-                "problem": "安全模式下未读取处理资源",
+                "problem": "暂未读取模型设置。",
             },
         },
         "model_catalog": [],
@@ -257,7 +257,7 @@ def _action_status(payload: dict[str, Any]) -> int:
 
 
 def _invalid_runs_query(parameter: str, value: str) -> dict[str, Any]:
-    return _structured_error("invalid_query_parameter", f"无效的查询参数 {parameter}: {value}")
+    return _structured_error("invalid_query_parameter", "查询条件无效，请重新选择。")
 
 
 def _parse_runs_query(query: dict[str, list[str]]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
@@ -987,7 +987,7 @@ def handle_api_request(
         if method == "GET" and len(parts) == 3 and parts[:2] == ["api", "jobs"]:
             job = jobs.read_job(paths.service_dir, parts[2])
             if job is None:
-                return _json_response(_structured_error("job_not_found", "任务不存在"), status=404)
+                return _json_response(_structured_error("job_not_found", "找不到这项模型准备任务。"), status=404)
             return _json_response({"ok": True, "job": job})
         if method == "POST" and len(parts) == 4 and parts[:2] == ["api", "runs"] and parts[3] == "cleanup-preview":
             if service.find_run(parts[2], paths.service_dir):
@@ -1006,7 +1006,7 @@ def handle_api_request(
                 return _json_response(mcp_tools.delete_clip(parts[2], parts[4], reason="web clip deletion", service_dir=paths.service_dir))
             return _json_response(_delete_clip(paths.output_root / parts[2], parts[4]))
     except Exception:  # noqa: BLE001 - API responses must not expose raw exceptions.
-        return _json_response(_structured_error("internal_error", "服务暂时无法完成请求"), status=500)
+        return _json_response(_structured_error("internal_error", "后台服务未能完成此请求。"), status=500)
     return _json_response(_structured_error("route_not_found", "API 路由不存在"), status=404)
 
 
@@ -1165,7 +1165,7 @@ class LiveClipperRequestHandler(BaseHTTPRequestHandler):
         return self._auth_context() != "none"
 
     def _reject_unauthorized(self) -> None:
-        body = json.dumps(_structured_error("unauthorized", "缺少或错误的访问令牌")).encode("utf-8")
+        body = json.dumps(_structured_error("unauthorized", "无法验证与后台服务的连接，请重新打开 Venus。")).encode("utf-8")
         self._emit_response(
             HTTPStatus.UNAUTHORIZED,
             {"Content-Type": "application/json; charset=utf-8"},

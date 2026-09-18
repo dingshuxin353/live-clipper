@@ -64,7 +64,7 @@ test("migration backup action rejects unsafe ids, invalid grants, backend failur
   });
 
   for (const invalid of ["", "../migration", "migration/child", " migration-1"]) {
-    assert.throws(() => actions.showBackup(invalid), /升级记录无效/);
+    assert.throws(() => actions.showBackup(invalid), /升级记录无效|无法识别升级记录/);
   }
   await assert.rejects(actions.showBackup("migration-1"), /无法确认备份位置/);
 
@@ -75,7 +75,7 @@ test("migration backup action rejects unsafe ids, invalid grants, backend failur
     appHome,
   });
   await assert.rejects(failed.showBackup("migration-2"), (error) => {
-    assert.match(error.message, /Finder/);
+    assert.match(error.message, /升级备份信息/);
     assert.equal(error.message.includes("secret"), false);
     assert.equal(error.message.includes(appHome), false);
     return true;

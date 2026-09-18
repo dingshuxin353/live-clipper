@@ -65,9 +65,9 @@ describe("Spec T reprocess and version flow", () => {
     });
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "重新处理" }));
-    const dialog = await screen.findByRole("dialog", { name: "重新处理这条录像" });
-    expect(dialog).toHaveTextContent("将使用当前设置创建新的处理记录。原有记录和成片不会被修改。");
-    for (const phase of ["读取录像", "语音转写", "内容分析", "结果仲裁", "AI 审阅", "渲染成片"]) expect(dialog).toHaveTextContent(phase);
+    const dialog = await screen.findByRole("dialog", { name: "重新处理这段录像" });
+    expect(dialog).toHaveTextContent("将按当前项目设置创建新的剪辑记录，从头处理。");
+    for (const phase of ["读取录像", "语音识别", "内容分析", "整理候选片段", "片段筛选", "生成成片"]) expect(dialog).toHaveTextContent(phase);
     expect(dialog).toHaveTextContent("处理时会复制一份录像，不会修改原文件。");
     const start = within(dialog).getByRole("button", { name: "开始重新处理" });
     fireEvent.click(start);
@@ -86,7 +86,7 @@ describe("Spec T reprocess and version flow", () => {
     mocks({ "/api/runs/run-origin": { ok: true, run: failed, stage_events: [] } });
     const { unmount } = render(<App />);
     expect(await screen.findByRole("button", { name: "继续处理" })).toHaveClass("primary");
-    expect(screen.getByRole("button", { name: "按当前设置重新处理" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "按当前项目设置重新处理" })).toBeVisible();
     unmount();
     route("/projects/project-1/runs/run-origin");
     mocks({ "/api/runs/run-origin": { ok: true, run: { ...ORIGIN, status: "processing", current_stage: "analyze" }, stage_events: [] } });
@@ -106,24 +106,24 @@ describe("Spec T reprocess and version flow", () => {
     route("/projects/project-1/runs/run-origin");
     mocks({ "/api/runs/run-origin/reprocess-preflight": { ...PREFLIGHT, can_reprocess: false, blockers: [{ code: "resource_unavailable", action: "ai_settings", related_id: "analysis.main" }] } });
     render(<App />); fireEvent.click(await screen.findByRole("button", { name: "重新处理" }));
-    const blocked = await screen.findByRole("dialog", { name: "重新处理这条录像" });
-    expect(within(blocked).getByRole("button", { name: "打开 AI 设置" })).toBeVisible();
+    const blocked = await screen.findByRole("dialog", { name: "重新处理这段录像" });
+    expect(within(blocked).getByRole("button", { name: "项目设置" })).toBeVisible();
     expect(within(blocked).getByRole("button", { name: "开始重新处理" })).toBeDisabled();
   });
 
-  it("reuses the origin-run request id when the create result is unknown", async () => {
+  it.each(["transport", "request_id_conflict"])("reuses the original request after %s", async (failure) => {
     let attempts = 0;
     const calls = mocks({
       "/api/runs/run-origin/reprocess": () => {
         attempts += 1;
-        return attempts === 1 ? Promise.reject(new Error("connection lost")) : jsonResponse({ ok: true, run: { ...VERSIONS.versions[1], run_id: "run-recovered", status: "queued" }, created: false, reuse_reason: "idempotent_request" });
+        return attempts === 1 ? (failure === "transport" ? Promise.reject(new Error("connection lost")) : jsonResponse({ ok: false, error: { code: "request_id_conflict", message: "原操作尚待核对", fields: {} } }, 409)) : jsonResponse({ ok: true, run: { ...VERSIONS.versions[1], run_id: "run-recovered", status: "queued" }, created: false, reuse_reason: "idempotent_request" });
       },
     });
     render(<App />); fireEvent.click(await screen.findByRole("button", { name: "重新处理" }));
-    const dialog = await screen.findByRole("dialog", { name: "重新处理这条录像" });
+    const dialog = await screen.findByRole("dialog", { name: "重新处理这段录像" });
     fireEvent.click(within(dialog).getByRole("button", { name: "开始重新处理" }));
     expect(await within(dialog).findByText(/暂时无法确认是否已创建/)).toBeVisible();
-    fireEvent.click(within(dialog).getByRole("button", { name: "开始重新处理" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "继续本次操作" }));
     await waitFor(() => expect(window.location.pathname).toBe("/projects/project-1/runs/run-recovered"));
     const ids = calls.filter(([path]) => path === "/api/runs/run-origin/reprocess").map(([, options]) => JSON.parse(String(options?.body)).request_id);
     expect(ids).toHaveLength(2); expect(new Set(ids).size).toBe(1);
@@ -136,12 +136,12 @@ describe("Spec T reprocess and version flow", () => {
       "/api/runs/run-origin/reprocess": () => { creates += 1; return creates === 1 ? jsonResponse({ ok: false, error: { code: "preflight_changed", message: "预检已变化", fields: {} } }, 409) : jsonResponse({ ok: true, run: { ...VERSIONS.versions[1], run_id: "run-after-confirm", status: "queued" }, created: true, reuse_reason: null }); },
     });
     render(<App />); fireEvent.click(await screen.findByRole("button", { name: "重新处理" }));
-    let dialog = await screen.findByRole("dialog", { name: "重新处理这条录像" });
+    let dialog = await screen.findByRole("dialog", { name: "重新处理这段录像" });
     fireEvent.click(within(dialog).getByRole("button", { name: "开始重新处理" }));
-    expect(await within(dialog).findByRole("button", { name: "确认最新检查结果" })).toBeVisible();
+    expect(await within(dialog).findByRole("button", { name: "已核对，继续" })).toBeVisible();
     expect(within(dialog).getByRole("button", { name: "开始重新处理" })).toBeDisabled();
-    fireEvent.click(within(dialog).getByRole("button", { name: "确认最新检查结果" }));
-    dialog = await screen.findByRole("dialog", { name: "重新处理这条录像" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "已核对，继续" }));
+    dialog = await screen.findByRole("dialog", { name: "重新处理这段录像" });
     fireEvent.click(within(dialog).getByRole("button", { name: "开始重新处理" }));
     await waitFor(() => expect(window.location.pathname).toBe("/projects/project-1/runs/run-after-confirm"));
     const revisions = calls.filter(([path]) => path === "/api/runs/run-origin/reprocess").map(([, options]) => JSON.parse(String(options?.body)).expected_preflight_revision);
@@ -157,7 +157,7 @@ describe("Spec T reprocess and version flow", () => {
       "/api/issues/source-issue": { ok: true, issue },
     });
     render(<App />); fireEvent.click(await screen.findByRole("button", { name: "重新处理" }));
-    fireEvent.click(within(await screen.findByRole("dialog", { name: "重新处理这条录像" })).getByRole("button", { name: "找回原录像" }));
+    fireEvent.click(within(await screen.findByRole("dialog", { name: "重新处理这段录像" })).getByRole("button", { name: "重新选择原始录像" }));
     expect(await screen.findByRole("dialog", { name: "问题详情" })).toBeVisible();
     const call = calls.find(([path]) => path === "/api/runs/run-origin/reprocess-source-repair");
     expect(call?.[1]?.body).toBeUndefined();
@@ -169,36 +169,65 @@ describe("Spec T reprocess and version flow", () => {
     const trigger = await screen.findByRole("button", { name: "重新处理" });
     trigger.focus();
     fireEvent.click(trigger);
-    const dialog = await screen.findByRole("dialog", { name: "重新处理这条录像" });
+    const dialog = await screen.findByRole("dialog", { name: "重新处理这段录像" });
     await waitFor(() => expect(within(dialog).getByRole("button", { name: "关闭" })).toHaveFocus());
     fireEvent.keyDown(document.activeElement!, { key: "Escape" });
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "重新处理这条录像" })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "重新处理这段录像" })).not.toBeInTheDocument());
     expect(trigger).toHaveFocus();
     expect(calls.filter(([path]) => path.endsWith("/reprocess-preflight"))).toHaveLength(1);
   });
 
-  it("uses API order for versions, navigates real runs, and compares only backend-marked fields", async () => {
+  it("uses API order for versions, navigates real runs, and compares displayed fields", async () => {
     mocks(); render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: "初次处理" }));
+    fireEvent.click(await screen.findByRole("button", { name: "第 1 次处理" }));
     const drawer = await screen.findByRole("dialog", { name: "处理版本" });
     const rows = within(drawer).getAllByRole("link");
-    expect(rows.map((row) => row.textContent)).toEqual(expect.arrayContaining([expect.stringContaining("初次处理"), expect.stringContaining("第 2 次处理")]));
-    expect(drawer).toHaveTextContent("识别方式：cloud · 模型：asr-fast · 语言：zh");
-    expect(drawer).toHaveTextContent("服务：OpenAI-compatible LLM · 模型：analysis-main");
+    expect(rows.map((row) => row.textContent)).toEqual(expect.arrayContaining([expect.stringContaining("第 1 次处理"), expect.stringContaining("第 2 次处理")]));
+    expect(drawer).toHaveTextContent("识别方式：云端识别 · 模型：asr-fast · 识别语言：中文");
+    expect(drawer).toHaveTextContent("供应商：OpenAI 兼容服务 · 模型：analysis-main");
     expect(drawer).not.toHaveTextContent("[object Object]");
-    fireEvent.click(within(drawer).getByRole("button", { name: "比较第 2 次处理" }));
+    fireEvent.click(within(drawer).getByRole("button", { name: "比较第 1 次处理与第 2 次处理" }));
     const compare = await screen.findByRole("dialog", { name: "比较两次处理" });
-    expect(compare).toHaveTextContent("AI 模型");
+    expect(compare).toHaveTextContent("内容分析模型");
     expect(compare).toHaveTextContent("模型：analysis-old");
     expect(compare).toHaveTextContent("模型：analysis-main");
     expect(compare).not.toHaveTextContent("[object Object]");
-    expect(compare).toHaveTextContent("输出目录");
-    expect(compare).toHaveTextContent("中间产物");
-    expect(compare).toHaveTextContent("尚未产生结果");
-    expect(compare).not.toHaveTextContent("命名方式");
+    expect(compare).toHaveTextContent("成片保存位置");
+    expect(compare).toHaveTextContent("临时文件保留方式");
+    expect(compare).toHaveTextContent("尚无处理结果");
+    expect(compare).not.toHaveTextContent("文件命名");
     fireEvent.click(within(compare).getAllByRole("button", { name: "关闭" }).at(-1)!);
-    fireEvent.click(await screen.findByRole("button", { name: "初次处理" }));
+    fireEvent.click(await screen.findByRole("button", { name: "第 1 次处理" }));
     fireEvent.click(within(await screen.findByRole("dialog", { name: "处理版本" })).getByRole("link", { name: /第 2 次处理/ }));
     expect(window.location.pathname).toBe("/projects/project-1/runs/run-second");
   });
+});
+
+it('replays the original preflight after remount even when current checks have changed', async () => {
+  route('/projects/project-1/runs/run-origin?reprocess=1');
+  sessionStorage.setItem('venus.reprocess.request.run-origin', JSON.stringify({ id: 'original-request', revision: 'original-revision' }));
+  const calls = mocks({
+    '/api/runs/run-origin/reprocess-preflight': { ...PREFLIGHT, can_reprocess: false, preflight_revision: 'changed-revision', blockers: [{ code: 'source_missing', action: 'source_repair', related_id: ORIGIN.run_id }] },
+    '/api/runs/run-origin/reprocess': { ok: true, run: { ...VERSIONS.versions[1], run_id: 'run-confirmed' }, created: false, reuse_reason: 'idempotent_request' },
+  });
+  render(<App />);
+  const dialog = await screen.findByRole('alertdialog', { name: '重新处理这段录像' });
+  expect(within(dialog).getByRole('button', { name: '取消' })).toBeDisabled();
+  fireEvent.click(within(dialog).getByRole('button', { name: '继续本次操作' }));
+  await waitFor(() => expect(window.location.pathname).toBe('/projects/project-1/runs/run-confirmed'));
+  const sent = calls.find(([path]) => path === '/api/runs/run-origin/reprocess');
+  expect(JSON.parse(String(sent?.[1]?.body))).toEqual({ request_id: 'original-request', expected_preflight_revision: 'original-revision' });
+});
+
+it('reads nested historical configuration and ignores metadata-only differences', async () => {
+  route('/projects/project-1/runs/run-origin');
+  const settings = { ...CURRENT, analysis: { name: '当时的模型', config: { model: 'frozen-model', endpoint: 'https://history.example.test' }, revision: 1 } };
+  mocks({ '/api/runs/run-origin/versions': { ...VERSIONS, versions: VERSIONS.versions.map((version, index) => ({ ...version, settings_summary: { ...settings, analysis: { ...settings.analysis, revision: index + 1 } }, result_summary: { ...VERSIONS.versions[0].result_summary, result_revision: index + 1, completed_at: String(index) }, changed_fields: ['analysis', 'result_summary'] })) } });
+  render(<App />);
+  fireEvent.click(await screen.findByRole('button', { name: '第 1 次处理' }));
+  const drawer = await screen.findByRole('dialog', { name: '处理版本' });
+  expect(drawer).toHaveTextContent('模型：frozen-model');
+  expect(drawer).toHaveTextContent('服务地址：https://history.example.test');
+  fireEvent.click(within(drawer).getByRole('button', { name: '比较第 1 次处理与第 2 次处理' }));
+  expect(await screen.findByText('所比较的设置和结果摘要相同。')).toBeVisible();
 });

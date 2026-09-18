@@ -112,18 +112,18 @@ def _migrate_locked(repository: ProjectRepository, settings: Settings, *, fault:
                     db.execute('INSERT INTO resource_revisions VALUES(?,?,?,?,?,?)', (identifier, 1, encoded(config), binding, '{}', now))
                 return identifier
 
-            asr_id = add(asr_kind, '原语音识别配置', asr_config, asr_credential) if needs_asr else ''
-            analysis_id = add('ai', '原内容分析配置', analysis_config, settings.cheap_model_api_key) if needs_analysis else ''
+            asr_id = add(asr_kind, '旧版语音识别模型', asr_config, asr_credential) if needs_asr else ''
+            analysis_id = add('ai', '旧版内容分析模型', analysis_config, settings.cheap_model_api_key) if needs_analysis else ''
             review_id = 'reuse_analysis'
             if settings.legacy_review_removed:
                 review_id = ''
             elif any(r.get('review_ref', r['analysis_ref']) == 'legacy.analysis.default' for r in legacy_refs) and review.mode == 'local_agent':
                 if review.local_agent.provider == 'claude_code':
-                    review_id = add('local_agent', 'Claude Code 审阅', {'purposes': ['review'], 'command_timeout_minutes': review.local_agent.command_timeout_minutes, 'include_review_package_inline': review.local_agent.include_review_package_inline}, None)
+                    review_id = add('local_agent', 'Claude Code 片段筛选', {'purposes': ['review'], 'command_timeout_minutes': review.local_agent.command_timeout_minutes, 'include_review_package_inline': review.local_agent.include_review_package_inline}, None)
                 else:
                     review_id = ''
             elif any(r.get('review_ref', r['analysis_ref']) == 'legacy.analysis.default' for r in legacy_refs) and review.model.model and review.model.model != llm.model:
-                review_id = add('ai', '原独立审阅配置', {**analysis_config, 'model': review.model.model}, settings.cheap_model_api_key)
+                review_id = add('ai', '旧版片段筛选模型', {**analysis_config, 'model': review.model.model}, settings.cheap_model_api_key)
             if fault:
                 fault('after_resources')
             for project in legacy_projects:
@@ -137,7 +137,7 @@ def _migrate_locked(repository: ProjectRepository, settings: Settings, *, fault:
                 config = {**config, 'resources': {**refs, 'asr_ref': mapped_asr, 'analysis_ref': mapped_analysis, 'review_ref': mapped_review}}
                 db.execute('INSERT INTO project_config_revisions VALUES(?,?,?,?,?)', (project.project_id, revision.revision + 1, stable_json(config), 2, now))
                 db.execute('UPDATE projects SET current_config_revision=?,updated_at=? WHERE project_id=?', (revision.revision + 1, now, project.project_id))
-                db.execute("UPDATE project_runtime SET readiness_state='blocked',failure_code='resource_validation_required',failure_summary='处理资源待验证；历史记录已保留' WHERE project_id=?", (project.project_id,))
+                db.execute("UPDATE project_runtime SET readiness_state='blocked',failure_code='resource_validation_required',failure_summary='请检查项目使用的模型，旧版记录已保留。' WHERE project_id=?", (project.project_id,))
             if session and (draft_asr_matches or draft_ai_matches):
                 converted = json.loads(encoded(draft))
                 if draft_asr_matches:

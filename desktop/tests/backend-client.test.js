@@ -26,7 +26,9 @@ test("backend errors and logs never echo the authentication token", async () => 
   });
   await assert.rejects(client.getStudio(), (error) => {
     assert.equal(error.message.includes(token), false);
-    assert.match(error.message, /HTTP 500/);
+    assert.equal(error.status, 500);
+    assert.equal(error.code, "unknown_error");
+    assert.equal(error.message.includes("/api/"), false);
     return true;
   });
   assert.equal(redactText(`before ${token} after`, [token]), "before [REDACTED] after");
@@ -90,7 +92,7 @@ test("readiness rejects retired, unknown, and internally inconsistent startup DT
       token: "token",
       transport: async () => ({ statusCode: 200, body: JSON.stringify(payload) }),
     });
-    await assert.rejects(client.checkReady(), /无法读取 Venus 启动状态/);
+    await assert.rejects(client.checkReady(), /无法读取启动状态/);
   }
 });
 
@@ -110,7 +112,7 @@ test("readiness retries transient failures and stops if the backend exits", asyn
 
   await assert.rejects(
     client.waitUntilReady({ isAlive: () => false }),
-    /Venus 服务在启动期间停止/,
+    /后台服务在启动时停止/,
   );
 });
 
@@ -142,4 +144,14 @@ test("desktop output and file selection calls encode IDs and keep selected paths
   assert.equal(seen[1][0].path.includes("private/source"), false);
   assert.equal(seen[2][0].path, "/api/migration/migration%2Fwith%20space/backup-grant");
   assert.equal(seen[2][0].headers.Authorization, "Bearer token");
+});
+
+
+test("write uncertainty retains safe transport and business error details", async () => {
+  const client = new BackendClient({ port: 12345, token: "private-token", transport: async () => { throw Object.assign(new Error("private-url private-token"), { code: "ETIMEDOUT" }); } });
+  await assert.rejects(client.stopService(), error => error.code === "timeout_error" && error.outcomeUnknown && error.message === "后台服务响应超时。" && error.diagnostic.transportCode === "ETIMEDOUT");
+  client.transport = async () => ({ statusCode: 200, body: 'null' });
+  await assert.rejects(client.stopService(), error => error.code === "invalid_response" && error.outcomeUnknown);
+  client.transport = async () => ({ statusCode: 409, body: JSON.stringify({ error: { code: "revision_conflict", message: "内容已更新", fields: { revision: "请读取最新版本" } } }) });
+  await assert.rejects(client.stopService(), error => error.code === "revision_conflict" && !error.outcomeUnknown && error.fields.revision === "请读取最新版本");
 });

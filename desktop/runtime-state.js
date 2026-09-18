@@ -1,5 +1,6 @@
 const nodeFs = require("fs");
 const path = require("path");
+const { BackendError } = require("./backend-client");
 
 function createDataDirectoryActions({ client, shell, runtime, appHome, fs = nodeFs }) {
   const inFlight = new Map();
@@ -17,8 +18,8 @@ function createDataDirectoryActions({ client, shell, runtime, appHome, fs = node
           const error = await shell.openPath(target);
           if (error) throw new Error("open failed");
           return { ok: true };
-        } catch {
-          throw new Error("目录不可用或打开失败，请检查目录后重试");
+        } catch (cause) {
+          throw new Error("无法打开文件夹，请稍后重试。", { cause });
         }
       });
     },
@@ -98,7 +99,7 @@ function resolveTrustedAppHome(value, fs = nodeFs) {
   const missing = [];
   while (!fs.existsSync(existing)) {
     const parent = path.dirname(existing);
-    if (parent === existing) throw new Error("应用数据目录无法解析");
+    if (parent === existing) throw new Error("无法确定应用数据位置，请联系开发者排查。");
     missing.unshift(path.basename(existing));
     existing = parent;
   }
@@ -116,7 +117,7 @@ function electronRuntimeHome(appHome) {
 function requireResolvedPath(response) {
   const value = response?.path;
   if (typeof value !== "string" || !path.isAbsolute(value)) {
-    throw new Error("成片路径无法读取");
+    throw new Error("无法读取成片文件位置。");
   }
   return value;
 }
@@ -134,8 +135,8 @@ function createOutputActions({ client, shell, runtime }) {
   const inFlight = new Map();
 
   const run = (action, outputId, operation) => {
-    const id = requireDesktopId(outputId, "output_id");
-    if (!runtime.canStart()) throw new Error("应用正在退出，暂时无法操作成片");
+    const id = requireDesktopId(outputId, "成片");
+    if (!runtime.canStart()) throw new Error("Venus 正在退出，暂时无法打开或定位成片。");
     return reuseInFlight(inFlight, `${action}:${id}`, async () => {
       const target = requireResolvedPath(await client.resolveOutputPath(id));
       await operation(target);
@@ -150,9 +151,9 @@ function createOutputActions({ client, shell, runtime }) {
         try {
           failure = await shell.openPath(target);
         } catch (_error) {
-          throw new Error("无法打开成片，请确认文件仍然存在");
+          throw new Error("无法打开成片，请检查文件是否存在，或尝试在 Finder 中打开。");
         }
-        if (failure) throw new Error("无法打开成片，请确认文件仍然存在");
+        if (failure) throw new Error("无法打开成片，请检查文件是否存在，或尝试在 Finder 中打开。");
       });
     },
     revealOutput(outputId) {
@@ -160,7 +161,7 @@ function createOutputActions({ client, shell, runtime }) {
         try {
           shell.showItemInFolder(target);
         } catch (_error) {
-          throw new Error("无法在 Finder 中显示成片，请确认文件仍然存在");
+          throw new Error("无法在 Finder 中显示成片，请检查文件是否存在。");
         }
       });
     },
@@ -225,26 +226,27 @@ function createMigrationActions({ client, shell, runtime, appHome, fs = nodeFs }
     showBackup(migrationId) {
       const id = requireDesktopId(migrationId, "升级记录");
       if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(id)) {
-        throw new Error("升级记录无效，请重新打开升级页面");
+        throw new Error("无法识别升级记录，请重新读取升级状态。");
       }
-      if (!runtime.canStart()) throw new Error("Venus 正在退出，暂时无法显示备份");
+      if (!runtime.canStart()) throw new Error("Venus 正在退出，无法显示备份。");
       return reuseInFlight(inFlight, id, async () => {
         let result;
         try {
           result = await client.getMigrationBackupGrant(id);
-        } catch (_error) {
-          throw new Error("无法在 Finder 中显示备份，请稍后重试");
+        } catch (error) {
+          if (error instanceof BackendError) throw error;
+          throw new Error("无法读取升级备份信息，请稍后重试。");
         }
         let target;
         try {
           target = validateMigrationBackupGrant({ response: result, migrationId: id, appHome, fs });
         } catch (_error) {
-          throw new Error("无法确认备份位置，请重新打开升级页面");
+          throw new Error("无法确认备份位置，请记录问题编号 BACKUP-LOCATION-UNVERIFIED 以便排查。");
         }
         try {
           shell.showItemInFolder(target);
         } catch (_error) {
-          throw new Error("无法在 Finder 中显示备份，请稍后重试");
+          throw new Error("无法在 Finder 中显示备份，请稍后重试。");
         }
         return { ok: true };
       });
@@ -258,7 +260,7 @@ function createFolderSelection({ dialog, runtime, getWindow = () => null }) {
   let inFlight = null;
 
   const select = (title) => {
-    if (!runtime.canStart()) throw new Error("应用正在退出，暂时无法选择文件夹");
+    if (!runtime.canStart()) throw new Error("Venus 正在退出，无法选择文件夹。");
     if (inFlight) return inFlight;
     const normalizedTitle = typeof title === "string" && title.trim()
       ? title.trim().slice(0, 80)
@@ -274,12 +276,12 @@ function createFolderSelection({ dialog, runtime, getWindow = () => null }) {
         try {
           result = owner ? await dialog.showOpenDialog(owner, options) : await dialog.showOpenDialog(options);
         } catch (_error) {
-          throw new Error("无法打开文件夹选择器，请稍后重试");
+          throw new Error("暂时无法打开文件夹选择窗口，请稍后重试。");
         }
         if (!runtime.canStart() || result?.canceled || !result?.filePaths?.[0]) return null;
         const selectedPath = result.filePaths[0];
         if (typeof selectedPath !== "string" || !path.isAbsolute(selectedPath)) {
-          throw new Error("文件夹路径无效");
+          throw new Error("无法使用这个文件夹路径，请重新选择。");
         }
         return selectedPath;
       })
@@ -296,32 +298,32 @@ function createFileSelections({ client, dialog, runtime, getWindow = () => null,
   const inFlight = new Map();
 
   const select = (issueId, kind) => {
-    const id = requireDesktopId(issueId, "issue_id");
-    if (!runtime.canStart()) throw new Error("应用正在退出，暂时无法选择文件");
+    const id = requireDesktopId(issueId, "问题记录");
+    if (!runtime.canStart()) throw new Error("Venus 正在退出，无法选择文件。");
     return reuseInFlight(inFlight, `${kind}:${id}`, async () => {
       const source = kind === "source";
       const options = source
-        ? { title: "重新选择原录像", properties: ["openFile"], filters: SOURCE_FILTERS }
-        : { title: "选择本次恢复目录", properties: ["openDirectory", "createDirectory"] };
+        ? { title: "重新选择原始录像", properties: ["openFile"], filters: SOURCE_FILTERS }
+        : { title: "重新选择成片保存位置", properties: ["openDirectory", "createDirectory"] };
       const owner = getWindow();
       let result;
       try {
         result = owner ? await dialog.showOpenDialog(owner, options) : await dialog.showOpenDialog(options);
       } catch (_error) {
-        throw new Error("无法打开文件选择器，请稍后重试");
+        throw new Error("暂时无法打开文件选择窗口，请稍后重试。");
       }
       if (result.canceled || !result.filePaths?.[0]) return null;
       let grant;
       try {
         grant = await client.registerFileSelection(id, kind, result.filePaths[0]);
       } catch (_error) {
-        throw new Error("文件选择已失效，请重新选择");
+        throw new Error("无法确认本次选择，请重新选择。");
       }
       if (typeof grant?.selection_token !== "string" || !grant.selection_token) {
-        throw new Error("无法保存所选文件，请重新选择");
+        throw new Error("无法确认本次选择，请重新选择。");
       }
       const ttl = Number(grant.expires_in_seconds);
-      if (!Number.isFinite(ttl) || ttl <= 0) throw new Error("文件选择已失效，请重新选择");
+      if (!Number.isFinite(ttl) || ttl <= 0) throw new Error("无法确认本次选择，请重新选择。");
       return {
         selectionToken: grant.selection_token,
         expiresAt: new Date(now() + ttl * 1000).toISOString(),
@@ -336,8 +338,8 @@ function createFileSelections({ client, dialog, runtime, getWindow = () => null,
 }
 
 function writeClipboardText(clipboard, runtime, value) {
-  if (!runtime.canStart()) throw new Error("应用正在退出，暂时无法复制");
-  if (typeof value !== "string" || value.length > 20000) throw new Error("复制内容无效或过长");
+  if (!runtime.canStart()) throw new Error("Venus 正在退出，无法复制。");
+  if (typeof value !== "string" || value.length > 20000) throw new Error("无法复制这些内容，请尝试手动选择文本复制。");
   clipboard.writeText(value);
   return { ok: true };
 }

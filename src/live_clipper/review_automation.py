@@ -177,7 +177,7 @@ def extract_review_result_json(content: str) -> dict[str, Any]:
             continue
         if isinstance(parsed, dict):
             return parsed
-    raise ValueError("AI 输出中没有找到 review_result JSON 对象。")
+    raise ValueError("模型返回的片段筛选结果格式不正确。")
 
 
 def _project_review_prompt(settings: Settings) -> str:
@@ -205,11 +205,11 @@ def run_structured_review_adapter(
 ) -> dict[str, Any]:
     """Invoke the configured model without granting it any project file access."""
     if settings.review_automation.mode not in {"model", "local_agent"}:
-        raise ReviewAutomationError("ai_resource_unavailable", "原 AI 接入已移除，请选择处理资源。")
+        raise ReviewAutomationError("ai_resource_unavailable", "原片段筛选接入方式已不再支持，请在项目中选择可用模型。")
     prompt = _project_review_prompt(settings)
     if settings.review_automation.mode == "model":
         if not settings.cheap_model_api_key or not settings.cheap_model_name:
-            raise ReviewAutomationError("ai_resource_unavailable", "项目审阅资源尚未就绪。")
+            raise ReviewAutomationError("ai_resource_unavailable", "片段筛选模型尚不可用。")
         factory = client_factory or _cheap_model_client
         client = factory(
             _settings_for_review_model(settings),
@@ -224,14 +224,14 @@ def run_structured_review_adapter(
         )
     else:
         if settings.review_automation.local_agent.allow_agent_file_writes:
-            raise ReviewAutomationError("agent_file_writes_disabled", "项目审阅不允许 Agent 直接写文件。")
+            raise ReviewAutomationError("agent_file_writes_disabled", "片段筛选不允许 Claude Code 直接修改项目文件。")
         runner = local_runner or _default_local_runner
         provider = settings.review_automation.local_agent.provider
         if provider != "claude_code":
-            raise ReviewAutomationError("ai_resource_unavailable", "不支持此本地审阅接入。")
+            raise ReviewAutomationError("ai_resource_unavailable", "暂不支持这种本机工具接入方式。")
         command_name = "claude"
         if local_runner is None and shutil.which(command_name) is None:
-            raise ReviewAutomationError("ai_resource_unavailable", "项目审阅命令资源尚未就绪。")
+            raise ReviewAutomationError("ai_resource_unavailable", "找不到 Claude Code，请检查是否已安装。")
         with tempfile.TemporaryDirectory(prefix="live-clipper-project-review-") as isolated_dir:
             response = runner(
                 f"{prompt}\n\n{json.dumps(payload, ensure_ascii=False)}",
@@ -240,7 +240,7 @@ def run_structured_review_adapter(
                 timeout_seconds=settings.review_automation.local_agent.command_timeout_minutes * 60,
             )
         if not response.get("ok"):
-            raise RuntimeError("项目 AI 审阅执行失败")
+            raise RuntimeError("片段筛选执行失败。")
         result = extract_review_result_json(str(response.get("stdout") or ""))
     return ProjectReviewResult.model_validate(result).model_dump(mode="json")
 
@@ -475,9 +475,9 @@ def _default_local_runner(prompt: str, *, provider: str, cwd: Path, timeout_seco
             stdin=subprocess.DEVNULL,
         )
     except FileNotFoundError as exc:
-        return {"ok": False, "error": f"命令不存在: {command[0]}", "stderr": str(exc)}
+        return {"ok": False, "error": f"找不到所需命令：{command[0]}。", "stderr": str(exc)}
     except subprocess.TimeoutExpired as exc:
-        return {"ok": False, "error": "本地 Agent 执行超时", "stderr": str(exc)}
+        return {"ok": False, "error": "Claude Code 执行超时。", "stderr": str(exc)}
     return {
         "ok": completed.returncode == 0,
         "stdout": completed.stdout,

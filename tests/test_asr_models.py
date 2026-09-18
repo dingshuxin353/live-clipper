@@ -222,7 +222,7 @@ def test_unknown_and_removed_sources_do_not_fall_back(monkeypatch, small_registr
     monkeypatch.setattr(asr_models, "hf_hub_download", lambda **kwargs: network_calls.append(kwargs))
     monkeypatch.setattr(asr_models, "HubApi", lambda **kwargs: network_calls.append(kwargs))
 
-    with pytest.raises(ValueError, match="未知模型下载源"):
+    with pytest.raises(ValueError, match="不支持的模型下载来源"):
         asr_models.download_model(MODEL_ID, "unknown")
     with pytest.raises(ValueError, match=asr_models.HF_MIRROR_REMOVED_MESSAGE):
         asr_models.download_model(MODEL_ID, "hf-mirror")
@@ -344,7 +344,7 @@ def test_sha_mismatch_never_installs(monkeypatch, small_registry):
         return str(destination)
 
     monkeypatch.setattr(asr_models, "hf_hub_download", corrupt_download)
-    with pytest.raises(ValueError, match="SHA256"):
+    with pytest.raises(ValueError, match="下载文件检查未通过"):
         asr_models.download_model(MODEL_ID, "huggingface")
 
     assert asr_models.partial_dir(MODEL_ID).is_dir()

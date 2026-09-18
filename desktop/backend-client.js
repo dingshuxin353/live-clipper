@@ -6,11 +6,12 @@ function nodeTransport(options, body) {
       let payload = "";
       response.setEncoding("utf8");
       response.on("data", (chunk) => { payload += chunk; });
+      response.on("error", reject);
       response.on("end", () => resolve({ statusCode: response.statusCode || 0, body: payload }));
     });
     request.on("error", reject);
     request.on("timeout", () => {
-      request.destroy(new Error("Venus 服务响应超时，请稍后重试"));
+      request.destroy(Object.assign(new Error("后台服务响应超时。"), { code: "ETIMEDOUT" }));
     });
     if (body) request.write(body);
     request.end();
@@ -33,9 +34,21 @@ function requireOnboardingSnapshot(payload) {
     ? ONBOARDING_MODES.has(onboarding)
     : onboarding === null;
   if (!validMode || !validOnboarding) {
-    throw new Error("无法读取 Venus 启动状态，请重新打开应用");
+    throw new Error("无法读取启动状态，请重新打开 Venus。");
   }
   return payload;
+}
+
+const BUSINESS_ERRORS = new Set([
+  "validation_failed", "revision_conflict", "request_id_conflict", "project_not_found", "run_not_found", "output_not_found", "output_unavailable",
+  "source_unavailable", "resource_unavailable", "service_not_ready", "migration_required", "migration_not_found", "backup_not_available", "diagnostic_required",
+]);
+class BackendError extends Error {
+  constructor(message, { code, status = 0, apiPath, method, fields = {}, transportCode } = {}) {
+    super(message); this.name = "BackendError"; this.code = code; this.status = status; this.fields = fields;
+    this.outcomeUnknown = method !== "GET" && (status === 0 || status === 408 || status >= 500 || code === "invalid_response");
+    this.diagnostic = { apiPath, status, code, transportCode };
+  }
 }
 
 class BackendClient {
@@ -56,17 +69,28 @@ class BackendClient {
     let response;
     try {
       response = await this.transport({ host: this.host, port: this.port, path: apiPath, method, timeout: timeoutMs, headers }, serialized);
-    } catch (_error) {
-      throw new Error(`Venus 服务请求失败（${apiPath}）`);
+    } catch (error) {
+      const timeout = error?.code === "ETIMEDOUT";
+      const transportCode = ["ETIMEDOUT", "ECONNREFUSED", "ECONNRESET", "EPIPE"].includes(error?.code) ? error.code : "connection_error";
+      throw new BackendError(timeout ? "后台服务响应超时。" : "无法连接后台服务。", { code: timeout ? "timeout_error" : "network_error", apiPath, method, transportCode });
     }
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw new Error(`Venus 服务请求失败（${apiPath}，HTTP ${response.statusCode}）`);
-    }
+    let payload;
     try {
-      return response.body ? JSON.parse(response.body) : {};
-    } catch (_error) {
-      throw new Error(`无法读取 Venus 服务响应（${apiPath}）`);
+      payload = JSON.parse(response.body);
+      if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("invalid envelope");
+    } catch {
+      throw new BackendError("无法读取后台服务返回的结果。", { code: "invalid_response", status: response.statusCode, apiPath, method });
     }
+    if (response.statusCode < 200 || response.statusCode >= 300 || payload.ok === false) {
+      const code = BUSINESS_ERRORS.has(payload.error?.code ?? payload.error_code) ? (payload.error?.code ?? payload.error_code) : "unknown_error";
+      const message = code !== "unknown_error" && typeof (payload.error?.message ?? payload.message) === "string"
+        ? redactText(payload.error?.message ?? payload.message, [this.token]) : "后台服务未能完成此请求。";
+      const rawFields = code !== "unknown_error" ? payload.error?.fields : null;
+      const fields = rawFields && typeof rawFields === "object" && !Array.isArray(rawFields)
+        ? Object.fromEntries(Object.entries(rawFields).filter(([, value]) => typeof value === "string").map(([key, value]) => [key, redactText(value, [this.token])])) : {};
+      throw new BackendError(message, { code, status: response.statusCode, apiPath, method, fields });
+    }
+    return payload;
   }
 
   getStudio() {
@@ -107,7 +131,7 @@ class BackendClient {
     const started = now();
     let lastError = null;
     while (now() - started <= timeoutMs) {
-      if (!isAlive()) throw new Error("Venus 服务在启动期间停止，请重新打开应用");
+      if (!isAlive()) throw new BackendError("后台服务在启动时停止，请重新打开 Venus。", { code: "startup_stopped", method: "GET" });
       try {
         return await this.checkReady();
       } catch (error) {
@@ -115,8 +139,10 @@ class BackendClient {
       }
       await sleep(pollMs);
     }
-    throw new Error(lastError ? "Venus 服务启动超时，请重新打开应用" : "Venus 服务尚未启动，请稍后重试");
+    const error = new BackendError(lastError ? "后台服务启动超时，请重新打开 Venus。" : "后台服务暂时不可用，请稍后重试。", { code: "startup_timeout", method: "GET" });
+    error.diagnostic.lastFailure = lastError instanceof BackendError ? lastError.diagnostic : { code: "invalid_startup_state" };
+    throw error;
   }
 }
 
-module.exports = { BackendClient, nodeTransport, redactText, requireOnboardingSnapshot };
+module.exports = { BackendError, BackendClient, nodeTransport, redactText, requireOnboardingSnapshot };

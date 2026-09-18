@@ -70,9 +70,9 @@ def open_project_repository(
         service_dir=service,
     )
     if decision.entry == "migration_required":
-        raise ProjectError("migration_required", "检测到旧版数据，需要先完成迁移确认", status=409)
+        raise ProjectError("migration_required", "检测到旧数据，请先完成迁移", status=409)
     if decision.entry == "diagnostic_required":
-        raise ProjectError("diagnostic_required", "启动数据存在冲突，需要先完成诊断", status=409)
+        raise ProjectError("diagnostic_required", "本地数据存在冲突，需要先排查", status=409)
     repository = ProjectRepository(service)
     if not existed:
         repository.set_data_mode("projects")
@@ -188,9 +188,10 @@ class ProjectManager:
         normalized: dict[str, Any] | None = None
         clean_name = name.strip()
         if not clean_name or len(clean_name) > 80 or any(ord(character) < 32 for character in clean_name):
-            fatal.append(ValidationIssue("name", "invalid_name", "项目名称不能为空、包含控制字符或超过 80 个字符"))
+            reason = "请填写项目名称" if not clean_name else "项目名称不能超过 80 个字符" if len(clean_name) > 80 else "项目名称包含不支持的字符"
+            fatal.append(ValidationIssue("name", "invalid_name", reason))
         if activation_state not in {"inactive", "active"}:
-            fatal.append(ValidationIssue("activation_state", "invalid_activation_state", "创建时只能选择未启用或启用"))
+            fatal.append(ValidationIssue("activation_state", "invalid_activation_state", "创建方式无效，请重新选择创建操作"))
         try:
             normalized = validate_project_config(config)
             if normalized["schema_version"] == 1:
@@ -207,46 +208,46 @@ class ProjectManager:
             "output_profile": "current_renderer",
             "naming_policy": "system_safe",
         }:
-            fatal.append(ValidationIssue("processing", "unsupported_processing_policy", "处理方式无效，请重新打开项目设置"))
+            fatal.append(ValidationIssue("processing", "unsupported_processing_policy", "项目的自动剪辑设置无效，请重新打开项目设置"))
         if normalized["output"]["original_media_policy"] != "never_delete":
-            fatal.append(ValidationIssue("output.original_media_policy", "unsafe_media_policy", "原始录像必须永不自动删除"))
+            fatal.append(ValidationIssue("output.original_media_policy", "unsafe_media_policy", "原始录像的保留设置无效，不能自动删除原始录像"))
         if normalized["output"]["final_media_policy"] != "keep":
-            fatal.append(ValidationIssue("output.final_media_policy", "unsafe_media_policy", "成片必须始终保留"))
+            fatal.append(ValidationIssue("output.final_media_policy", "unsafe_media_policy", "成片的保留设置无效，不能自动删除成片"))
 
         source_raw = Path(str(normalized["source"]["directory"])).expanduser()
         output_raw = Path(str(normalized["output"]["directory"])).expanduser()
         if not source_raw.is_absolute():
-            fatal.append(ValidationIssue("source.directory", "path_not_absolute", "录像目录必须是绝对路径"))
+            fatal.append(ValidationIssue("source.directory", "path_not_absolute", "请填写录像文件夹的完整路径，或点击按钮选择文件夹"))
         if not output_raw.is_absolute():
-            fatal.append(ValidationIssue("output.directory", "path_not_absolute", "输出目录必须是绝对路径"))
+            fatal.append(ValidationIssue("output.directory", "path_not_absolute", "请填写成片保存位置的完整路径，或点击按钮选择文件夹"))
         source = source_raw.resolve(strict=False)
         output = output_raw.resolve(strict=False)
         normalized["source"]["directory"] = str(source)
         normalized["output"]["directory"] = str(output)
         if not source.is_dir() or not os.access(source, os.R_OK):
-            blockers.append(ValidationIssue("source.directory", "source_unavailable", "录像目录不存在或不可读"))
+            blockers.append(ValidationIssue("source.directory", "source_unavailable", "录像文件夹不存在，或无法读取"))
         # Check the user-supplied path before resolving it so a symlinked
         # component cannot be normalised into an apparently safe destination.
         output_status = output_directory_status(output_raw)
         if output_status == "blocked" or (output_status == "creatable" and not allow_creatable_output):
-            blockers.append(ValidationIssue("output.directory", "output_unwritable", "输出目录不存在或不可写"))
+            blockers.append(ValidationIssue("output.directory", "output_unwritable", "成片保存位置不存在，或无法写入"))
         if source != output and _inside(output, source):
-            blockers.append(ValidationIssue("output.directory", "output_inside_source", "输出目录不能位于录像目录内"))
+            blockers.append(ValidationIssue("output.directory", "output_inside_source", "成片不能保存在录像文件夹内，请选择其他位置"))
         elif source == output:
-            blockers.append(ValidationIssue("output.directory", "output_inside_source", "输出目录不能与录像目录相同"))
+            blockers.append(ValidationIssue("output.directory", "output_inside_source", "成片保存位置不能与录像文件夹相同"))
 
         migration = self.repository.connection.execute("SELECT value FROM system_state WHERE key='named_resources_migration'").fetchone()
         if migration and migration[0] != 'completed':
-            blockers.append(ValidationIssue('resources', 'migration_pending', '资源转换尚未完成，请先处理资源页提示'))
+            blockers.append(ValidationIssue('resources', 'migration_pending', '模型配置升级尚未完成，请到模型与工具页面处理'))
         resources = resource_map(self.repository)
         refs = effective_references(normalized)
         for purpose, resource_id in refs.items():
             field = purpose + "_ref"
             resource = resources.get(resource_id)
             if resource_id and (resource is None or purpose not in resource.purposes):
-                fatal.append(ValidationIssue(f"resources.{field}", "incompatible_resource", "资源已删除或用途不兼容，请重新选择"))
+                fatal.append(ValidationIssue(f"resources.{field}", "incompatible_resource", "所选模型配置已删除，或不支持此用途，请重新选择"))
             if resource is None or purpose not in resource.ready_purposes:
-                blockers.append(ValidationIssue(f"resources.{field}", "resource_unavailable", "项目使用的处理资源不可用，请检查项目设置"))
+                blockers.append(ValidationIssue(f"resources.{field}", "resource_unavailable", "项目使用的模型不可用，请检查项目设置"))
         for project in self.repository.list_projects():
             if project.project_id == exclude_project_id:
                 continue
@@ -254,11 +255,11 @@ class ProjectManager:
                 warnings.append(ValidationIssue("name", "duplicate_name", "已有同名项目"))
             revision = self.repository.get_config_revision(project.project_id)
             if revision and revision.config["source"]["directory"] == str(source):
-                warnings.append(ValidationIssue("source.directory", "source_shared", "其他项目正在使用同一录像目录"))
+                warnings.append(ValidationIssue("source.directory", "source_shared", "已有其他项目使用这个录像文件夹"))
         if normalized["output"]["intermediate_retention"] == "remind_immediately":
-            warnings.append(ValidationIssue("output.intermediate_retention", "cleanup_immediate", "完成后会立即提醒清理"))
+            warnings.append(ValidationIssue("output.intermediate_retention", "cleanup_immediate", "处理完成后会提醒清理临时文件"))
         if normalized["source"]["first_scan_mode"] == "recent" and normalized["source"]["lookback_days"] == 30:
-            warnings.append(ValidationIssue("source.lookback_days", "large_backfill", "回溯 30 天可能创建较多剪辑记录"))
+            warnings.append(ValidationIssue("source.lookback_days", "large_backfill", "包含最近 30 天的录像，可能会创建较多处理记录"))
         return ProjectValidation(tuple(fatal), tuple(blockers), tuple(warnings), normalized)
 
     def ensure_v2_config(self, project_id: str) -> int:
@@ -287,10 +288,10 @@ class ProjectManager:
         if existing is None:
             return None
         if existing["request_hash"] != _request_hash(payload):
-            raise ProjectError("request_id_conflict", "这次操作与上次提交的内容不一致，请重新打开页面后再试", status=409)
+            raise ProjectError("request_id_conflict", "本次提交与之前的内容不一致，请先确认上次操作结果。", status=409)
         project = self.repository.get_project(str(existing["object_id"]))
         if project is None:
-            raise ProjectError("data_integrity_error", "幂等记录指向不存在的项目", status=500)
+            raise ProjectError("data_integrity_error", "找不到上次创建的项目，请联系支持排查", status=500)
         return project
 
     def _save_idempotency(self, scope: str, request_id: str | None, payload: dict[str, Any], project_id: str) -> None:
@@ -321,7 +322,7 @@ class ProjectManager:
             validation = self.validate_project(name=name, config=config, activation_state=activation_state)
             if validation.fatal or (activation_state == "active" and validation.blockers):
                 fields = {issue.field: issue.message for issue in (*validation.fatal, *validation.blockers)}
-                raise ProjectError("validation_failed", "项目配置未通过校验", status=422, fields=fields)
+                raise ProjectError("validation_failed", "项目设置未通过检查，请修改后重试", status=422, fields=fields)
             assert validation.normalized_config is not None
             runtime = self._runtime_values(activation_state, validation.normalized_config, validation=validation)
             project = self.repository.create_project_bundle(
@@ -415,7 +416,7 @@ class ProjectManager:
             if validation.fatal:
                 raise ProjectError(
                     "validation_failed",
-                    "项目配置未通过校验",
+                    "项目设置未通过检查，请修改后重试",
                     status=422,
                     fields={issue.field: issue.message for issue in (*validation.fatal, *validation.blockers)},
                 )
@@ -431,7 +432,7 @@ class ProjectManager:
                     current = self.repository.get_project(project_id)
                     raise ProjectError(
                         "revision_conflict",
-                        "项目设置已在其他位置更新，请重新打开后再保存",
+                        "项目设置已更新，请核对最新设置后再保存",
                         status=409,
                         fields={"current_revision": str(current.current_config_revision if current else "")},
                     ) from exc
@@ -489,7 +490,7 @@ class ProjectManager:
             if validation.fatal or validation.blockers:
                 raise ProjectError(
                     "project_not_ready",
-                    "项目尚未就绪",
+                    "项目暂时无法运行，请先处理项目中的问题",
                     status=409,
                     fields={issue.field: issue.message for issue in (*validation.fatal, *validation.blockers)},
                 )

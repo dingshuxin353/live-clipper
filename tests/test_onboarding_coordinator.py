@@ -121,3 +121,32 @@ def test_current_project_runtime_metadata_does_not_conflict_with_completed_proje
         service_dir=service_dir,
     )
     assert decision.entry == "workbench"
+
+
+@pytest.mark.parametrize('operation', ['patch_session', 'pause'])
+def test_onboarding_write_and_replay_identity_commit_together(tmp_path, monkeypatch, operation):
+    from live_clipper.project_storage import ProjectRepository
+
+    coordinator, _ = _coordinator(tmp_path)
+    coordinator.start({})
+    body = {'request_id': 'stable-operation', 'expected_revision': 1}
+    if operation == 'patch_session':
+        body.update(current_step='asr', patch={})
+    original = ProjectRepository.save_idempotency_key
+
+    def fail_record(*args, **kwargs):
+        raise RuntimeError('interrupted before replay identity')
+
+    monkeypatch.setattr(ProjectRepository, 'save_idempotency_key', fail_record)
+    with pytest.raises(RuntimeError):
+        getattr(coordinator, operation)(body)
+    with ProjectRepository(coordinator.service_dir) as repository:
+        current = repository.get_first_run_session()
+        assert current.revision == 1
+        assert current.state == 'in_progress'
+        assert current.current_step == 'welcome'
+    monkeypatch.setattr(ProjectRepository, 'save_idempotency_key', original)
+    _, saved = getattr(coordinator, operation)(body)
+    _, replay = getattr(coordinator, operation)(body)
+    assert replay['reused'] is True
+    assert replay['session'] == saved['session']

@@ -171,3 +171,74 @@ def test_material_patch_preserves_candidate_ids_and_is_idempotent(tmp_path):
         "titles": [{"title_id": "invented", "text": "标题"}],
     })
     assert status == 422 and invalid["error"]["code"] == "validation_failed"
+
+
+def test_material_and_replay_identity_are_atomic(tmp_path, monkeypatch):
+    repository, api, *_ = result_api_fixture(tmp_path)
+    payload = {
+        'request_id': 'atomic-material', 'expected_revision': 1,
+        'titles': [{'title_id': 'title-1', 'text': '完整提交'}],
+        'preferred_title_id': 'title-1', 'description': '新描述', 'tags': ['高光'],
+    }
+    original = api._save_idempotency
+
+    def interrupted(*args):
+        raise RuntimeError('interrupted before operation record')
+
+    monkeypatch.setattr(api, '_save_idempotency', interrupted)
+    status, _ = api.handle('PATCH', '/api/outputs/output-1/material', body=payload)
+    assert status == 500
+    assert repository.get_output_material('output-1').material_revision == 1
+    monkeypatch.setattr(api, '_save_idempotency', original)
+    status, saved = api.handle('PATCH', '/api/outputs/output-1/material', body=payload)
+    assert status == 200
+    status, replay = api.handle('PATCH', '/api/outputs/output-1/material', body=payload)
+    assert status == 200 and replay['reused']
+    assert replay['material'] == saved['material']
+
+
+def test_issue_recheck_and_recovery_replay_before_live_revision_checks(tmp_path, monkeypatch):
+    repository, api, project, run, _path, _media = result_api_fixture(tmp_path)
+    repository.transition_run(run.run_id, status="failed", stage="render", event_type="failed")
+    issue = repository.discover_issue(
+        issue_code="output_unwritable", category="storage", scope_type="run",
+        project_id=project.project_id, run_id=run.run_id, issue_group_key="output",
+        recovery_capability="continue_run", reuse_stages=("review",), redo_stages=("render",),
+    )
+    monkeypatch.setattr("live_clipper.project_recovery._default_check", lambda *_: {"ok": True})
+    body = {"request_id": "check-original", "expected_issue_revision": issue.issue_revision}
+    status, checked = api.handle("POST", f"/api/issues/{issue.issue_id}/recheck", body=body)
+    assert status == 200
+    revision = checked["issue"]["issue_revision"]
+    assert revision > issue.issue_revision
+    status, replay = api.handle("POST", f"/api/issues/{issue.issue_id}/recheck", body=body)
+    assert status == 200 and replay["reused"] and replay["issue"]["issue_revision"] == revision
+    recovery = {"request_id": "recover-original", "expected_issue_revision": revision}
+    status, accepted = api.handle("POST", f"/api/issues/{issue.issue_id}/continue", body=recovery)
+    assert status == 200
+    status, replay = api.handle("POST", f"/api/issues/{issue.issue_id}/continue", body=recovery)
+    assert status == 200 and replay["recovery_attempt_id"] == accepted["recovery_attempt_id"]
+    assert len(repository.list_recovery_attempts(issue.issue_id)) == 1
+    status, _ = api.handle("POST", f"/api/issues/{issue.issue_id}/continue", body={**recovery, "expected_issue_revision": revision + 1})
+    assert status == 409
+
+
+def test_group_recheck_keeps_atomic_original_identity(tmp_path, monkeypatch):
+    repository, api, project, run, _path, _media = result_api_fixture(tmp_path)
+    issue = repository.discover_issue(
+        issue_code="output_unwritable", category="storage", scope_type="run",
+        project_id=project.project_id, run_id=run.run_id, issue_group_key="output",
+        recovery_capability="continue_run",
+    )
+    monkeypatch.setattr("live_clipper.project_recovery._default_check", lambda *_: {"ok": True})
+    payload = {"request_id": "group-original", "issue_revisions": {issue.issue_id: issue.issue_revision}}
+    save = api._save_idempotency
+    monkeypatch.setattr(api, "_save_idempotency", lambda *_: (_ for _ in ()).throw(RuntimeError("interrupted")))
+    assert api.handle("POST", "/api/issue-groups/output/recheck", body=payload)[0] == 500
+    assert repository.get_issue(issue.issue_id).issue_revision == issue.issue_revision
+    monkeypatch.setattr(api, "_save_idempotency", save)
+    assert api.handle("POST", "/api/issue-groups/output/recheck", body=payload)[0] == 200
+    revision = repository.get_issue(issue.issue_id).issue_revision
+    replay = api.handle("POST", "/api/issue-groups/output/recheck", body=payload)
+    assert replay[0] == 200 and replay[1]["reused"]
+    assert repository.get_issue(issue.issue_id).issue_revision == revision

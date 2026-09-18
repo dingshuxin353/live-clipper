@@ -30,7 +30,7 @@ function installFetchMock(overrides: Record<string, unknown> = {}, initialSessio
         return jsonResponse({ ok: false, error: { code: "validation_failed", message: "首次设置草稿无效", fields: { current_step: "进行中的首次设置不能保存为完成步骤" } } }, 422);
       }
       if (body.expected_revision !== currentSession.revision) {
-        return jsonResponse({ ok: false, error: { code: "onboarding_revision_conflict", message: "设置已在另一个窗口更新", fields: {} } }, 409);
+        return jsonResponse({ ok: false, error: { code: "onboarding_revision_conflict", message: "设置已在其他窗口更改，请重新加载。", fields: {} } }, 409);
       }
       const draft = mergeDraft(currentSession.draft, body.patch || {});
       const currentStep = body.current_step || currentSession.current_step;
@@ -56,11 +56,12 @@ describe("five-step first-run setup", () => {
   it("renders the confirmed five-step structure and never exposes the workbench", async () => {
     installFetchMock(); renderOnboarding();
     expect(screen.getByLabelText("首次设置步骤")).toBeVisible();
-    for (const label of ["开始", "语音识别", "AI 服务", "第一个项目", "完成"]) expect(screen.getAllByText(label).length).toBeGreaterThan(0);
+    expect(screen.getByRole("heading", { name: "欢迎使用 Venus" })).toBeVisible();
+    for (const label of ["开始", "语音识别", "AI 服务", "第一个项目", "确认设置"]) expect(screen.getAllByText(label).length).toBeGreaterThan(0);
     expect(await screen.findByRole("dialog", { name: "开始" })).toHaveAttribute("aria-modal", "true");
     expect(screen.queryByText("新建项目")).not.toBeInTheDocument();
     const steps = screen.getByLabelText("首次设置步骤");
-    for (const label of ["语音识别", "AI 服务", "第一个项目", "完成"]) {
+    for (const label of ["语音识别", "AI 服务", "第一个项目", "确认设置"]) {
       expect(within(steps).getByRole("button", { name: label })).toBeDisabled();
     }
     fireEvent.click(screen.getByRole("button", { name: "开始设置" }));
@@ -81,20 +82,47 @@ describe("five-step first-run setup", () => {
   it("debounces one latest draft save and persists cleared non-secret fields", async () => {
     const session = { ...SESSION, current_step: "project" as const, draft: { project: { name: "项目", source_directory: "/source", output_directory: "/output", trigger_mode: "manual" as const } } };
     const calls = installFetchMock(); renderOnboarding(onboardingSnapshot(session));
-    const source = screen.getByLabelText(/录像目录/);
+    const source = screen.getByLabelText(/录像文件夹/);
     fireEvent.change(source, { target: { value: "/source/next" } }); fireEvent.change(source, { target: { value: "" } });
     await waitFor(() => expect(calls.filter(([path]) => path === "/api/onboarding/session")).toHaveLength(1), { timeout: 1500 });
     const body = JSON.parse(String(calls.find(([path]) => path === "/api/onboarding/session")?.[1]?.body));
-    expect(body.patch.project.source_directory).toBe(""); expect(await screen.findByText("非密钥设置已保存。")).toBeVisible();
+    expect(body.patch.project.source_directory).toBe(""); expect(await screen.findByText("设置进度已保存。")).toBeVisible();
+  });
+
+  it("replays a committed save after an unreadable response and retains newer edits", async () => {
+    const session = { ...SESSION, current_step: "project" as const, draft: { project: { name: "原名称" } } };
+    const submissions: Array<Record<string, any>> = [];
+    let saved: OnboardingSession = session;
+    installFetchMock({ "/api/onboarding/session": (options?: RequestInit) => {
+      const body = JSON.parse(String(options?.body)); submissions.push(body);
+      if (submissions.length === 1) {
+        saved = { ...session, revision: 2, draft: mergeDraft(session.draft, body.patch) };
+        return new Response("lost response", { status: 200 });
+      }
+      if (submissions.length === 2) return jsonResponse({ ok: true, session: saved, reused: true });
+      return jsonResponse({ ok: true, session: { ...saved, revision: 3, draft: mergeDraft(saved.draft, body.patch) } });
+    } }, session);
+    renderOnboarding(onboardingSnapshot(session));
+    fireEvent.change(screen.getByLabelText("项目名称"), { target: { value: "原提交" } });
+    await screen.findByText("暂时无法确认设置是否保存，请核对原操作。", {}, { timeout: 1500 });
+    fireEvent.change(screen.getByLabelText("项目名称"), { target: { value: "继续编辑" } });
+    fireEvent.click(screen.getByRole("button", { name: "核对并重试保存" }));
+    await screen.findByRole("button", { name: "保存修改" });
+    expect(submissions).toHaveLength(2); expect(submissions[1]).toEqual(submissions[0]);
+    expect(screen.getByLabelText("项目名称")).toHaveValue("继续编辑");
+    fireEvent.click(screen.getByRole("button", { name: "保存修改" }));
+    await screen.findByText("设置进度已保存。");
+    expect(submissions[2]).toMatchObject({ expected_revision: 2, patch: { project: { name: "继续编辑" } } });
+    expect(submissions[2].request_id).not.toBe(submissions[0].request_id);
   });
 
   it("clears the failed save state after a revision conflict reload succeeds", async () => {
     const session = { ...SESSION, current_step: "project" as const, draft: { project: { name: "本地草稿", source_directory: "/source", output_directory: "/output", trigger_mode: "manual" as const } } };
     const latestSession = { ...session, revision: 4, draft: { project: { ...session.draft.project, name: "服务器草稿" } } }; const latest = onboardingSnapshot(latestSession);
-    installFetchMock({ "/api/onboarding/session": () => jsonResponse({ ok: false, error: { code: "onboarding_revision_conflict", message: "设置已在另一个窗口更新", fields: {} } }, 409) });
+    installFetchMock({ "/api/onboarding/session": () => jsonResponse({ ok: false, error: { code: "onboarding_revision_conflict", message: "设置已在其他窗口更改，请重新加载。", fields: {} } }, 409) });
     renderOnboarding(onboardingSnapshot(session), { onRefresh: vi.fn(async () => latest) }); fireEvent.change(screen.getByLabelText("项目名称"), { target: { value: "冲突修改" } });
-    expect(await screen.findByText("自动保存失败，请处理后重试。", {}, { timeout: 1500 })).toBeVisible(); fireEvent.click(screen.getByRole("button", { name: "重新加载" }));
-    expect(await screen.findByDisplayValue("服务器草稿")).toBeVisible(); expect(screen.queryByText("设置已在另一个窗口更新")).not.toBeInTheDocument(); expect(screen.queryByText("自动保存失败，请处理后重试。")).not.toBeInTheDocument(); expect(screen.getByText("非密钥设置已保存。")).toBeVisible();
+    expect(await screen.findByText("设置未保存，暂时不要关闭窗口。", {}, { timeout: 1500 })).toBeVisible(); fireEvent.click(screen.getByRole("button", { name: "重新加载" }));
+    expect(await screen.findByDisplayValue("服务器草稿")).toBeVisible(); expect(screen.queryByText("设置已在其他窗口更改，请重新加载。")).not.toBeInTheDocument(); expect(screen.queryByText("设置未保存，暂时不要关闭窗口。")).not.toBeInTheDocument(); expect(screen.getByText("设置进度已保存。")).toBeVisible();
   });
 
   it("flushes the current step before pausing and keeps the overlay open on failure", async () => {
@@ -103,8 +131,9 @@ describe("five-step first-run setup", () => {
       "/api/onboarding/pause": new Error("offline"),
     });
     renderOnboarding(); const pauseButton = screen.getAllByRole("button", { name: "稍后继续" })[0]; await waitFor(() => expect(pauseButton).toBeEnabled()); fireEvent.click(pauseButton);
-    expect(await screen.findByText("暂时无法保存进度")).toBeVisible();
-    expect(screen.getByRole("dialog")).toBeVisible();
+    expect(await screen.findByText("进度未保存，暂时无法退出设置。")).toBeVisible();
+    expect(screen.getByRole("alertdialog")).toBeVisible();
+    expect(screen.getByRole("button", { name: "第一个项目" })).toBeDisabled();
     expect(calls.map(([path]) => path).filter((path) => ["/api/onboarding/session", "/api/onboarding/pause"].includes(path))).toEqual(["/api/onboarding/session", "/api/onboarding/pause"]);
   });
 
@@ -112,11 +141,11 @@ describe("five-step first-run setup", () => {
     const session = { ...SESSION, current_step: "asr" as const };
     const calls = installFetchMock({ "/api/resources": { resources: [{ resource_id: "speech", name: "课程识别", ready: true, config: { purposes: ["asr"] }, validation: { asr: { state: "ready" } } }] } }, session);
     renderOnboarding(onboardingSnapshot(session));
-    expect(screen.getByRole("button", { name: "继续" })).toBeDisabled();
-    fireEvent.click(screen.getByRole("combobox", { name: "资源" }));
+    expect(screen.getByRole("button", { name: "下一步" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("combobox", { name: "模型" }));
     fireEvent.click(await screen.findByRole("option", { name: /课程识别/ }));
-    expect(screen.getByRole("button", { name: "继续" })).toBeEnabled();
-    fireEvent.click(screen.getByRole("button", { name: "继续" }));
+    expect(screen.getByRole("button", { name: "下一步" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
     await waitFor(() => expect(calls.some(([path]) => path === "/api/onboarding/session")).toBe(true));
     const body = JSON.parse(String(calls.find(([path]) => path === "/api/onboarding/session")![1]?.body));
     expect(body.patch.asr).toEqual({ resource_id: "speech" });
@@ -126,20 +155,20 @@ describe("five-step first-run setup", () => {
   it("blocks analysis-only evidence when onboarding also needs review", async () => {
     const session = { ...SESSION, current_step: "ai" as const, draft: { ai: { resource_id: "analysis" } } };
     installFetchMock({ "/api/resources": { resources: [{ resource_id: "analysis", name: "仅分析", ready: false, config: { purposes: ["analysis", "review"] }, validation: { analysis: { state: "ready" } } }] } }, session);
-    renderOnboarding(onboardingSnapshot(session)); await waitFor(() => expect(screen.getByRole("combobox", { name: "资源" })).toHaveTextContent("仅分析"));
-    expect(screen.getByRole("button", { name: "继续" })).toBeDisabled();
-    expect(screen.getByText("所选资源尚未就绪")).toBeVisible();
+    renderOnboarding(onboardingSnapshot(session)); await waitFor(() => expect(screen.getByRole("combobox", { name: "模型" })).toHaveTextContent("仅分析"));
+    expect(screen.getByRole("button", { name: "下一步" })).toBeDisabled();
+    expect(screen.getByText("这个模型暂时无法使用，请查看模型详情。")).toBeVisible();
   });
 
   it("closes only the nested draft confirmation on Escape", async () => {
     const session = { ...SESSION, current_step: "ai" as const };
     const calls = installFetchMock({}, session); renderOnboarding(onboardingSnapshot(session));
-    fireEvent.click(screen.getByRole("button", { name: "添加资源" }));
-    fireEvent.change(await screen.findByLabelText(/资源名称/), { target: { value: "嵌套草稿" } });
+    fireEvent.click(screen.getByRole("button", { name: "添加模型" }));
+    fireEvent.change(await screen.findByLabelText(/模型名称/), { target: { value: "嵌套草稿" } });
     fireEvent.click(screen.getByRole("button", { name: "返回" }));
-    const child = await screen.findByRole("dialog", { name: "离开配置？" });
+    const child = await screen.findByRole("dialog", { name: "离开此页？" });
     fireEvent.keyDown(child, { key: "Escape" });
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "离开配置？" })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "离开此页？" })).not.toBeInTheDocument());
     expect(screen.getByLabelText("首次设置步骤")).toBeVisible();
     expect(calls.some(([path]) => path === "/api/onboarding/pause")).toBe(false);
   });
@@ -147,9 +176,9 @@ describe("five-step first-run setup", () => {
   it("opens the same resource editor inside the first-run guide", async () => {
     const session = { ...SESSION, current_step: "ai" as const };
     installFetchMock({}, session); renderOnboarding(onboardingSnapshot(session));
-    fireEvent.click(screen.getByRole("button", { name: "添加资源" }));
-    expect(await screen.findByLabelText(/资源名称/)).toBeVisible();
-    expect(screen.getAllByLabelText(/资源名称/)).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "添加模型" }));
+    expect(await screen.findByLabelText(/模型名称/)).toBeVisible();
+    expect(screen.getAllByLabelText(/模型名称/)).toHaveLength(1);
     expect(screen.getByLabelText("首次设置步骤")).toBeVisible();
   });
 
@@ -158,11 +187,11 @@ describe("five-step first-run setup", () => {
     const session = { ...SESSION, current_step: "project" as const, draft: { project: { trigger_mode: "manual" as const, schedule_mode: "daily" as const, daily_time: "22:00", interval_minutes: 60, output_directory: "/output" } } };
     const calls = installFetchMock({ "/api/onboarding/project/validate": { ok: true, valid: true, fatal: [], blockers: [], warnings: [], checks: { asr: { ready: true }, ai: { ready: true }, source_directory: { status: "ready" }, output_directory: { status: "creatable" } }, summary: { recording_source: "/recordings/interviews", discovery: "new_only", processing: "ai_auto", output: "/output" }, existing_video_count: 2, normalized_config: {} } }, session); renderOnboarding(onboardingSnapshot(session));
     expect(document.querySelectorAll(".form-path-field")).toHaveLength(2);
-    fireEvent.click(screen.getAllByRole("button", { name: "选择…" })[0]);
+    fireEvent.click(screen.getAllByRole("button", { name: "选择文件夹" })[0]);
     expect(await screen.findByDisplayValue("interviews")).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "检查配置" }));
-    expect(await screen.findByText("项目可以创建并启用。")).toBeVisible();
-    expect(screen.getByText("目录可读 · 发现 2 个已有录像，默认不会自动处理")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "检查并继续" }));
+    expect(await screen.findByText("检查通过，可以创建项目。")).toBeVisible();
+    expect(screen.getByText("找到 2 个已有录像，默认不会自动处理")).toBeVisible();
     const sequence = calls.filter(([path]) => ["/api/onboarding/session", "/api/onboarding/project/validate"].includes(path));
     expect(sequence.map(([path]) => path)).toEqual(["/api/onboarding/session", "/api/onboarding/project/validate"]);
     expect(JSON.parse(String(sequence[0][1]?.body)).current_step).toBe("project");
@@ -175,9 +204,9 @@ describe("five-step first-run setup", () => {
       "/api/onboarding/project/validate": { ok: true, valid: true, fatal: [], blockers: [], warnings: [], checks: { asr: { ready: true }, ai: { ready: true }, source_directory: { status: "ready" }, output_directory: { status: "ready" } }, summary: { recording_source: "/source", discovery: "new_only", processing: "ai_auto", output: "/output" }, existing_video_count: 0, normalized_config: {} },
       "/api/onboarding/finish": () => { attempts += 1; return attempts === 1 ? Promise.reject(new Error("offline")) : jsonResponse({ ok: true, session: { ...session, state: "completed", current_step: "complete", first_project: { project_id: "p1", name: "项目", activation_state: "active", readiness_state: "ready" } } }, 201); },
     }, session);
-    renderOnboarding(onboardingSnapshot(session)); fireEvent.click(screen.getByRole("button", { name: "检查配置" })); await screen.findByText("项目可以创建并启用。");
-    fireEvent.click(screen.getByRole("button", { name: "完成设置并创建项目" })); expect(await screen.findByText("创建结果暂时无法确认，请保持当前窗口后重试")).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "完成设置并创建项目" })); await screen.findByText("项目 已创建并启用");
+    renderOnboarding(onboardingSnapshot(session)); fireEvent.click(screen.getByRole("button", { name: "检查并继续" })); await screen.findByText("检查通过，可以创建项目。");
+    fireEvent.click(screen.getByRole("button", { name: "创建项目" })); expect(await screen.findByText("暂时无法确认项目是否创建成功，请留在此页重试。")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "创建项目" })); await screen.findByText("项目 已创建");
     const ids = calls.filter(([path]) => path === "/api/onboarding/finish").map(([, options]) => JSON.parse(String(options?.body)).request_id); expect(new Set(ids).size).toBe(1);
     const patches = calls.filter(([path]) => path === "/api/onboarding/session").map(([, options]) => JSON.parse(String(options?.body)));
     expect(patches.every((body) => body.current_step === "project")).toBe(true);
@@ -190,24 +219,24 @@ describe("five-step first-run setup", () => {
       "/api/onboarding/project/validate": { ok: true, valid: true, fatal: [], blockers: [], warnings: [], checks: { asr: { ready: true }, ai: { ready: true }, source_directory: { status: "ready" }, output_directory: { status: "ready" } }, summary: { recording_source: "/source", discovery: "new_only", processing: "ai_auto", output: "/output" }, existing_video_count: 0, normalized_config: {} },
       "/api/onboarding/finish": () => jsonResponse({ ok: true, session: pending }, 202),
     }, session);
-    renderOnboarding(onboardingSnapshot(session)); fireEvent.click(screen.getByRole("button", { name: "检查配置" })); await screen.findByText("项目可以创建并启用。");
-    fireEvent.click(screen.getByRole("button", { name: "完成设置并创建项目" })); expect(await screen.findByText("项目已保存，本机服务尚未启动")).toBeVisible();
+    renderOnboarding(onboardingSnapshot(session)); fireEvent.click(screen.getByRole("button", { name: "检查并继续" })); await screen.findByText("检查通过，可以创建项目。");
+    fireEvent.click(screen.getByRole("button", { name: "创建项目" })); expect(await screen.findByText("项目已保存，设置尚未完成")).toBeVisible();
     expect(calls.filter(([path]) => path === "/api/onboarding/session").every(([, options]) => JSON.parse(String(options?.body)).current_step === "project")).toBe(true);
   });
 
   it("activation pending exposes retry only and never sends finish", async () => {
     const session = { ...SESSION, state: "activation_pending" as const, current_step: "complete" as const, pending_finish_request_id: "finish-1", failure: { code: "service_not_ready", summary: "服务未启动" }, first_project: { project_id: "p1", name: "项目", activation_state: "active" as const, readiness_state: "blocked" } };
     const calls = installFetchMock({ "/api/onboarding/service/retry": { ok: true, session: { ...session, state: "completed", failure: null } } }); renderOnboarding(onboardingSnapshot(session));
-    expect(screen.queryByRole("button", { name: /创建项目/ })).not.toBeInTheDocument(); fireEvent.click(screen.getByRole("button", { name: "重新启动服务" }));
+    expect(screen.queryByRole("button", { name: /创建项目/ })).not.toBeInTheDocument(); fireEvent.click(screen.getByRole("button", { name: "重试" }));
     await waitFor(() => expect(calls.some(([path]) => path === "/api/onboarding/service/retry")).toBe(true)); expect(calls.some(([path]) => path === "/api/onboarding/finish")).toBe(false);
   });
 
   it("completed offers one selectable relative source file and submits selected scan", async () => {
     const session = { ...SESSION, state: "completed" as const, current_step: "complete" as const, first_project: { project_id: "p1", name: "项目", activation_state: "active" as const, readiness_state: "ready" }, draft: { project: { source_directory: "/secret/source", output_directory: "/output", trigger_mode: "manual" as const } } };
     const calls = installFetchMock({ "/api/projects/p1/source-files": { ok: true, files: [{ relative_path: "ready.mp4", bytes: 10, modified_at: "now", selectable: true, reason: null }, { relative_path: "writing.mp4", bytes: 10, modified_at: "now", selectable: false, reason: "writing" }] }, "/api/projects/p1/scans": { ok: true, scan: { scan_id: "s1", project_id: "p1", status: "success" } } }); renderOnboarding(onboardingSnapshot(session));
-    fireEvent.click(await screen.findByRole("button", { name: "选择一条录像试运行" })); const dialog = screen.getByRole("dialog", { name: "选择一条录像试运行" });
+    fireEvent.click(await screen.findByRole("button", { name: "选择录像开始处理" })); const dialog = screen.getByRole("dialog", { name: "选择要处理的录像" });
     expect(within(dialog).getByText("ready.mp4")).toBeVisible(); expect(within(dialog).queryByText("writing.mp4")).not.toBeInTheDocument(); expect(dialog).not.toHaveTextContent("/secret/source");
-    fireEvent.click(within(dialog).getByRole("radio")); fireEvent.click(within(dialog).getByRole("button", { name: "用这条录像试运行" }));
+    fireEvent.click(within(dialog).getByRole("radio")); fireEvent.click(within(dialog).getByRole("button", { name: "开始处理" }));
     await waitFor(() => expect(calls.some(([path]) => path === "/api/projects/p1/scans")).toBe(true)); const body = JSON.parse(String(calls.find(([path]) => path === "/api/projects/p1/scans")?.[1]?.body)); expect(body.selected_relative_paths).toEqual(["ready.mp4"]);
   });
 
@@ -215,9 +244,9 @@ describe("five-step first-run setup", () => {
     const session = { ...SESSION, state: "completed" as const, current_step: "complete" as const, first_project: { project_id: "p1", name: "项目", activation_state: "active" as const, readiness_state: "ready" } };
     installFetchMock({ "/api/projects/p1/source-files": { ok: true, files: [{ relative_path: "ready.mp4", bytes: 10, modified_at: "now", selectable: true }] } });
     renderOnboarding(onboardingSnapshot(session));
-    const trigger = await screen.findByRole("button", { name: "选择一条录像试运行" });
+    const trigger = await screen.findByRole("button", { name: "选择录像开始处理" });
     trigger.focus(); fireEvent.click(trigger);
-    const dialog = screen.getByRole("dialog", { name: "选择一条录像试运行" });
+    const dialog = screen.getByRole("dialog", { name: "选择要处理的录像" });
     expect(dialog.tagName).toBe("DIALOG");
     expect(dialog).toHaveAttribute("open");
     expect(dialog).toHaveAttribute("aria-modal", "true");
@@ -229,9 +258,21 @@ describe("five-step first-run setup", () => {
     expect(fireEvent.keyDown(close, { key: "Tab", shiftKey: true })).toBe(true);
     expect(dialog).toHaveAttribute("open");
     fireEvent.keyDown(dialog, { key: "Escape" });
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "选择一条录像试运行" })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "选择要处理的录像" })).not.toBeInTheDocument());
     await waitFor(() => expect(trigger).toHaveFocus());
     expect(screen.getByLabelText("首次设置步骤")).toBeVisible();
   });
 
+});
+
+
+it("reports folder dialog failures without changing the saved project draft", async () => {
+  const session = { ...SESSION, current_step: "project" as const, draft: { project: { name: "项目", source_directory: "/original" } } };
+  installFetchMock();
+  window.liveClipperShell = { selectFolder: vi.fn().mockRejectedValue(new Error("private path")) };
+  renderOnboarding(onboardingSnapshot(session));
+  fireEvent.click(screen.getAllByRole("button", { name: "选择文件夹" })[0]);
+  expect(await screen.findByRole("alert")).toHaveTextContent("暂时无法选择文件夹，请稍后重试。");
+  expect(screen.getByLabelText(/录像文件夹/)).toHaveValue("/original");
+  expect(screen.queryByText("private path")).not.toBeInTheDocument();
 });

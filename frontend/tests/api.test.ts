@@ -4,7 +4,7 @@ import { jsonResponse } from "./helpers";
 
 describe("typed API client", () => {
   it("keeps same-origin credentials and maps non-2xx errors", async () => {
-    const fetchMock = vi.fn(() => jsonResponse({ message: "配置错误" }, 400));
+    const fetchMock = vi.fn(() => jsonResponse({ error: { code: "validation_failed", message: "配置错误" } }, 400));
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(api("/api/config")).rejects.toEqual(
@@ -19,7 +19,7 @@ describe("typed API client", () => {
   it("maps network and invalid JSON failures without logging payloads", async () => {
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new Error("secret-token"))));
-    await expect(api("/api/config")).rejects.toEqual(new ApiError("网络连接失败", 0, "network_error"));
+    await expect(api("/api/config")).rejects.toEqual(new ApiError("无法连接后台服务。", 0, "network_error"));
     expect(consoleSpy).not.toHaveBeenCalled();
     consoleSpy.mockRestore();
   });
@@ -52,6 +52,17 @@ describe("typed API client", () => {
   it("normalizes unrecognized backend error codes to the stable fallback", async () => {
     vi.stubGlobal("fetch", vi.fn(() => jsonResponse({ ok: false, error: { code: "future_backend_code", message: "未知错误", fields: {} } }, 500)));
     await expect(api("/api/projects")).rejects.toEqual(expect.objectContaining({ code: "unknown_error" }));
+  });
+
+  it("treats unreadable write results as unknown without exposing arbitrary errors", async () => {
+    for (const value of [null, [], "private backend detail"]) {
+      vi.stubGlobal("fetch", vi.fn(() => jsonResponse(value)));
+      await expect(api("/api/resources", { method: "POST" })).rejects.toEqual(expect.objectContaining({ code: "invalid_response", outcomeUnknown: true }));
+    }
+    vi.stubGlobal("fetch", vi.fn(() => jsonResponse({ error: { code: "unrecognized", message: "secret-url", fields: { token: "secret" } } }, 500)));
+    await expect(api("/api/resources")).rejects.toEqual(expect.objectContaining({ message: "暂时无法完成此操作。", fields: {}, outcomeUnknown: true }));
+    vi.stubGlobal("fetch", vi.fn(() => jsonResponse({ error: { code: "resource_in_use", message: "仍在使用" } }, 409)));
+    await expect(api("/api/resources")).rejects.toEqual(expect.objectContaining({ code: "resource_in_use", outcomeUnknown: false }));
   });
 
   it("uses the frozen reprocess routes and two-field create body", async () => {

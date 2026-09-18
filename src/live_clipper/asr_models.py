@@ -19,7 +19,7 @@ DOWNLOAD_JOB_KIND = "asr_model_download"
 DOWNLOAD_SCHEMA_VERSION = 1
 INSTALL_SCHEMA_VERSION = 1
 DEFAULT_MODEL_SOURCE = "modelscope"
-HF_MIRROR_REMOVED_MESSAGE = "HF Mirror 已停止支持，请选择 ModelScope 或 Hugging Face"
+HF_MIRROR_REMOVED_MESSAGE = "HF Mirror 已不再支持，请选择 ModelScope 或 Hugging Face。"
 
 SOURCE_LABELS = {
     "modelscope": "ModelScope",
@@ -152,7 +152,7 @@ def model_entry(model_id: str) -> dict[str, Any]:
     for entry in REGISTRY:
         if entry["id"] == model_id:
             return entry
-    raise ValueError(f"未知模型: {model_id}")
+    raise ValueError(f"不支持的模型：{model_id}")
 
 
 def models_root() -> Path:
@@ -194,20 +194,26 @@ def _nearest_existing_parent(path: Path) -> Path | None:
     return candidate if candidate.exists() else None
 
 
+class ModelPreparationError(ValueError):
+    def __init__(self, code: str, message: str):
+        self.code = code
+        super().__init__(message)
+
+
 def download_capacity(model_id: str) -> dict[str, int | str]:
     """Check writable model storage and required free bytes before a download job."""
     entry = model_entry(model_id)
     root = models_root()
     parent = _nearest_existing_parent(root)
     if parent is None or not parent.is_dir() or not os.access(parent, os.W_OK):
-        raise OSError("模型目录不可写")
+        raise ModelPreparationError("model_directory_unwritable", "无法写入模型文件夹，请检查文件夹权限。")
     staging = partial_dir(model_id)
     partial = _partial_bytes(staging, entry)
     # Keep enough room for the verified staging copy and an atomic rename backup.
     required = max(0, _total_bytes(entry) - partial) + _total_bytes(entry)
     available = int(shutil.disk_usage(parent).free)
     if available < required:
-        raise ValueError(f"insufficient_disk_space:{required}:{available}")
+        raise ModelPreparationError("insufficient_disk_space", f"insufficient_disk_space:{required}:{available}")
     return {"model_id": model_id, "required_bytes": required, "available_bytes": available, "partial_bytes": partial}
 
 
@@ -252,13 +258,13 @@ def _installation_status(model_id: str) -> tuple[str, str | None]:
         return "not_installed", None
     manifest = _safe_read_json(target / "_install.json")
     if manifest is None:
-        return "damaged", "缺少安装清单"
+        return "damaged", "找不到模型安装清单。"
     if (
         manifest.get("schema_version") != INSTALL_SCHEMA_VERSION
         or manifest.get("model_id") != model_id
         or manifest.get("backend") != entry["backend"]
     ):
-        return "damaged", "安装清单不匹配"
+        return "damaged", "模型安装清单与所选模型不匹配。"
     manifest_files = {
         item.get("path"): item
         for item in manifest.get("files", [])
@@ -267,22 +273,22 @@ def _installation_status(model_id: str) -> tuple[str, str | None]:
     allowed = {"_install.json", *(str(file["path"]) for file in entry["files"])}
     actual = {str(path.relative_to(target)) for path in target.rglob("*") if path.is_file()}
     if actual != allowed:
-        return "damaged", "安装目录包含缺失或多余文件"
+        return "damaged", "模型文件夹中有缺失或多余文件。"
     for file_spec in entry["files"]:
         relative = str(file_spec["path"])
         path = target / relative
         recorded = manifest_files.get(relative)
         if recorded is None:
-            return "damaged", f"安装清单缺少 {relative}"
+            return "damaged", f"模型安装清单中缺少文件记录：{relative}"
         if (
             recorded.get("bytes") != int(file_spec["bytes"])
             or recorded.get("sha256") != file_spec["sha256"]
             or not path.is_file()
             or path.stat().st_size != int(file_spec["bytes"])
         ):
-            return "damaged", f"{relative} 大小或清单不匹配"
+            return "damaged", f"模型文件大小或安装清单不匹配：{relative}"
         if recorded.get("mtime_ns") != path.stat().st_mtime_ns and not _hash_matches(path, str(file_spec["sha256"])):
-            return "damaged", f"{relative} 校验失败"
+            return "damaged", f"模型文件检查未通过：{relative}"
     return "installed", None
 
 
@@ -442,7 +448,7 @@ def download_model(model_id: str, source: str = DEFAULT_MODEL_SOURCE, *, token: 
     if source == "hf-mirror":
         raise ValueError(HF_MIRROR_REMOVED_MESSAGE)
     if source not in entry["sources"] or source not in source_ids():
-        raise ValueError(f"未知模型下载源: {source}")
+        raise ValueError(f"不支持的模型下载来源：{source}")
     state, _reason = _installation_status(model_id)
     if state == "installed":
         return {"ok": True, "model": model_id, "status": "already_installed"}
@@ -463,11 +469,11 @@ def download_model(model_id: str, source: str = DEFAULT_MODEL_SOURCE, *, token: 
                 continue
             _download_file(entry, source, file_spec, staging, token)
             if not _canonical_file_matches(path, file_spec):
-                raise ValueError(f"{file_spec['path']} SHA256 校验失败")
+                raise ModelPreparationError("model_integrity_failed", f"下载文件检查未通过：{file_spec['path']}")
         for file_spec in entry["files"]:
             path = staging / str(file_spec["path"])
             if not _canonical_file_matches(path, file_spec):
-                raise ValueError(f"{file_spec['path']} 最终完整性校验失败")
+                raise ModelPreparationError("model_integrity_failed", f"模型文件完整性检查未通过：{file_spec['path']}")
         _clean_staging_for_install(staging, entry)
         _write_install_manifest(staging, entry, source)
         _atomic_install(staging, target)
@@ -488,7 +494,7 @@ def download_model(model_id: str, source: str = DEFAULT_MODEL_SOURCE, *, token: 
 def delete_model(model_id: str, *, service_dir: Path | None = None) -> dict[str, Any]:
     model_entry(model_id)
     if service_dir is not None and jobs.active_job_for(service_dir, model_id, DOWNLOAD_JOB_KIND):
-        raise RuntimeError("模型正在下载，不能删除")
+        raise RuntimeError("模型正在下载，暂时无法删除模型文件。")
     removed = False
     for path in (install_dir(model_id), partial_dir(model_id)):
         if path.exists():

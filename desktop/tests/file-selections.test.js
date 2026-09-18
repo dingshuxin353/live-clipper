@@ -50,7 +50,7 @@ test("onboarding folder selection rejects invalid dialog paths and ignores a res
     dialog: { showOpenDialog: async () => ({ canceled: false, filePaths: ["relative/path"] }) },
     runtime,
   });
-  await assert.rejects(folders.select("x"), /文件夹路径无效/);
+  await assert.rejects(folders.select("x"), /无法使用这个文件夹路径/);
 
   let finishDialog;
   // A dialog resolving after the quit boundary must not deliver a path.
@@ -149,8 +149,8 @@ test("clipboard write validates type and length without reading or persisting co
   const runtime = createRuntimeState();
   assert.deepEqual(writeClipboardText({ writeText: (value) => writes.push(value) }, runtime, "#Venus"), { ok: true });
   assert.deepEqual(writes, ["#Venus"]);
-  assert.throws(() => writeClipboardText({ writeText: () => undefined }, runtime, 42), /复制内容无效/);
-  assert.throws(() => writeClipboardText({ writeText: () => undefined }, runtime, "x".repeat(20001)), /过长/);
+  assert.throws(() => writeClipboardText({ writeText: () => undefined }, runtime, 42), /无法复制这些内容/);
+  assert.throws(() => writeClipboardText({ writeText: () => undefined }, runtime, "x".repeat(20001)), /手动选择文本复制/);
   runtime.beginQuit();
   assert.throws(() => writeClipboardText({ writeText: () => undefined }, runtime, "later"), /正在退出/);
 });

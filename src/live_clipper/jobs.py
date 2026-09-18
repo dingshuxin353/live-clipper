@@ -88,9 +88,9 @@ def _run(service_dir: Path, job_id: str, fn: Callable[[], dict[str, Any]]) -> No
         if ok:
             error = None
         elif isinstance(result, dict):
-            error = result.get("message") or result.get("error") or "任务失败"
+            error = result.get("message") or result.get("error") or "任务未完成，请查看具体原因。"
         else:
-            error = "任务失败"
+            error = "任务未完成，请查看具体原因。"
     except Exception as exc:  # noqa: BLE001 - 后台任务必须记录任何失败。
         result = None
         status = "failed"
@@ -136,7 +136,7 @@ def sweep_interrupted(service_dir: Path) -> None:
         for job in jobs:
             if job.get("status") == "running":
                 job["status"] = "interrupted"
-                job["error"] = "任务在服务重启时被中断。"
+                job["error"] = "后台服务重启，任务已中断。"
                 job["finished_at"] = _now()
                 changed = True
         if changed:

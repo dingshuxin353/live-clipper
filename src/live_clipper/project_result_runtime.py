@@ -285,75 +285,75 @@ def _functional_issue(
     details = {
         "ai_review_invalid": (
             "ai",
-            "AI 审阅结果无效",
-            "本次审阅没有形成可信结果",
-            "检查审阅资源后继续同一记录",
+            "片段筛选结果无效",
+            "片段筛选结果未通过检查。",
+            "检查原筛选模型后，继续处理这条记录。",
             "continue_run",
         ),
         "ai_review_failed": (
             "ai",
-            "AI 审阅失败",
-            "本次审阅尚未完成",
-            "稍后检查并继续同一记录",
+            "片段筛选失败",
+            "本次片段筛选尚未完成。",
+            "稍后重新检查，再继续处理这条记录。",
             "continue_run",
         ),
         "ai_resource_unavailable": (
             "ai",
-            "AI 审阅资源不可用",
-            "已完成的读取、转写和分析产物保持不变",
-            "修复审阅资源后继续同一记录",
+            "片段筛选模型不可用",
+            "已完成的录像读取、语音识别和内容分析结果会保留。",
+            "修复原筛选模型连接后，继续处理这条记录。",
             "continue_run",
         ),
         "asr_resource_unavailable": (
             "asr",
-            "语音识别资源不可用",
-            "来源录像和已完成产物保持不变",
-            "修复语音识别资源后继续同一记录",
+            "语音识别模型不可用",
+            "原始录像和已完成的处理结果不会因本次修复被修改。",
+            "修复原语音识别模型后，继续处理这条记录。",
             "continue_run",
         ),
         "source_missing": (
             "recording",
-            "来源录像不存在",
-            "已完成产物保持不变",
-            "选择内容一致的录像后继续",
+            "找不到原始录像。",
+            "已完成的处理结果会保留。",
+            "选择与原始录像内容一致的文件后，继续处理。",
             "continue_run",
         ),
         "source_unreadable": (
             "recording",
-            "来源录像不可读",
-            "已完成产物保持不变",
-            "恢复录像访问后继续",
+            "无法读取原始录像",
+            "已完成的处理结果会保留。",
+            "恢复原始录像的访问后，重新检查。",
             "continue_run",
         ),
         "output_unwritable": (
             "storage",
-            "输出目录不可写",
-            "成片尚未写入目标目录",
-            "恢复目录权限后继续渲染",
+            "无法写入成片保存文件夹。",
+            "成片尚未保存到指定位置。",
+            "恢复文件夹写入权限或重新选择成片保存位置，再继续生成成片。",
             "continue_run",
         ),
         "storage_full": (
             "storage",
-            "输出空间不足",
-            "已完成成片保持不变",
-            "释放空间后继续渲染",
+            "成片保存位置的可用空间不足",
+            "已生成的成片会保留。",
+            "释放空间或重新选择成片保存位置，再继续生成成片。",
             "continue_run",
         ),
         "render_failed": (
             "render",
-            "成片渲染失败",
-            "其他已完成成片保持不变",
-            "检查后只重试该成片",
+            "成片生成失败",
+            "其他已生成的成片会保留。",
+            "检查通过后，重新生成此成片。",
             "retry_output",
         ),
     }
     category, title, preserved, next_step, capability = details[code]
     if code == "ai_review_invalid" and repository.list_run_outputs(run.run_id):
-        preserved = "原审阅证据和已登记输出保持不变"
-        next_step = "原审阅证据已失效，请使用重新处理创建新记录"
+        preserved = "原片段筛选记录和已有成片记录会保留。"
+        next_step = "原片段筛选记录已无法用于恢复，请重新处理这段录像。"
         capability = "none"
     if code == 'ai_resource_unavailable' and resource_purpose == 'analysis':
-        title, preserved, next_step = '内容分析资源不可用', '来源录像和已有产物保持不变', '修复原内容分析资源后重新检查'
+        title, preserved, next_step = '内容分析模型不可用', '原始录像和已有处理结果不会因本次修复被修改。', '修复原内容分析模型连接后，重新检查。'
     issue = repository.discover_issue(
         issue_code=code,
         category=category,
@@ -365,7 +365,7 @@ def _functional_issue(
         status=status,
         title=title,
         summary=title,
-        impact="当前处理无法完成",
+        impact="当前处理无法完成。",
         preserved_content=preserved,
         next_step=next_step,
         recovery_capability=capability,
@@ -445,7 +445,7 @@ def _mark_review_failure(
         event_type="failed",
         detail={"reason": code},
         error_code=code,
-        error_summary="AI 审阅未完成",
+        error_summary="片段筛选未完成",
     )
     plan = retry_plan or AutomaticRetryPlan(False, None, 0, False)
     _functional_issue(
@@ -645,7 +645,7 @@ def _run_project_review_locked(
                     candidate_id=str(candidate["id"]),
                     decision="rejected",
                     rank=next_rank,
-                    reason="候选超出本次审阅上限",
+                    reason="超过本次筛选数量上限，未参与筛选。",
                     rejection_reason_code="candidate_limit",
                 )
             )
@@ -809,7 +809,7 @@ def reconcile_review_evidence(
         stage="review",
         event_type="evidence_invalid",
         error_code="ai_review_invalid",
-        error_summary="审阅证据缺失或校验不一致",
+        error_summary="片段筛选记录缺失或检查不一致。",
     )
     _functional_issue(repository, run, "ai_review_invalid")
     return "invalid"
@@ -878,7 +878,7 @@ def render_project_outputs(
             stage="render",
             event_type="failed",
             error_code="output_unwritable",
-            error_summary="输出目录不可写",
+            error_summary="无法写入成片保存文件夹。",
         )
         raise ProjectRenderError("output_unwritable", "output directory is not writable")
     source = Path(str(overrides.get("source_path") or run.latest_seen_path))
@@ -889,7 +889,7 @@ def render_project_outputs(
             stage="read_source",
             event_type="failed",
             error_code="source_missing",
-            error_summary="来源录像不存在",
+            error_summary="找不到原始录像。",
         )
         _functional_issue(repository, run, "source_missing")
         raise ProjectRenderError("source_missing", "source recording is missing")
@@ -919,7 +919,7 @@ def render_project_outputs(
                     output.output_id,
                     status="unreadable",
                     error_code="output_unreadable",
-                    error_summary="已登记成片文件完整性校验失败",
+                    error_summary="成片文件检查未通过。",
                 )
                 failed.append(output.output_id)
                 continue
@@ -927,7 +927,7 @@ def render_project_outputs(
                 output.output_id,
                 status="missing",
                 error_code="output_missing",
-                error_summary="已登记成片文件不存在",
+                error_summary="找不到成片文件。",
             )
             failed.append(output.output_id)
             continue
@@ -966,7 +966,7 @@ def render_project_outputs(
                 output.output_id,
                 status="failed",
                 error_code="render_failed",
-                error_summary="目标位置已有同名文件，无法确认是否为当前成片",
+                error_summary="保存位置已有同名文件，无法确认是否属于这条记录。",
             )
             _functional_issue(repository, run, "render_failed", output_id=output.output_id)
             failed.append(output.output_id)
@@ -999,7 +999,7 @@ def render_project_outputs(
                 output.output_id,
                 status="failed",
                 error_code=code,
-                error_summary="成片渲染未成功",
+                error_summary="成片生成失败。",
             )
             existing = next(
                 (
@@ -1066,7 +1066,7 @@ class ProjectWorkerPool:
                 try:
                     frozen_settings = settings_for_snapshot(repository, _settings, run.parameter_snapshot, purpose='review')
                 except ResourceError:
-                    raise ReviewAutomationError('ai_resource_unavailable', '原处理资源不可用，请查看原修订') from None
+                    raise ReviewAutomationError('ai_resource_unavailable', '原处理模型不可用，请查看当时使用的配置。') from None
                 return adapter(frozen_settings, payload)
             run_project_review(
                 repository,

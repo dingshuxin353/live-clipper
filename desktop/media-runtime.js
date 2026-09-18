@@ -3,7 +3,9 @@ const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 
 function toolError(name, reason) {
-  return new Error(`视频处理组件缺失或无法运行，请重新下载安装最新版 Venus。无需删除已有配置和项目。 (${name}: ${reason})`);
+  const error = new Error(`视频处理组件无法使用，请重新下载安装 Venus。无需删除已有设置和项目。组件：${name}，原因：${reason}。`);
+  error.code = "media_tools_unavailable";
+  return error;
 }
 
 function bundledFile(resourcesPath, relative, executable = true) {

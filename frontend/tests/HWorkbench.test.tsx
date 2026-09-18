@@ -1,7 +1,31 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import { App } from "../src/App";
+import { PathField, StatusPill } from "../src/workbench-shared";
+import type { ProjectSummary } from "../src/project-dto";
+import { LegacyRunView } from "../src/RunResultPage";
+import { createMemoryRouter, RouterProvider } from "react-router-dom";
 import { PROJECT, RUN, installFetchMock, jsonResponse } from "./helpers";
+
+it("distinguishes scan failure and leaves readonly paths selectable without an unavailable action", () => {
+  const view = render(<><StatusPill status="failed" context="scan" /><StatusPill status="failed" /><PathField label="路径" value="/isolated/full/path" isReadOnly /></>);
+  expect(screen.getByText("扫描失败")).toBeVisible();
+  expect(screen.getByText("处理失败")).toBeVisible();
+  const path = screen.getByRole("textbox", { name: /路径/ });
+  expect(path).toHaveAttribute("readonly"); expect(path).toBeEnabled();
+  expect(screen.queryByText(/请点击/)).not.toBeInTheDocument();
+  view.rerender(<PathField label="路径" value="/isolated/full/path" isReadOnly choose={() => undefined} />);
+  expect(screen.getByRole("button", { name: "选择文件夹" })).toBeVisible();
+  expect(screen.getByRole("textbox", { name: /路径/ })).toHaveAccessibleDescription("请点击「选择文件夹」更改位置。");
+});
+
+it("does not fabricate completed stages or historical configuration for an imported record", () => {
+  installFetchMock();
+  render(<RouterProvider router={createMemoryRouter([{ path: "*", element: <LegacyRunView run={{ ...RUN, status: "completed", current_stage: null, trigger_source: "legacy_import" }} project={PROJECT as ProjectSummary} events={[]} /> }])} />);
+  expect(document.querySelectorAll(".stage-rail .done")).toHaveLength(0);
+  expect(screen.getByText("原处理配置未记录")).toBeVisible();
+  expect(screen.getByText("旧版导入")).toBeVisible();
+});
 
 const SUMMARY = {
   run_id: "run-result", project: { project_id: "project-1", name: "游戏直播高光" }, source_name: "final-night.mkv",
@@ -52,13 +76,13 @@ describe("Venus 1.0 result workbench", () => {
     const selectFolder = vi.fn(async () => null); window.liveClipperShell = { selectFolder };
     installFetchMock(); route("/projects/project-1?dialog=project-settings"); render(<App />);
     const dialog = await screen.findByRole("dialog", { name: "项目设置" });
-    const controls = [within(dialog).getByLabelText("项目名称"), within(dialog).getByLabelText("项目描述"), within(dialog).getByRole("textbox", { name: /录像目录/ }), within(dialog).getByRole("textbox", { name: /输出目录/ }), within(dialog).getByRole("combobox", { name: "中间产物保留" }), within(dialog).getByRole("checkbox", { name: "定时扫描" })];
+    const controls = [within(dialog).getByLabelText("项目名称"), within(dialog).getByLabelText("项目描述（选填）"), within(dialog).getByRole("textbox", { name: /录像文件夹/ }), within(dialog).getByRole("textbox", { name: /成片保存位置/ }), within(dialog).getByRole("combobox", { name: "临时文件清理提醒" }), within(dialog).getByRole("checkbox", { name: "定时扫描" })];
     for (let index = 1; index < controls.length; index += 1) expect(controls[index - 1].compareDocumentPosition(controls[index]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(within(dialog).getByLabelText("项目描述")).toHaveAttribute("rows", "4");
+    expect(within(dialog).getByLabelText("项目描述（选填）")).toHaveAttribute("rows", "4");
     expect(dialog.querySelector(".form-pair")).not.toBeInTheDocument();
-    fireEvent.click(within(dialog).getAllByRole("button", { name: "选择…" })[0]);
-    await waitFor(() => expect(selectFolder).toHaveBeenCalledWith("选择录像目录"));
-    expect(within(dialog).getByRole("textbox", { name: /录像目录/ })).toHaveValue("/recordings");
+    fireEvent.click(within(dialog).getAllByRole("button", { name: "选择文件夹" })[0]);
+    await waitFor(() => expect(selectFolder).toHaveBeenCalledWith("选择录像文件夹"));
+    expect(within(dialog).getByRole("textbox", { name: /录像文件夹/ })).toHaveValue("/recordings");
   });
 
   it("renders native output playback and marks the rendered result seen once", async () => {
@@ -104,14 +128,14 @@ describe("Venus 1.0 result workbench", () => {
   it("normalizes unknown result view and renders a no-clip conclusion", async () => {
     const noClip = { ...RESULT, result: { ...RESULT.result, result_type: "no_clip", selected_count: 0, available_output_count: 0, total_duration_ms: 0, overall_summary: "没有达到发布标准" }, outputs: [], decisions: [{ decision_id: "decision-1", candidate_id: "candidate-1", decision: "rejected", rank: null, candidate_type: "summary", source_start_ms: 0, source_end_ms: 1000, selected_start_ms: null, selected_end_ms: null, remove_ranges: [], hook: null, core_value: null, reason: "信息不完整", rejection_reason_code: "insufficient_context", risks: [], transcript_excerpt: "片段内容", output_id: null }] };
     resultMocks({ "/api/runs/run-result/result": noClip }); route("/projects/project-1/runs/run-result?view=unknown"); render(<App />);
-    expect(await screen.findByText("本次没有适合生成的片段")).toBeVisible();
+    expect((await screen.findAllByText("本次未选出适合的片段")).length).toBeGreaterThan(0);
     await waitFor(() => expect(window.location.search).toContain("view=result"));
   });
 
   it("autosaves material edits with the current revision and preserves title ids", async () => {
     const calls = resultMocks({ "/api/outputs/output-1/material": (options?: RequestInit) => options?.method === "PATCH" ? jsonResponse({ ok: true, material: { ...material(1), material_revision: 2, description: "新的发布描述" }, reused: false }) : jsonResponse({ ok: true, material: material(1) }) });
     route("/projects/project-1/runs/run-result?view=materials&output=output-1"); render(<App />);
-    const description = await screen.findByLabelText("描述");
+    const description = await screen.findByLabelText("视频描述");
     expect(description.closest(".astryx-field")).not.toBeNull();
     fireEvent.change(description, { target: { value: "新的发布描述" } });
     await waitFor(() => expect(calls.some(([path, options]) => path === "/api/outputs/output-1/material" && options?.method === "PATCH")).toBe(true), { timeout: 2500 });
@@ -126,12 +150,12 @@ describe("Venus 1.0 result workbench", () => {
     const server = { ...material(1), material_revision: 2, description: "服务器新描述" };
     const calls = resultMocks({ "/api/outputs/output-1/material": (options?: RequestInit) => { if (options?.method !== "PATCH") { reads += 1; return jsonResponse({ ok: true, material: reads === 1 ? material(1) : server }); } writes += 1; return writes === 1 ? jsonResponse({ ok: false, error: { code: "revision_conflict", message: "发布物料已更新", fields: {} }, current: server }, 409) : jsonResponse({ ok: true, material: { ...server, material_revision: 3, description: "我的草稿" }, reused: false }); } });
     route("/projects/project-1/runs/run-result?view=materials&output=output-1"); render(<App />);
-    const description = await screen.findByLabelText("描述"); fireEvent.change(description, { target: { value: "我的草稿" } });
-    expect(await screen.findByText(/你的草稿仍保留/)).toBeVisible();
+    const description = await screen.findByLabelText("视频描述"); fireEvent.change(description, { target: { value: "我的草稿" } });
+    expect(await screen.findByText(/你当前的修改尚未保存/)).toBeVisible();
     expect(description).toHaveValue("我的草稿");
-    fireEvent.click(screen.getByRole("button", { name: "查看已保存版本" }));
+    fireEvent.click(screen.getByRole("button", { name: "查看最新内容" }));
     expect(screen.getByText("服务器新描述")).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "立即保存" }));
+    fireEvent.click(screen.getByRole("button", { name: "保留我的修改并保存" }));
     await waitFor(() => expect(writes).toBe(2));
     const patchBodies = calls.filter(([path, options]) => path === "/api/outputs/output-1/material" && options?.method === "PATCH").map(([, options]) => JSON.parse(String(options?.body)));
     expect(patchBodies[1]).toMatchObject({ expected_revision: 2, description: "我的草稿" });
@@ -141,9 +165,9 @@ describe("Venus 1.0 result workbench", () => {
     const writeText = vi.fn(() => Promise.resolve());
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
     resultMocks(); route("/projects/project-1/runs/run-result?view=materials&output=output-1"); render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: "复制全部物料" }));
+    fireEvent.click(await screen.findByRole("button", { name: "复制全部文案" }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("高光标题 1\n\n发布描述 1\n\n#直播 #高光"));
-    expect(screen.getByText("已复制全部物料")).toBeVisible();
+    expect(screen.getByText("已复制全部文案")).toBeVisible();
   });
 
   it("keeps a failed output visible without presenting it as playable", async () => {
@@ -156,7 +180,7 @@ describe("Venus 1.0 result workbench", () => {
   });
 
   it("renders backend-authorized issue actions and submits revision-bound recheck", async () => {
-    const issueSummary = { issue_id: "issue-1", issue_code: "output_unwritable", group_key: "output", status: "action_required", impact_level: "blocking", title: "输出目录不可写", summary: "无法继续渲染", next_step: "修复后重新检查", issue_revision: 4, available_actions: ["recheck", "select_recovery_output", "copy_diagnostic"] };
+    const issueSummary = { issue_id: "issue-1", issue_code: "output_unwritable", group_key: "output", status: "action_required", impact_level: "blocking", title: "成片保存位置不可写", summary: "无法继续渲染", next_step: "修复后重新检查", issue_revision: 4, available_actions: ["recheck", "select_recovery_output", "copy_diagnostic"] };
     const issue = { ...issueSummary, category: "storage", scope: { type: "run", project_id: "project-1", run_id: "run-result", output_id: null, material_id: null }, impact: "渲染暂停", preserved_content: "审阅结果已保留", safe_checkpoint: "review", reuse_stages: ["read_source", "transcribe", "analyze", "arbitrate", "review"], redo_stages: ["render"], automatic_attempt_count: 0, total_attempt_count: 1, next_retry_at: null, retry_exhausted: false, diagnostic: { diagnostic_id: "diag-1", summary: "permission denied" }, occurred_at: "2026-08-27T03:00:00Z", updated_at: "2026-08-27T03:00:00Z", resolved_at: null, events: [] };
     const calls = resultMocks({ "/api/runs/run-result/result": { ...RESULT, issues: [issueSummary] }, "/api/issues/issue-1": { ok: true, issue }, "/api/issues/issue-1/recheck": { ok: true, issue, reused: false } });
     route("/projects/project-1/runs/run-result?view=result&issue=issue-1"); render(<App />);
@@ -175,7 +199,7 @@ describe("Venus 1.0 result workbench", () => {
     const calls = resultMocks({ "/api/runs/run-result/result": { ...RESULT, issues: [issueSummary] }, "/api/issues/issue-source": { ok: true, issue }, "/api/issues/issue-source/source": { ok: true, issue, reused: false } });
     route("/projects/project-1/runs/run-result?view=result&issue=issue-source"); render(<App />);
     const drawer = await screen.findByRole("dialog", { name: "问题详情" });
-    fireEvent.click(await within(drawer).findByRole("button", { name: "重新选择原录像" }));
+    fireEvent.click(await within(drawer).findByRole("button", { name: "重新选择原始录像" }));
     await waitFor(() => expect(calls.some(([path]) => path === "/api/issues/issue-source/source")).toBe(true));
     const body = JSON.parse(String(calls.find(([path]) => path === "/api/issues/issue-source/source")?.[1]?.body));
     expect(body.selection_token).toBe("one-time-token");
@@ -187,24 +211,34 @@ describe("Venus 1.0 result workbench", () => {
     const issue = { ...issueSummary, repair_resource_id: "original.review", category: "resource", scope: { type: "run", project_id: "project-1", run_id: "run-result", output_id: null, material_id: null }, impact: "AI 审阅暂停", preserved_content: "候选与转写已保留", safe_checkpoint: "arbitrate", reuse_stages: ["read_source", "transcribe", "analyze", "arbitrate"], redo_stages: ["review", "render"], automatic_attempt_count: 2, total_attempt_count: 2, next_retry_at: null, retry_exhausted: true, diagnostic: { diagnostic_id: "diag-ai", summary: "连接不可用" }, occurred_at: "2026-08-27T03:00:00Z", updated_at: "2026-08-27T03:00:00Z", resolved_at: null, events: [] };
     const ready = { ...issue, status: "ready_to_recover", issue_revision: 6, available_actions: ["continue_run"] };
     const original = { resource_id: "original.review", name: "原审阅资源", kind: "ai", revision: 1, config: { provider: "custom", endpoint: "https://original.test/v1", model: "original-model", purposes: ["review"] }, validation: {}, ready: false, deleted: false, projects: [], has_credential: true };
+    let validationId = ""; let probes = 0;
     const calls = resultMocks({ "/api/runs/run-result/result": { ...RESULT, issues: [issueSummary] }, "/api/issues/issue-ai": { ok: true, issue },
       "/api/resources/original.review/repair-context": { ok: true, repair_context: { revision: 1 } },
       "/api/resources/original.review/revisions/1": { ok: true, resource: original },
-      "/api/resources/validate": { ok: true, validation_id: "original-proof", results: { review: { state: "ready" } } },
+      "/api/resources/validate": (options?: RequestInit) => { validationId = JSON.parse(String(options?.body)).request_id; probes++; return Promise.reject(new Error("lost response")); },
       "/api/resources/original.review/repair": { ok: true, resource: original },
       "/api/issues/issue-ai/recheck": { ok: true, issue: ready, reused: false } });
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, options?: RequestInit) => validationId && String(input) === `/api/resources/operations/${validationId}` ? jsonResponse({ result: { validation_id: "original-proof", results: { review: { state: "ready" } } } }) : originalFetch(input, options)));
     route("/projects/project-1/runs/run-result?view=result&issue=issue-ai"); render(<App />);
-    const drawer = await screen.findByRole("dialog", { name: "问题详情" }); fireEvent.click(await within(drawer).findByRole("button", { name: "修复资源连接" }));
-    const apiKey = await screen.findByLabelText("原账号的新凭据");
+    const drawer = await screen.findByRole("dialog", { name: "问题详情" }); fireEvent.click(await within(drawer).findByRole("button", { name: "修复模型连接" }));
+    const apiKey = await screen.findByLabelText("原账号的新 API Key");
     expect(screen.getByText(/original-model/)).toBeVisible();
     fireEvent.change(apiKey, { target: { value: "new-secret" } });
-    fireEvent.click(screen.getByLabelText("确认仍属于原供应商的同一账号和业务空间"));
-    fireEvent.click(screen.getByRole("button", { name: "验证并修复原凭据" }));
-    await waitFor(() => expect(calls.some(([path]) => path === "/api/issues/issue-ai/recheck")).toBe(true));
+    fireEvent.click(screen.getByLabelText("我确认此 API Key 属于原供应商的同一账号和业务空间"));
+    fireEvent.click(screen.getByRole("button", { name: "检查并更新 API Key" }));
+    await screen.findByRole("button", { name: "继续本次操作" });
+    fireEvent.change(apiKey, { target: { value: "newer-draft-secret" } });
+    fireEvent.click(screen.getByRole("button", { name: "继续本次操作" }));
+    await screen.findByText(/你新输入的 API Key 尚未提交/);
+    expect(apiKey).toHaveValue("newer-draft-secret");
+    expect(probes).toBe(1);
+    expect(within(drawer).getAllByText(/API Key 已更新，请继续检查其他问题/).length).toBeGreaterThan(0);
+    expect(calls.some(([path]) => path === "/api/issues/issue-ai/recheck")).toBe(false);
     const body = JSON.parse(String(calls.find(([path]) => path === "/api/resources/original.review/repair")?.[1]?.body));
     expect(body).toMatchObject({ revision: 1, credential: "new-secret", validation_id: "original-proof", confirm_same_account: true });
     expect(calls.some(([path]) => path.includes('/connection'))).toBe(false);
-    expect(JSON.stringify(localStorage)).not.toContain('new-secret');
+    expect(JSON.stringify(localStorage)).not.toContain('secret');
   });});
 
 
@@ -222,10 +256,78 @@ it('keeps project draft on revision conflict and saves only after comparing the 
   vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, options?: RequestInit) => String(input).startsWith('/api/projects/project-1/operations/') ? jsonResponse({ ok: true, project: null }) : originalFetch(input, options)));
   route('/projects/project-1?dialog=project-settings'); render(<App />);
   fireEvent.change(await screen.findByLabelText('项目名称'), { target: { value: '保留的草稿' } });
-  fireEvent.click(screen.getByRole('button', { name: '保存项目设置' }));
-  await screen.findByText(/项目已在其他位置修改/); expect(screen.getByLabelText('项目名称')).toHaveValue('保留的草稿');
-  expect(updates).toBe(1); fireEvent.click(screen.getByRole('button', { name: '已比较，继续编辑草稿' }));
-  fireEvent.click(screen.getByRole('button', { name: '保存项目设置' }));
+  fireEvent.click(screen.getByRole('button', { name: '保存设置' }));
+  await screen.findByText(/项目设置已被其他操作更新/); expect(screen.getByLabelText('项目名称')).toHaveValue('保留的草稿');
+  expect(updates).toBe(1); fireEvent.click(screen.getByRole('button', { name: '保留我的修改，继续编辑' }));
+  fireEvent.click(screen.getByRole('button', { name: '保存设置' }));
   await waitFor(() => expect(updates).toBe(2)); expect(expected).toBe(2);
   expect(calls.some(([, options]) => options?.method === 'PATCH')).toBe(true);
+});
+
+it('keeps all 21 entered tags and blocks saving until corrected', async () => {
+  const calls = resultMocks({ '/api/outputs/output-1/material': (options?: RequestInit) => {
+    const body = JSON.parse(String(options?.body || '{}'));
+    return jsonResponse({ material: options?.method === 'PATCH' ? { ...material(1), ...body, material_revision: 2 } : material(1) });
+  } });
+  route('/projects/project-1/runs/run-result?view=materials&output=output-1'); render(<App />);
+  const tags = await screen.findByLabelText('标签（用逗号分隔，最多 20 个）');
+  const input = Array.from({ length: 21 }, (_, i) => `标签${i + 1}`).join('，');
+  fireEvent.change(tags, { target: { value: input } });
+  fireEvent.click(screen.getByRole('button', { name: '立即保存' }));
+  expect(tags).toHaveValue(input);
+  expect(calls.some(([, options]) => options?.method === 'PATCH')).toBe(false);
+  expect(screen.getAllByText('标签最多 20 个，请减少后保存。').length).toBeGreaterThan(0);
+  fireEvent.change(tags, { target: { value: ' #直播,直播，新高光' } });
+  fireEvent.click(screen.getByRole('button', { name: '立即保存' }));
+  await screen.findByText('已保存');
+  const body = JSON.parse(String(calls.find(([, options]) => options?.method === 'PATCH')![1]?.body));
+  expect(body.tags).toEqual(['直播', '新高光']);
+});
+
+it('replays the original material snapshot after response loss without discarding newer text', async () => {
+  const writes: Array<Record<string, any>> = [];
+  resultMocks({ '/api/outputs/output-1/material': (options?: RequestInit) => {
+    if (options?.method !== 'PATCH') return jsonResponse({ material: material(1) });
+    const body = JSON.parse(String(options.body)); writes.push(body);
+    if (writes.length === 1) return new Response('lost response', { status: 200 });
+    return jsonResponse({ material: { ...material(1), ...body, material_revision: writes.length } });
+  } });
+  route('/projects/project-1/runs/run-result?view=materials&output=output-1'); render(<App />);
+  const description = await screen.findByLabelText('视频描述');
+  fireEvent.change(description, { target: { value: '原提交' } });
+  fireEvent.click(screen.getByRole('button', { name: '立即保存' }));
+  await screen.findByText('保存结果未确认');
+  fireEvent.change(description, { target: { value: '后续编辑' } });
+  fireEvent.click(screen.getByRole('button', { name: '核对保存结果' }));
+  await screen.findByText(/新的修改仍未提交/);
+  expect(writes).toHaveLength(2); expect(writes[1]).toEqual(writes[0]); expect(description).toHaveValue('后续编辑');
+  fireEvent.click(screen.getByRole('button', { name: '立即保存' }));
+  await screen.findByText('已保存');
+  expect(writes[2]).toMatchObject({ description: '后续编辑', expected_revision: 2 });
+  expect(writes[2].request_id).not.toBe(writes[0].request_id);
+});
+
+it('does not save queued or departing edits after a conflict and shows all server titles', async () => {
+  let rejectSave!: (response: Response) => void; let reads = 0; let writes = 0;
+  const server = { ...material(1), material_revision: 2, titles: [{ title_id: 'title-1', text: '服务端首选' }, { title_id: 'title-2', text: '服务端备选' }] };
+  resultMocks({ '/api/outputs/output-1/material': (options?: RequestInit) => {
+    if (options?.method !== 'PATCH') return jsonResponse({ material: ++reads === 1 ? material(1) : server });
+    writes++;
+    if (writes === 1) return new Promise<Response>(resolve => { rejectSave = resolve; });
+    return jsonResponse({ material: { ...server, description: '排队的新内容', material_revision: 3 } });
+  } });
+  route('/projects/project-1/runs/run-result?view=materials&output=output-1'); const view = render(<App />);
+  const description = await screen.findByLabelText('视频描述');
+  fireEvent.change(description, { target: { value: '先提交' } }); fireEvent.click(screen.getByRole('button', { name: '立即保存' }));
+  await waitFor(() => expect(writes).toBe(1));
+  fireEvent.change(description, { target: { value: '排队的新内容' } });
+  await act(async () => rejectSave(await jsonResponse({ error: { code: 'revision_conflict', message: '已更新' } }, 409)));
+  await screen.findByRole('button', { name: '查看最新内容' });
+  fireEvent.click(screen.getByRole('button', { name: '查看最新内容' }));
+  expect(screen.getByText('标题 1（首选）：服务端首选')).toBeVisible();
+  expect(screen.getByText('标题 2：服务端备选')).toBeVisible();
+  view.unmount(); expect(writes).toBe(1);
+  render(<App />); await screen.findByRole('button', { name: '保留我的修改并保存' });
+  expect(writes).toBe(1); expect(screen.getByLabelText('视频描述')).toHaveValue('排队的新内容');
+  fireEvent.click(screen.getByRole('button', { name: '保留我的修改并保存' })); await screen.findByText('已保存');
 });

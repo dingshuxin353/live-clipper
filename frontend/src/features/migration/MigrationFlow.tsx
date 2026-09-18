@@ -11,16 +11,11 @@ import type { MigrationChoices, MigrationPlan, MigrationReport, MigrationSession
 import { PathField } from "../../workbench-shared";
 
 const STEPS = [
-  ["检查升级", "读取旧版设置"],
-  ["处理差异", "确认升级内容"],
-  ["确认执行", "备份并迁移"],
+  ["检查旧版数据", "检查设置和记录"],
+  ["核对升级内容", "核对项目和历史记录"],
+  ["确认升级", "备份并导入数据"],
   ["完成", "进入项目"],
 ] as const;
-const STAGES = [
-  ["copy", "创建备份"], ["project", "创建项目"], ["history", "导入历史记录"],
-  ["database", "核对结果与数据库"], ["complete", "切换到新工作台"],
-] as const;
-const ACTIVE_STATES = new Set(["backing_up", "migrating", "validating"]);
 
 type Props = { startup: MigrationStartupSummary; onEnter(projectId: string): void };
 type Screen = "check" | "differences" | "confirm" | "executing" | "complete" | "failed" | "diagnostic";
@@ -33,11 +28,14 @@ function entryFor(session: MigrationSession): MigrationStartupSummary["entry"] {
 }
 function bytes(value: number) { if (!Number.isFinite(value) || value <= 0) return "0 B"; const units = ["B", "KB", "MB", "GB", "TB"]; const rank = Math.min(units.length - 1, Math.floor(Math.log(value) / Math.log(1024))); return `${(value / 1024 ** rank).toFixed(rank ? 1 : 0)} ${units[rank]}`; }
 function diagnosticId(error: unknown) { return error instanceof ApiError && error.code !== "unknown_error" ? error.code.replaceAll("_", "-").toUpperCase() : null; }
-function message(error: unknown, fallback = "暂时无法完成此操作") { return error instanceof ApiError && error.code !== "unknown_error" ? error.message : fallback; }
+function message(error: unknown, fallback = "操作未完成，请重试。") { return error instanceof ApiError && error.code !== "unknown_error" ? error.message : fallback; }
+type MigrationRequest = { kind: 'execute'; id: string; plan: MigrationPlan } | { kind: 'retry' | 'acknowledge'; id: string; migrationId: string; revision: number };
+const PENDING_KEY = 'venus.migration.pending';
+function readPending(): MigrationRequest | null { try { return JSON.parse(sessionStorage.getItem(PENDING_KEY) || 'null'); } catch { return null; } }
 function discoveryLabel(source: Pick<MigrationChoices, "trigger_mode" | "schedule_mode" | "daily_time" | "interval_minutes">) {
-  if (source.trigger_mode === "manual") return "仅手动检查新录像";
-  if (source.schedule_mode === "interval") return `每 ${source.interval_minutes ?? 60} 分钟自动检查`;
-  return `每天 ${source.daily_time ?? "22:00"} 自动检查`;
+  if (source.trigger_mode === "manual") return "手动扫描";
+  if (source.schedule_mode === "interval") return source.interval_minutes ? `每 ${source.interval_minutes} 分钟自动扫描` : '扫描间隔未记录';
+  return source.daily_time ? `每天 ${source.daily_time} 自动扫描` : '扫描时间未记录';
 }
 function normalizedChoices(value: MigrationChoices): MigrationChoices {
   if (value.trigger_mode === "manual") return { ...value, schedule_mode: null, daily_time: null, interval_minutes: null };
@@ -47,17 +45,21 @@ function normalizedChoices(value: MigrationChoices): MigrationChoices {
 
 export function MigrationFlow({ startup, onEnter }: Props) {
   const [summary, setSummary] = useState(startup); const [source, setSource] = useState<MigrationSnapshot["source"] | null>(null);
-  const [inspectionPlan, setInspectionPlan] = useState<MigrationPlan | null>(null); const [validatedPlan, setValidatedPlan] = useState<MigrationPlan | null>(null);
-  const [choices, setChoices] = useState<MigrationChoices | null>(null); const [localScreen, setLocalScreen] = useState<Screen>("check");
+  const [inspectionPlan, setInspectionPlan] = useState<MigrationPlan | null>(null); const [validatedPlan, setValidatedPlan] = useState<MigrationPlan | null>(() => { const pending = readPending(); return pending?.kind === "execute" ? pending.plan : null; });
+  const [choices, setChoices] = useState<MigrationChoices | null>(null); const [localScreen, setLocalScreen] = useState<Screen>(readPending()?.kind === "execute" ? "confirm" : "check");
   const [loading, setLoading] = useState(startup.entry !== "completed"); const [busy, setBusy] = useState(""); const [error, setError] = useState("");
   const [errorId, setErrorId] = useState<string | null>(null); const [fields, setFields] = useState<Record<string, string>>({}); const [connection, setConnection] = useState("");
   const [historyLimit, setHistoryLimit] = useState(20); const dialogRef = useRef<HTMLElement>(null); const titleRef = useRef<HTMLHeadingElement>(null);
-  const executeId = useRef(""); const retryId = useRef(""); const acknowledgeId = useRef(""); const loadRevision = useRef(0); const entered = useRef(false);
+  const pending = useRef(readPending()); const [uncertain, setUncertain] = useState(Boolean(pending.current)); const [enterFailed, setEnterFailed] = useState(false);
+  const clearOperation = useCallback(() => { pending.current = null; sessionStorage.removeItem(PENDING_KEY); setUncertain(false); }, []); const loadRevision = useRef(0); const entered = useRef(false);
 
   const adopt = useCallback((next: MigrationSnapshot | MigrationStartupSummary) => {
-    setSummary({ entry: next.entry, session: next.session, report: next.report });
+    const operation = pending.current;
+    if (operation && next.session && (operation.kind === 'execute' || operation.migrationId === next.session.migration_id && (operation.kind === 'acknowledge' ? Boolean(next.report?.acknowledged_at) : next.session.revision > operation.revision || next.session.state !== 'failed_rolled_back'))) clearOperation();
+    const inconsistent = next.entry === 'completed' && (!next.report?.backup_created || next.session?.backup_status !== 'completed');
+    setSummary({ entry: inconsistent ? 'diagnostic' : next.entry, session: next.session, report: next.report });
     if ("source" in next) setSource(next.source);
-  }, []);
+  }, [clearOperation]);
   const refresh = useCallback(async (signal?: AbortSignal) => {
     const revision = ++loadRevision.current; const next = await projectApi.migration(signal);
     if (revision !== loadRevision.current) return next; adopt(next); return next;
@@ -70,31 +72,31 @@ export function MigrationFlow({ startup, onEnter }: Props) {
   useEffect(() => {
     const controller = new AbortController();
     void refresh(controller.signal).catch((caught) => {
-      if (!controller.signal.aborted) { setError(message(caught, "暂时无法读取升级状态")); setErrorId(diagnosticId(caught)); }
+      if (!controller.signal.aborted) { setError(message(caught, "无法读取升级状态，请重试。")); setErrorId(diagnosticId(caught)); }
     }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => { loadRevision.current += 1; controller.abort(); };
   }, [refresh]);
 
-  const active = Boolean(summary.session && ACTIVE_STATES.has(summary.session.state)); const confirming = busy === "acknowledge";
+  const active = summary.entry === "executing"; const confirming = busy === "acknowledge";
   useEffect(() => {
-    if (!active && !confirming) return;
+    if (!active && !confirming && !uncertain) return;
     let stopped = false; let timer = 0; let inFlight = false; let controller: AbortController | null = null;
     const poll = async () => {
       if (stopped || inFlight) return; inFlight = true; controller = new AbortController();
       try {
-        const next = await refresh(controller.signal); const projectId = confirming && next.report?.acknowledged_at ? next.report.project.project_id : null;
+        const entering = confirming || pending.current?.kind === "acknowledge"; const next = await refresh(controller.signal); const projectId = entering && next.report?.acknowledged_at ? next.report.project.project_id : null;
         if (projectId) { stopped = true; enterProject(projectId); return; }
         if (!stopped) setConnection("");
       }
-      catch (caught) { if (!stopped && !(caught instanceof DOMException && caught.name === "AbortError")) setConnection("暂时无法刷新，正在保留上一次进度"); }
+      catch (caught) { if (!stopped && !(caught instanceof DOMException && caught.name === "AbortError")) setConnection("进度刷新失败，当前显示的是上次读取的进度。"); }
       finally { inFlight = false; controller = null; if (!stopped) timer = window.setTimeout(() => void poll(), document.hidden ? 4000 : 1000); }
     };
     const visible = () => { if (!document.hidden) { if (timer) window.clearTimeout(timer); void poll(); } };
     void poll(); document.addEventListener("visibilitychange", visible);
     return () => { stopped = true; if (timer) window.clearTimeout(timer); controller?.abort(); document.removeEventListener("visibilitychange", visible); };
-  }, [active, confirming, enterProject, refresh]);
+  }, [active, confirming, uncertain, enterProject, refresh]);
 
-  const screen: Screen = summary.entry === "completed" ? "complete" : summary.entry === "failed" ? "failed" : summary.entry === "diagnostic" ? "diagnostic" : summary.entry === "executing" ? "executing" : localScreen;
+  const screen: Screen = summary.entry === "completed" ? summary.report?.backup_created && summary.session?.backup_status === "completed" ? "complete" : "diagnostic" : summary.entry === "failed" ? "failed" : summary.entry === "diagnostic" ? "diagnostic" : summary.entry === "executing" ? "executing" : localScreen;
   const step = screen === "check" ? 0 : screen === "differences" ? 1 : ["confirm", "executing", "failed", "diagnostic"].includes(screen) ? 2 : 3;
   useEffect(() => { titleRef.current?.focus(); }, [screen]);
   useEffect(() => {
@@ -110,102 +112,123 @@ export function MigrationFlow({ startup, onEnter }: Props) {
   }, []);
 
   const clearError = () => { setError(""); setErrorId(null); setFields({}); };
-  const backToCheck = useCallback(() => { setInspectionPlan(null); setValidatedPlan(null); setChoices(null); setSummary((current) => ({ ...current, entry: "review" })); setLocalScreen("check"); executeId.current = ""; retryId.current = ""; clearError(); }, []);
+  const backToCheck = useCallback(() => { if (pending.current) return; setInspectionPlan(null); setValidatedPlan(null); setChoices(null); setSummary((current) => ({ ...current, entry: "review" })); setLocalScreen("check");  clearError(); }, []);
   async function inspect() {
     if (busy) return; setBusy("inspect"); clearError();
     try { const result = await projectApi.migrationInspect(); setSource(result.source); setInspectionPlan(result.plan); setChoices(result.plan.choices); setValidatedPlan(null); setLocalScreen("differences"); }
-    catch (caught) { setError(message(caught, "暂时无法检查升级内容")); setErrorId(diagnosticId(caught)); }
+    catch (caught) { setError(message(caught, "检查未完成，请重试。")); setErrorId(diagnosticId(caught)); }
     finally { setBusy(""); setLoading(false); }
   }
   function updateChoice(patch: Partial<MigrationChoices>) {
+    if (pending.current) return;
     setChoices((current) => {
       if (!current) return current; let next = { ...current, ...patch };
       if (patch.trigger_mode === "scheduled" && next.schedule_mode === null) next = { ...next, schedule_mode: "daily", daily_time: "22:00" };
       return normalizedChoices(next);
     });
-    setValidatedPlan(null); executeId.current = ""; clearError();
+    setValidatedPlan(null); clearError();
   }
   async function selectDirectory(field: "source_directory" | "output_directory") {
-    const selected = await window.liveClipperShell?.selectFolder?.(field === "source_directory" ? "选择录像目录" : "选择成片保存位置");
-    if (selected) updateChoice({ [field]: selected });
+    try { if (!window.liveClipperShell?.selectFolder) throw new Error(); const selected = await window.liveClipperShell.selectFolder(field === "source_directory" ? "选择录像文件夹" : "选择成片保存位置"); if (selected) updateChoice({ [field]: selected }); } catch (caught) { setError(message(caught, "无法选择文件夹，请重试。")); }
   }
   async function validate() {
     if (!inspectionPlan || !choices || busy) return; setBusy("validate"); clearError();
     try { const result = await projectApi.migrationValidate(inspectionPlan.source_fingerprint, inspectionPlan.plan_hash, normalizedChoices(choices)); setValidatedPlan(result.plan); setChoices(result.plan.choices); setLocalScreen("confirm"); }
     catch (caught) {
-      if (caught instanceof ApiError && ["migration_source_changed", "migration_plan_changed"].includes(caught.code)) { backToCheck(); setError("旧版数据已变化，请重新检查升级内容"); }
-      else { setError(message(caught, "升级内容未通过检查")); setErrorId(diagnosticId(caught)); if (caught instanceof ApiError) setFields(caught.fields); }
+      if (caught instanceof ApiError && ["migration_source_changed", "migration_plan_changed"].includes(caught.code)) { backToCheck(); setError("旧版数据或升级设置已变化，请重新检查。"); }
+      else { setError(message(caught, "检查未通过，请查看提示并修改。")); setErrorId(diagnosticId(caught)); if (caught instanceof ApiError) setFields(caught.fields); }
     } finally { setBusy(""); }
   }
-  async function recoverUncertain() { try { return await refresh(); } catch { return null; } }
-  async function execute() {
-    if (!validatedPlan || busy) return; setBusy("execute"); clearError(); if (!executeId.current) executeId.current = requestId("migration-execute");
+  async function submit(operation: MigrationRequest) {
+    if (busy) return;
+    const recovering = Boolean(pending.current); pending.current ??= operation;
+    sessionStorage.setItem(PENDING_KEY, JSON.stringify(pending.current)); setBusy(operation.kind); clearError();
+    const original = pending.current; let writing = false;
     try {
-      const failedSession = summary.session?.state === "failed_rolled_back" ? summary.session : null;
-      const result = failedSession
-        ? await projectApi.migrationRetry(executeId.current, failedSession.migration_id, failedSession.revision)
-        : await projectApi.migrationExecute(executeId.current, validatedPlan);
-      setSummary({ entry: entryFor(result.session), session: result.session, report: null });
-    }
-    catch (caught) {
-      if (caught instanceof ApiError && caught.code === "network_error") { const current = await recoverUncertain(); if (current?.session) return; setError("升级请求暂时无法确认，请保持当前窗口并使用同一次请求重试"); }
-      else if (caught instanceof ApiError && ["migration_source_changed", "migration_plan_changed"].includes(caught.code)) { backToCheck(); setError("升级条件已变化，请重新检查"); }
-      else { setError(message(caught, "暂时无法开始升级")); setErrorId(diagnosticId(caught)); }
-    } finally { setBusy(""); }
+      if (recovering) {
+        const current = await refresh();
+        if (!pending.current) { if (original.kind === 'acknowledge' && current.report?.acknowledged_at) enterProject(current.report.project.project_id); return; }
+      }
+      writing = true;
+      const result = original.kind === 'execute' ? await projectApi.migrationExecute(original.id, original.plan)
+        : original.kind === 'retry' ? await projectApi.migrationRetry(original.id, original.migrationId, original.revision)
+        : await projectApi.migrationAcknowledge(original.id, original.migrationId, original.revision);
+      if (original.kind === 'acknowledge') {
+        if (!('project_id' in result) || typeof result.project_id !== 'string' || !result.project_id.trim()) throw new ApiError('无法读取进入项目的结果。', 200, 'invalid_response');
+        clearOperation(); enterProject(result.project_id); return;
+      }
+      clearOperation();
+      adopt({ entry: result.session.state.startsWith("completed_") ? "executing" : entryFor(result.session), session: result.session, report: null });
+      if (result.session.state.startsWith('completed_')) { try { await refresh(); } catch { setConnection('无法读取升级状态，请重试。'); } }
+    } catch (caught) {
+      const unknown = !writing || !(caught instanceof ApiError) || caught.outcomeUnknown;
+      const conflict = caught instanceof ApiError && ['request_id_conflict', 'migration_conflict'].includes(caught.code);
+      if (unknown || conflict) {
+        setUncertain(true);
+        try { const current = await refresh(); if (!pending.current) { if (original.kind === 'acknowledge' && current.report?.acknowledged_at) enterProject(current.report.project.project_id); return; } } catch { /* Retain the submitted identity until an outcome can be read. */ }
+        setError(original.kind === 'acknowledge' ? '暂时无法确认能否进入项目，请点击“重试进入项目”。数据升级已完成。' : original.kind === 'retry' ? '暂时无法确认重试结果。请保留此页面，点击“继续本次操作”。' : '暂时无法确认升级是否已开始。请保留此页面，点击“继续本次操作”重试。');
+      } else {
+        clearOperation(); setError(message(caught)); setErrorId(diagnosticId(caught));
+        if (caught instanceof ApiError) {
+          setFields(Object.fromEntries(Object.entries(caught.fields).map(([field, reason]) => [field, reason === 'required' ? '请补充此项设置。' : reason])));
+          if (original.kind === 'execute' && ['migration_source_changed', 'migration_plan_changed'].includes(caught.code)) { backToCheck(); setError('旧版数据或升级设置已变化，请重新检查。'); }
+          else if (original.kind === 'execute' && Object.keys(caught.fields).length) { setLocalScreen('differences'); }
+          else { try { await refresh(); } catch { setConnection('无法读取升级状态，请重试。'); } }
+        }
+      }
+      if (original.kind === 'acknowledge') setEnterFailed(true);
+    } finally { setBusy(''); }
   }
-  async function retry() {
-    const session = summary.session; if (!session || busy) return; setBusy("retry"); clearError(); if (!retryId.current) retryId.current = requestId("migration-retry");
-    try { const result = await projectApi.migrationRetry(retryId.current, session.migration_id, session.revision); retryId.current = ""; setSummary({ entry: entryFor(result.session), session: result.session, report: summary.report }); }
-    catch (caught) {
-      if (caught instanceof ApiError && ["migration_source_changed", "migration_plan_changed"].includes(caught.code)) { backToCheck(); setError("升级条件已变化。请修复后重新检查，再继续同一次升级。"); }
-      else if (caught instanceof ApiError && caught.code === "network_error") { const current = await recoverUncertain(); if (current?.session && current.session.state !== "failed_rolled_back") return; setError("重试结果暂时无法确认，请使用同一次请求继续"); }
-      else { setError(message(caught, "暂时无法重新尝试升级")); setErrorId(diagnosticId(caught)); }
-    } finally { setBusy(""); }
-  }
-  async function acknowledge() {
-    const session = summary.session; const projectId = summary.report?.project.project_id ?? session?.project_id; if (!session || !projectId || busy) return;
-    setBusy("acknowledge"); clearError(); if (!acknowledgeId.current) acknowledgeId.current = requestId("migration-acknowledge");
-    try { const result = await projectApi.migrationAcknowledge(acknowledgeId.current, session.migration_id, session.revision); enterProject(result.project_id); }
-    catch (caught) {
-      if (caught instanceof ApiError && caught.code === "network_error") { const current = await recoverUncertain(); if (current?.report?.acknowledged_at) { enterProject(current.report.project.project_id); return; } setError("确认结果暂时无法读取，请保持当前窗口后重试"); }
-      else { setError(message(caught, "暂时无法进入项目")); setErrorId(diagnosticId(caught)); }
-    } finally { setBusy(""); }
-  }
-  async function showBackup() { const id = summary.session?.migration_id; if (!id || !window.liveClipperShell?.showBackup) return; setBusy("backup"); clearError(); try { await window.liveClipperShell.showBackup(id); } catch { setError("暂时无法在 Finder 中显示备份"); } finally { setBusy(""); } }
+  function execute() { if (pending.current) return submit(pending.current); if (validatedPlan) return submit({ kind: 'execute', id: requestId('migration-execute'), plan: validatedPlan }); }
+  function retry() { if (pending.current) return submit(pending.current); if (summary.session) return submit({ kind: 'retry', id: requestId('migration-retry'), migrationId: summary.session.migration_id, revision: summary.session.revision }); }
+  function acknowledge() { if (pending.current) return submit(pending.current); if (summary.session) return submit({ kind: 'acknowledge', id: requestId('migration-acknowledge'), migrationId: summary.session.migration_id, revision: summary.session.revision }); }
+  async function showBackup() { const id = summary.session?.migration_id; if (!id || !window.liveClipperShell?.showBackup) return; setBusy('backup'); clearError(); try { const result = await window.liveClipperShell.showBackup(id); if (!result.ok) { setError(result.message || '无法显示升级备份，请稍后重试。'); setErrorId(result.code?.replaceAll('_', '-').toUpperCase() || null); } } catch (caught) { setError(message(caught, '无法在 Finder 中显示备份，请稍后重试。')); } finally { setBusy(''); } }
 
   return <div className="migration-layer"><section className="migration-shell" role="dialog" aria-modal="true" aria-labelledby="migration-title" ref={dialogRef}>
-    <header className="migration-header"><div className="migration-brand"><img src="/static/venus-mark.png" alt="" /><strong>Venus</strong></div><div><span>升级数据</span><small>{active ? "升级正在本机执行，请保持 Venus 运行" : "先备份，再切换；原始录像不会被修改"}</small></div><span className={`migration-safety ${active ? "active" : ""}`}>{active ? "执行中" : "尚未开始"}</span></header>
-    <div className="migration-layout"><aside className="migration-steps" aria-label="升级步骤">{STEPS.map(([label, note], index) => <div className={index === step ? "active" : index < step ? "done" : ""} key={label}><span>{index < step ? <RemixIcon name="check" /> : index + 1}</span><div><strong>{label}</strong><small>{note}</small></div></div>)}<p><strong>数据保护</strong>只读取旧版设置和记录，不会扫描、移动或删除原始录像。</p></aside>
+    <header className="migration-header"><div className="migration-brand"><img src="/static/venus-mark.png" alt="" /><strong>Venus</strong></div><div><span>旧版数据升级</span>{active && <small>正在升级，请保持 Venus 运行。</small>}</div></header>
+    <div className="migration-layout"><aside className="migration-steps" aria-label="升级步骤">{STEPS.map(([label, note], index) => <div className={index === step ? "active" : index < step ? "done" : ""} key={label}><span>{index < step ? <RemixIcon name="check" /> : index + 1}</span><div><strong>{label}</strong><small>{note}</small></div></div>)}<p>升级不会移动或删除原始录像。</p></aside>
       <main className="migration-content">{error && <div className="migration-error" role="alert"><span>{error}</span>{errorId && <small>问题编号：{errorId}</small>}</div>}{connection && <div className="migration-connection" role="status">{connection}</div>}
         {loading && !source && screen === "check" ? <Loading /> : screen === "check" ? <CheckStep source={source} busy={busy} inspect={inspect} quit={() => void window.liveClipperShell?.quitApp?.()} quitAvailable={Boolean(window.liveClipperShell?.quitApp)} error={error} titleRef={titleRef} />
           : screen === "differences" && inspectionPlan && choices ? <DifferenceStep plan={inspectionPlan} choices={choices} fields={fields} busy={busy} historyLimit={historyLimit} update={updateChoice} select={selectDirectory} more={() => setHistoryLimit((value) => value + 20)} back={backToCheck} next={validate} titleRef={titleRef} />
-          : screen === "confirm" && validatedPlan ? <ConfirmStep plan={validatedPlan} busy={busy} back={() => setLocalScreen("differences")} execute={execute} titleRef={titleRef} />
+          : screen === "confirm" && validatedPlan ? <ConfirmStep plan={validatedPlan} uncertain={uncertain} busy={busy} back={() => { if (!pending.current) setLocalScreen("differences"); }} execute={execute} titleRef={titleRef} />
           : screen === "executing" && summary.session ? <ExecutingStep session={summary.session} titleRef={titleRef} />
-          : screen === "complete" && summary.session && summary.report ? <CompleteStep session={summary.session} report={summary.report} busy={busy} enter={acknowledge} backup={showBackup} canShowBackup={Boolean(window.liveClipperShell?.showBackup)} titleRef={titleRef} />
-          : screen === "failed" && summary.session ? <FailedStep session={summary.session} busy={busy} retry={retry} quit={() => void window.liveClipperShell?.quitApp?.()} quitAvailable={Boolean(window.liveClipperShell?.quitApp)} titleRef={titleRef} />
-          : <Diagnostic titleRef={titleRef} code={summary.session?.failure?.code ?? errorId} />}
+          : screen === "complete" && summary.session && summary.report ? <CompleteStep retryEnter={enterFailed || uncertain} session={summary.session} report={summary.report} busy={busy} enter={acknowledge} backup={showBackup} canShowBackup={Boolean(window.liveClipperShell?.showBackup)} titleRef={titleRef} />
+          : screen === "failed" && summary.session ? <FailedStep readState={() => { void refresh().catch(caught => setError(message(caught, "无法读取升级状态，请重试。"))); }} uncertain={uncertain} session={summary.session} busy={busy} retry={retry} quit={() => void window.liveClipperShell?.quitApp?.()} quitAvailable={Boolean(window.liveClipperShell?.quitApp)} titleRef={titleRef} />
+          : <Diagnostic titleRef={titleRef} code={summary.session?.failure?.code ?? errorId ?? (summary.entry === "diagnostic" ? "migration_integrity_failed" : null)} />}
       </main></div>
   </section></div>;
 }
 
-function Loading() { return <div className="migration-loading" role="status"><span className="migration-spinner" /><strong>正在读取升级状态</strong><p>正在确认旧版数据和已完成的检查…</p></div>; }
+function Loading() { return <div className="migration-loading" role="status"><span className="migration-spinner" /><strong>正在读取升级进度…</strong></div>; }
 function CheckStep({ source, busy, inspect, quit, quitAvailable, error, titleRef }: { source: MigrationSnapshot["source"] | null; busy: string; inspect(): void; quit(): void; quitAvailable: boolean; error: string; titleRef: RefObject<HTMLHeadingElement | null> }) {
-  return <div className="migration-step"><div className="migration-scroll"><span className="migration-eyebrow">开始之前</span><h1 id="migration-title" ref={titleRef} tabIndex={-1}>检查现有内容，准备升级</h1><p>Venus 检测到旧版设置和工作记录。检查过程只读，不会创建备份、项目或修改现有数据。</p><section className="migration-source-card"><div><span>已检测到</span><strong>{source ? `${source.display_summary.metadata_file_count} 组设置与记录文件` : "旧版数据"}</strong><small>{source?.display_summary.history_count !== undefined ? `${source.display_summary.history_count} 条历史记录等待检查` : "检查后会显示历史处置结论"}</small></div><span className="status-pill ready">只读检查</span></section><details className="migration-details"><summary>哪些内容会被读取</summary><p>只读取 Venus 旧版配置、运行记录和调度状态，用于准备升级内容。不会读取媒体正文，不会把本机信息发送到外部服务。</p></details>{error && <p className="migration-safe-note">检查未完成；尚未创建备份或修改现有数据。</p>}</div><footer className="migration-footer"><button className="button" disabled={!quitAvailable || Boolean(busy)} onClick={quit}>退出 Venus</button><span /><small>检查完成后，你可以先核对全部内容再决定是否升级。</small><button className="button primary" disabled={Boolean(busy)} onClick={inspect}>{busy === "inspect" ? "检查中…" : error ? "重新检查" : "检查升级内容"}</button></footer></div>;
+  return <div className="migration-step"><div className="migration-scroll"><h1 id="migration-title" ref={titleRef} tabIndex={-1}>检查旧版数据</h1><p>发现旧版设置和处理记录。先检查这些内容，再由你确认是否升级。检查不会修改旧版数据。</p><section className="migration-source-card"><div><span>发现的旧版数据</span><strong>{source ? `${source.display_summary.metadata_file_count} 个设置和记录文件` : "旧版数据"}</strong><small>{source?.display_summary.history_count !== undefined ? `${source.display_summary.history_count} 条历史记录` : "检查后可查看历史记录的处理方式。"}</small></div></section><details className="migration-details"><summary>检查哪些内容？</summary><p>检查旧版设置、处理记录和定时扫描设置，不读取录像内容。本次检查在本机完成，不向外部服务发送这些数据。</p></details>{error && <p className="migration-safe-note">本次检查未完成，未修改旧版数据。</p>}</div><footer className="migration-footer"><button className="button" disabled={!quitAvailable || Boolean(busy)} onClick={quit}>退出 Venus</button><span /><button className="button primary" disabled={Boolean(busy)} onClick={inspect}>{busy === "inspect" ? "检查中…" : error ? "重新检查" : "开始检查"}</button></footer></div>;
 }
 function DifferenceStep({ plan, choices, fields, busy, historyLimit, update, select, more, back, next, titleRef }: { plan: MigrationPlan; choices: MigrationChoices; fields: Record<string, string>; busy: string; historyLimit: number; update(value: Partial<MigrationChoices>): void; select(field: "source_directory" | "output_directory"): void; more(): void; back(): void; next(): void; titleRef: RefObject<HTMLHeadingElement | null> }) {
   const [historyOpen, setHistoryOpen] = useState(false); const required = new Set(plan.required_choices); const counts = plan.history.counts; const total = counts.importable + counts.compatibility + counts.quarantined;
   const incomplete = [...required].some((field) => field === "project_name" ? !choices.project_name.trim() : field === "source_directory" ? !choices.source_directory : field === "output_directory" ? !choices.output_directory : false);
-  return <div className="migration-step"><div className="migration-scroll"><span className="migration-eyebrow">升级内容</span><h1 id="migration-title" ref={titleRef} tabIndex={-1}>{required.size ? "处理必要差异" : "升级内容已准备好"}</h1><p>{required.size ? "只需确认下面标出的差异，其余内容将使用当前默认设置。" : "请核对默认项目、处理能力、历史记录和备份空间。"}</p>
-    <div className="migration-grid"><PlanCard title="默认项目" state={plan.readiness.source_status === "ready" && plan.readiness.output_status === "ready" ? "已准备" : "需确认"}><Fact label="项目名称" value={choices.project_name} /><Fact label="录像目录" value={choices.source_directory} /><Fact label="成片位置" value={choices.output_directory} />{required.has("project_name") && <TextInput label="项目名称" onChange={(value) => update({ project_name: value })} status={fields.project_name ? { type: "error", message: fields.project_name } : undefined} value={choices.project_name} width="100%" />}{required.has("source_directory") && <PathField choose={() => select("source_directory")} error={fields.source_directory} isReadOnly label="录像目录" value={choices.source_directory} />}{required.has("output_directory") && <PathField choose={() => select("output_directory")} error={fields.output_directory} isReadOnly label="成片位置" value={choices.output_directory} />}</PlanCard>
-      <PlanCard title="处理能力" state={plan.readiness.resource_problems.length ? "迁移后处理" : "已准备"}>{Object.entries(plan.resources).map(([id, resource]) => <div className="migration-resource" key={id}><div><strong>{resource.label}</strong><small>{resource.model || "尚未配置模型"} · {resource.credential_present ? "凭据已保存" : "缺少凭据"}</small></div><span className={`status-pill ${resource.status === "ready" ? "ready" : "attention"}`}>{resource.status === "ready" ? "可用" : "待修复"}</span></div>)}{plan.readiness.resource_problems.length > 0 && <p className="migration-card-note">数据可以迁移；相关项目会保持未启用，迁移后在项目中修复。</p>}</PlanCard>
-      <PlanCard title="历史记录" state={`${total} 条`}><div className="migration-counts"><Fact label="正常导入" value={String(counts.importable)} /><Fact label="继续处理" value={String(counts.compatibility)} /><Fact label="隔离" value={String(counts.quarantined)} /><Fact label="已有成片" value={String(counts.safe_result)} /></div><details className="migration-details" open={historyOpen}><summary aria-expanded={historyOpen} onClick={(event) => { event.preventDefault(); setHistoryOpen((value) => !value); }}>查看历史明细</summary><div className="migration-history">{plan.history.entries.slice(0, historyLimit).map((item) => <div key={item.display_identity}><span>{item.display_identity}</span><small>{item.reason_label}</small></div>)}{historyLimit < plan.history.entries.length && <button className="text-button" onClick={more}>显示更多</button>}</div></details></PlanCard>
-      <PlanCard title="发现新录像" state={required.has("trigger_mode") ? "需确认" : "已继承"}><p className="migration-card-value">{discoveryLabel(choices)}</p>{required.has("trigger_mode") && <fieldset className="migration-choice"><legend>迁移后如何发现新录像</legend><label><input type="radio" checked={choices.trigger_mode === "manual"} onChange={() => update({ trigger_mode: "manual" })} />仅手动检查</label><label><input type="radio" checked={choices.trigger_mode === "scheduled"} onChange={() => update({ trigger_mode: "scheduled" })} />定时自动检查</label>{choices.trigger_mode === "scheduled" && <FormLayout className="form-subgroup form-surface"><FormLayout className="form-pair"><Selector label="定时方式" onChange={(value) => update({ schedule_mode: value as "daily" | "interval" })} options={[{ value: "daily", label: "每天固定时间" }, { value: "interval", label: "固定间隔" }]} value={choices.schedule_mode || "daily"} width="100%" />{choices.schedule_mode === "interval" ? <Selector label="检查间隔" onChange={(value) => update({ interval_minutes: Number(value) })} options={[{ value: "30", label: "30 分钟" }, { value: "60", label: "1 小时" }, { value: "180", label: "3 小时" }, { value: "360", label: "6 小时" }, { value: "720", label: "12 小时" }]} value={String(choices.interval_minutes ?? 60)} width="100%" /> : <Field inputID="migration-daily-time" label="每天时间" width="100%"><input className="form-control" id="migration-daily-time" type="time" value={choices.daily_time ?? "22:00"} onChange={(event) => update({ daily_time: event.target.value })} /></Field>}</FormLayout></FormLayout>}</fieldset>}</PlanCard>
-    </div><section className={`migration-backup ${plan.backup.space_status}`}><div><strong>升级前将创建本机备份</strong><p>位置：{plan.backup.target_display} · 预计需要 {bytes(plan.backup.required_bytes)} · 当前可用 {bytes(plan.backup.available_bytes)}</p></div><span>{plan.backup.space_status === "ready" ? "空间充足" : "空间不足"}</span></section></div><footer className="migration-footer"><button className="button" disabled={Boolean(busy)} onClick={back}>返回</button><span /><small>下一步会重新校验当前选择，不会立即执行。</small><button className="button primary" disabled={Boolean(busy) || incomplete || plan.backup.space_status !== "ready"} onClick={next}>{busy === "validate" ? "校验中…" : "继续确认"}</button></footer></div>;
+  return <div className="migration-step"><div className="migration-scroll"><h1 id="migration-title" ref={titleRef} tabIndex={-1}>{required.size ? "核对升级内容" : "核对升级内容"}</h1><p>{required.size ? "请补充标出的设置，并核对项目、模型和历史记录的处理方式。" : "请核对项目、模型和历史记录的处理方式。"}</p>
+    <div className="migration-grid"><PlanCard title="升级后的项目" state={plan.readiness.source_status === "ready" && plan.readiness.output_status === "ready" ? "" : "待补充"}><Fact label="项目名称" value={choices.project_name} /><Fact label="录像文件夹" value={choices.source_directory} /><Fact label="成片保存位置" value={choices.output_directory} />{required.has("project_name") && <TextInput label="项目名称" onChange={(value) => update({ project_name: value })} status={fields.project_name ? { type: "error", message: fields.project_name } : undefined} value={choices.project_name} width="100%" />}{required.has("source_directory") && <PathField choose={() => select("source_directory")} error={fields.source_directory} isReadOnly label="录像文件夹" value={choices.source_directory} />}{required.has("output_directory") && <PathField choose={() => select("output_directory")} error={fields.output_directory} isReadOnly label="成片保存位置" value={choices.output_directory} />}</PlanCard>
+      <PlanCard title="模型设置" state="升级后检查">{Object.entries(plan.resources).map(([id, resource]) => <div className="migration-resource" key={id}><div><strong>{resource.label}</strong><small>{resource.model || '旧设置中未找到模型'} · {resource.connection_type === 'local' ? '本机识别' : resource.credential_present ? '旧设置中已填写 API Key' : '旧设置中未找到 API Key'}</small></div><span className="status-pill attention">{resource.status === 'ready' ? '待检查' : '待补充'}</span></div>)}<p className="migration-card-note">升级后项目会保持未启用。请先检查模型和项目设置，再启用项目。</p></PlanCard>
+      <PlanCard title="历史记录" state={`${total} 条`}><div className="migration-counts"><Fact label="可导入记录" value={String(counts.importable)} /><Fact label="旧版待处理记录" value={String(counts.compatibility)} /><Fact label="不导入项目" value={String(counts.quarantined)} /><Fact label="待核验成片" value={String(counts.safe_result)} /></div>{counts.quarantined > 0 && <p>不导入项目的记录将保留在升级备份中。</p>}<details className="migration-details" open={historyOpen}><summary aria-expanded={historyOpen} onClick={(event) => { event.preventDefault(); setHistoryOpen((value) => !value); }}>查看记录明细</summary><div className="migration-history">{plan.history.entries.slice(0, historyLimit).map((item) => <div key={item.display_identity}><span>{item.display_identity}</span><small>{item.reason_label}</small></div>)}{historyLimit < plan.history.entries.length && <button className="text-button" onClick={more}>显示更多</button>}</div></details></PlanCard>
+      <PlanCard title="扫描方式" state={required.has("trigger_mode") ? "待补充" : ""}><p className="migration-card-value">{discoveryLabel(choices)}{choices.trigger_mode === "scheduled" ? `（${plan.project.timezone}）` : ""}</p>{required.has("trigger_mode") && <fieldset className="migration-choice"><legend>升级后如何扫描新录像？</legend><label><input type="radio" checked={choices.trigger_mode === "manual"} onChange={() => update({ trigger_mode: "manual" })} />手动扫描</label><label><input type="radio" checked={choices.trigger_mode === "scheduled"} onChange={() => update({ trigger_mode: "scheduled" })} />定时扫描（也可手动）</label>{choices.trigger_mode === "scheduled" && <FormLayout className="form-subgroup form-surface"><FormLayout className="form-pair"><Selector label="定时方式" onChange={(value) => update({ schedule_mode: value as "daily" | "interval" })} options={[{ value: "daily", label: "每天固定时间" }, { value: "interval", label: "固定间隔" }]} value={choices.schedule_mode || "daily"} width="100%" />{choices.schedule_mode === "interval" ? <Selector label="扫描间隔" onChange={(value) => update({ interval_minutes: Number(value) })} options={[{ value: "30", label: "30 分钟" }, { value: "60", label: "1 小时" }, { value: "180", label: "3 小时" }, { value: "360", label: "6 小时" }, { value: "720", label: "12 小时" }]} value={String(choices.interval_minutes ?? 60)} width="100%" /> : <Field inputID="migration-daily-time" label="扫描时间" width="100%"><input className="form-control" id="migration-daily-time" type="time" value={choices.daily_time ?? "22:00"} onChange={(event) => update({ daily_time: event.target.value })} /></Field>}</FormLayout></FormLayout>}</fieldset>}</PlanCard>
+    </div><section className={`migration-backup ${plan.backup.space_status}`}><div><strong>升级前会备份旧版设置和记录</strong><p>备份文件夹：{plan.backup.target_display} · 所需可用空间： {bytes(plan.backup.required_bytes)} · 当前可用 {bytes(plan.backup.available_bytes)}</p></div><span>{plan.backup.space_status === "ready" ? "备份空间充足" : "备份空间不足，请释放磁盘空间后返回重新检查。"}</span></section></div><footer className="migration-footer"><button className="button" disabled={Boolean(busy)} onClick={back}>上一步</button><span /><small>下一步核对最终设置，确认后才会开始升级。</small><button className="button primary" disabled={Boolean(busy) || incomplete || plan.backup.space_status !== "ready"} onClick={next}>{busy === "validate" ? "检查中…" : "下一步"}</button></footer></div>;
 }
-function ConfirmStep({ plan, busy, back, execute, titleRef }: { plan: MigrationPlan; busy: string; back(): void; execute(): void; titleRef: RefObject<HTMLHeadingElement | null> }) { const counts = plan.history.counts; return <div className="migration-step"><div className="migration-scroll"><span className="migration-eyebrow">最后确认</span><h1 id="migration-title" ref={titleRef} tabIndex={-1}>确认升级内容</h1><p>开始后 Venus 会先完成并核验备份，再迁移项目、历史记录和结果。</p><dl className="migration-review"><Fact label="项目" value={plan.project.name} /><Fact label="录像目录" value={plan.project.source_directory} /><Fact label="成片位置" value={plan.project.output_directory} /><Fact label="发现新录像" value={discoveryLabel(plan.choices)} /><Fact label="历史记录" value={`${counts.importable + counts.compatibility + counts.quarantined} 条，${counts.quarantined} 条隔离`} /><Fact label="迁移后状态" value={plan.readiness.resource_problems.length ? `数据可用，${plan.readiness.resource_problems.length} 项需修复` : "项目可直接使用"} /><Fact label="备份" value={`${plan.backup.target_display}（${bytes(plan.backup.required_bytes)}）`} /></dl><div className="migration-confirm-note"><strong>原始录像不会被移动或删除</strong><p>执行失败时不会创建不完整的项目；修复问题后可以继续升级。</p></div></div><footer className="migration-footer"><button className="button" disabled={Boolean(busy)} onClick={back}>返回修改</button><span /><small>开始后，在得到明确结果前不可退出或返回。</small><button className="button primary" disabled={Boolean(busy)} onClick={execute}>{busy === "execute" ? "正在提交…" : "开始升级"}</button></footer></div>; }
-function ExecutingStep({ session, titleRef }: { session: MigrationSession; titleRef: RefObject<HTMLHeadingElement | null> }) { const index = Math.max(0, STAGES.findIndex(([id]) => id === session.stage)); return <div className="migration-step"><div className="migration-scroll migration-executing"><span className="migration-eyebrow">正在升级</span><h1 id="migration-title" ref={titleRef} tabIndex={-1}>请保持 Venus 运行</h1><p>完成后会自动显示升级结果。</p><div className="migration-stage-list" aria-live="polite">{STAGES.map(([, label], position) => <div className={position < index ? "done" : position === index ? "active" : ""} key={label}><span>{position < index ? <RemixIcon name="check" /> : position === index ? "•" : position + 1}</span><div><strong>{label}</strong>{position === index && <small>正在处理</small>}{session.stage === "history" && position === index && session.total_history_count !== null && <small>{session.processed_history_count ?? 0} / {session.total_history_count} 条</small>}</div></div>)}</div><p className="migration-lock-note">升级完成或恢复原数据前，导航、退出和返回操作已锁定。</p></div></div>; }
-function CompleteStep({ session, report, busy, enter, backup, canShowBackup, titleRef }: { session: MigrationSession; report: MigrationReport; busy: string; enter(): void; backup(): void; canShowBackup: boolean; titleRef: RefObject<HTMLHeadingElement | null> }) { const attention = session.state === "completed_attention"; return <div className="migration-step"><div className="migration-scroll migration-complete"><span className="migration-complete-mark"><RemixIcon name="check" /></span><span className="migration-eyebrow">升级完成</span><h1 id="migration-title" ref={titleRef} tabIndex={-1}>{attention ? "数据已迁移，还有问题需要处理" : "项目已经准备好了"}</h1><p>{attention ? "项目当前不会处理新录像。进入同一项目后，根据问题提示完成修复即可。" : "旧版设置、历史记录和已有成片已迁移到项目中。"}</p><dl className="migration-review"><Fact label="项目" value={report.project.name} /><Fact label="发现新录像" value={discoveryLabel(report.discovery)} /><Fact label="历史记录" value={`${report.history_total} 条（导入 ${report.imported}、继续处理 ${report.compatibility}、隔离 ${report.quarantined}）`} /><Fact label="已有成片" value={`${report.safe_results} 个`} /><Fact label="本机备份" value={report.backup_created ? "已创建并核验" : "未创建"} /><Fact label="项目状态" value={attention ? `${report.blocker_count} 项条件需要修复` : "可以开始使用"} /></dl>{attention && <div className="migration-attention"><strong>数据迁移已经完成</strong><p>历史与备份均已保留；在修复完成前不会自动扫描或创建新的处理任务。</p></div>}</div><footer className="migration-footer"><button className="button" disabled={!canShowBackup || Boolean(busy)} onClick={backup}>{busy === "backup" ? "正在打开…" : "在 Finder 中显示备份"}</button><span /><small>确认后将进入项目。</small><button className="button primary" disabled={Boolean(busy)} onClick={enter}>{busy === "acknowledge" ? "正在确认…" : attention ? "查看并修复" : "进入项目"}</button></footer></div>; }
-function FailedStep({ session, busy, retry, quit, quitAvailable, titleRef }: { session: MigrationSession; busy: string; retry(): void; quit(): void; quitAvailable: boolean; titleRef: RefObject<HTMLHeadingElement | null> }) { return <div className="migration-step"><div className="migration-scroll"><span className="migration-eyebrow">升级已停止</span><h1 id="migration-title" ref={titleRef} tabIndex={-1}>升级没有提交，可以重新尝试</h1><p>{session.failure?.summary || "旧版数据保持不变，请检查条件后重试。"}</p><div className="migration-failure-facts"><Fact label="旧版数据" value="没有修改" /><Fact label="默认项目" value="未创建" /><Fact label="备份" value={session.backup_status === "completed" ? "已完成并可复用" : "未完成"} /><Fact label="下一步" value="修复问题后可以继续升级" /></div>{session.failure?.code && <small className="migration-diagnostic-id">问题编号：{session.failure.code.replaceAll("_", "-").toUpperCase()}</small>}</div><footer className="migration-footer"><button className="button" disabled={!quitAvailable || Boolean(busy)} onClick={quit}>退出 Venus</button><span /><small>重试会复用已核验的备份，不会自动重复写入。</small><button className="button primary" disabled={Boolean(busy)} onClick={retry}>{busy === "retry" ? "正在重试…" : "重新尝试升级"}</button></footer></div>; }
-function Diagnostic({ titleRef, code }: { titleRef: RefObject<HTMLHeadingElement | null>; code: string | null | undefined }) { return <div className="migration-step"><div className="migration-scroll migration-diagnostic"><span className="migration-eyebrow">升级已停止</span><h1 id="migration-title" ref={titleRef} tabIndex={-1}>数据状态需要检查</h1><p>现有数据没有修改。请记录下面的问题编号并联系支持。</p>{code && <small>问题编号：{code.replaceAll("_", "-").toUpperCase()}</small>}<details className="migration-details"><summary>查看诊断说明</summary><p>请记录问题编号并联系支持。诊断信息不会包含完整路径、旧记录正文或凭据。</p></details></div></div>; }
-function PlanCard({ title, state, children }: { title: string; state: string; children: ReactNode }) { return <section className="migration-plan-card"><header><h2>{title}</h2><span>{state}</span></header><div>{children}</div></section>; }
+function ConfirmStep({ plan, busy, uncertain, back, execute, titleRef }: { plan: MigrationPlan; busy: string; uncertain: boolean; back(): void; execute(): void; titleRef: RefObject<HTMLHeadingElement | null> }) {
+  const counts = plan.history.counts;
+  return <div className="migration-step"><div className="migration-scroll"><h1 id="migration-title" ref={titleRef} tabIndex={-1}>确认升级</h1><p>Venus 会先备份并检查旧版设置和记录，再创建项目、导入可导入的历史记录，并核验关联成片。</p><dl className="migration-review"><Fact label="项目名称" value={plan.project.name} /><Fact label="录像文件夹" value={plan.project.source_directory} /><Fact label="成片保存位置" value={plan.project.output_directory} /><Fact label="扫描方式" value={discoveryLabel(plan.choices) + (plan.choices.trigger_mode === 'scheduled' ? `（${plan.project.timezone}）` : '')} /><Fact label="历史记录" value={`共 ${counts.importable + counts.compatibility + counts.quarantined} 条${counts.quarantined ? `，其中 ${counts.quarantined} 条不导入项目，将保留在升级备份中。` : ''}`} /><Fact label="升级后项目状态" value="未启用，需检查模型和项目设置。" /><Fact label="升级备份" value={`文件夹：${plan.backup.target_display} · 所需可用空间：${bytes(plan.backup.required_bytes)}`} /></dl><div className="migration-confirm-note"><strong>原始录像不会被移动或删除</strong></div></div><footer className="migration-footer"><button className="button" disabled={Boolean(busy) || uncertain} onClick={back}>返回修改</button><span /><small>开始后请保持 Venus 运行，等待升级结果。</small><button className="button primary" disabled={Boolean(busy)} onClick={execute}>{busy === 'execute' ? '正在提交…' : uncertain ? '继续本次操作' : '开始升级'}</button></footer></div>;
+}
+function ExecutingStep({ session, titleRef }: { session: MigrationSession; titleRef: RefObject<HTMLHeadingElement | null> }) {
+  const backedUp = session.backup_status === 'completed'; const importing = backedUp && ['project', 'history', 'database'].includes(session.stage || '');
+  return <div className="migration-step"><div className="migration-scroll migration-executing"><h1 id="migration-title" ref={titleRef} tabIndex={-1}>{session.state.startsWith("completed_") ? "正在读取升级结果" : "正在升级"}</h1><p>请保持 Venus 运行。完成后会显示升级结果。</p><div className="migration-stage-list" aria-live="polite"><div className={backedUp ? 'done' : session.stage === 'copy' ? 'active' : ''}><span>{backedUp ? <RemixIcon name="check" /> : '1'}</span><div><strong>备份旧版数据</strong>{!backedUp && session.stage === 'copy' && <small>进行中</small>}</div></div><div className={importing ? 'active' : ''}><span>2</span><div><strong>导入旧版数据</strong>{importing && <small>进行中</small>}</div></div></div></div></div>;
+}
+function CompleteStep({ session, report, busy, retryEnter, enter, backup, canShowBackup, titleRef }: { session: MigrationSession; report: MigrationReport; busy: string; retryEnter: boolean; enter(): void; backup(): void; canShowBackup: boolean; titleRef: RefObject<HTMLHeadingElement | null> }) {
+  const attention = session.state === 'completed_attention';
+  return <div className="migration-step"><div className="migration-scroll migration-complete"><span className="migration-complete-mark"><RemixIcon name="check" /></span><h1 id="migration-title" ref={titleRef} tabIndex={-1}>数据升级完成</h1><p>{attention ? '项目尚未启用。请进入项目，查看待处理问题，检查模型和项目设置后再启用。' : '项目已创建，导入结果如下。'}</p><dl className="migration-review"><Fact label="项目名称" value={report.project.name} /><Fact label="扫描方式" value={discoveryLabel(report.discovery) + (report.discovery.trigger_mode === "scheduled" && report.discovery.timezone ? `（${report.discovery.timezone}）` : "")} /><Fact label="历史记录" value={`共 ${report.history_total} 条，已导入 ${report.imported + report.compatibility} 条。${report.compatibility ? `其中 ${report.compatibility} 条为旧版待处理记录。` : ''}${report.quarantined ? `另有 ${report.quarantined} 条未导入项目，已保留在升级备份中。` : ''}`} /><Fact label="已导入成片" value={`${report.safe_results} 个`} /><Fact label="升级备份" value="已备份并检查" /><Fact label="项目状态" value={attention ? `未启用，${report.blocker_count} 个问题待处理。` : '升级时检查通过。'} /></dl></div><footer className="migration-footer"><button className="button" disabled={!canShowBackup || Boolean(busy)} onClick={backup}>{busy === 'backup' ? '正在显示…' : '在 Finder 中显示备份'}</button><span /><button className="button primary" disabled={Boolean(busy)} onClick={enter}>{busy === 'acknowledge' ? '正在进入…' : retryEnter ? '重试进入项目' : '进入项目'}</button></footer></div>;
+}
+function FailedStep({ session, busy, uncertain, retry, readState, quit, quitAvailable, titleRef }: { session: MigrationSession; busy: string; uncertain: boolean; retry(): void; readState(): void; quit(): void; quitAvailable: boolean; titleRef: RefObject<HTMLHeadingElement | null> }) {
+  const incompatible = ['migration_source_changed', 'migration_plan_changed'].includes(session.failure?.code || '');
+  return <div className="migration-step"><div className="migration-scroll"><h1 id="migration-title" ref={titleRef} tabIndex={-1}>{uncertain ? '正在核对升级结果' : '升级未完成'}</h1><p>{uncertain ? '暂时无法确认本次操作结果，请保持 Venus 运行。' : session.failure?.summary || '本次升级未修改旧版数据。请查看问题提示后重试。'}</p>{!uncertain && <div className="migration-failure-facts"><Fact label="旧版数据" value="本次升级未修改" /><Fact label="升级后的项目" value="未创建" /><Fact label="升级备份" value={session.backup_status === 'completed' ? '已完成，重试时会重新检查。' : '尚未完成'} /></div>}{session.failure?.code && <small className="migration-diagnostic-id">问题编号：{session.failure.code.replaceAll('_', '-').toUpperCase()}</small>}</div><footer className="migration-footer"><button className="button" disabled={!quitAvailable || Boolean(busy) || uncertain} onClick={quit}>退出 Venus</button><span />{!uncertain && <small>已有备份会先重新检查，通过后继续使用。</small>}<button className="button primary" disabled={Boolean(busy)} onClick={incompatible && !uncertain ? readState : retry}>{busy === 'retry' ? '正在重试…' : uncertain ? '继续本次操作' : incompatible ? '重新读取状态' : '重试升级'}</button></footer></div>;
+}
+function Diagnostic({ titleRef, code }: { titleRef: RefObject<HTMLHeadingElement | null>; code: string | null | undefined }) { return <div className="migration-step"><div className="migration-scroll migration-diagnostic"><h1 id="migration-title" ref={titleRef} tabIndex={-1}>暂时无法确认数据状态</h1><p>{code ? '请记录问题编号并联系开发者排查。' : '暂未取得问题编号，请记录当前页面并联系开发者排查。'}</p>{code && <small>问题编号：{code.replaceAll('_', '-').toUpperCase()}</small>}</div></div>; }
+function PlanCard({ title, state, children }: { title: string; state: string; children: ReactNode }) { return <section className="migration-plan-card"><header><h2>{title}</h2>{state && <span>{state}</span>}</header><div>{children}</div></section>; }
 function Fact({ label, value }: { label: string; value: string }) { return <div className="migration-fact"><dt>{label}</dt><dd title={value}>{value}</dd></div>; }

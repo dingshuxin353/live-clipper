@@ -26,7 +26,7 @@ def _strict(body: dict[str, Any], allowed: set[str], required: set[str] = frozen
     if unknown or missing:
         fields = {field: "未知字段" for field in sorted(unknown)}
         fields.update({field: "必填字段" for field in sorted(missing)})
-        raise ProjectError("validation_failed", "请求字段不完整或包含未知字段", status=422, fields=fields)
+        raise ProjectError("validation_failed", "操作未完成：提交的信息不完整或包含不支持的内容。", status=422, fields=fields)
 
 
 def _hash(payload: dict[str, Any]) -> str:
@@ -109,7 +109,7 @@ class ProjectAPI:
                 }
             if method == "POST" and parts == ["api", "projects"]:
                 if self.repository.get_data_mode() != "projects":
-                    raise ProjectError("migration_required", "旧版数据尚未完成迁移确认", status=409)
+                    raise ProjectError("migration_required", "请先完成旧数据迁移，再继续操作", status=409)
                 _strict(payload, {"request_id", "project", "activation_state"}, {"request_id", "project", "activation_state"})
                 project_payload = self._project_payload(payload["project"])
                 project = self.manager.create_project(
@@ -141,10 +141,10 @@ class ProjectAPI:
                 through = int(payload["through_event_id"])
                 maximum = self.repository.max_workspace_event_id()
                 if through > maximum:
-                    raise ProjectError("validation_failed", "查看锚点超过服务器事件上界", status=422)
+                    raise ProjectError("validation_failed", "无法标记为已读，请刷新后重试", status=422)
                 current_view = self.repository.get_workspace_view("studio")
                 if current_view is not None and through < int(current_view["last_seen_event_id"]):
-                    raise ProjectError("validation_failed", "查看锚点不能倒退", status=422)
+                    raise ProjectError("validation_failed", "查看进度已更新，请刷新后重试", status=422)
                 self.repository.set_workspace_view("studio", through)
                 return 200, {"ok": True, "last_seen_event_id": self.repository.get_workspace_view("studio")["last_seen_event_id"]}
             if len(parts) >= 3 and parts[:2] == ["api", "projects"]:
@@ -183,10 +183,10 @@ class ProjectAPI:
                     existing = self.repository.get_idempotency_key(f"project.scan:{project_id}", request_id)
                     if existing is not None:
                         if existing["request_hash"] != _hash(request_payload):
-                            raise ProjectError("request_id_conflict", "同一 request_id 的请求内容不一致")
+                            raise ProjectError("request_id_conflict", "本次操作与上次提交的内容不同，请重新打开页面后再试")
                         scan = self.repository.get_scan_event(str(existing["object_id"]))
                         if scan is None:
-                            raise ProjectError("data_integrity_error", "幂等记录指向不存在的扫描", status=500)
+                            raise ProjectError("data_integrity_error", "找不到上次扫描的记录，请联系支持排查", status=500)
                         return 200, {"ok": True, "scan": asdict(scan), "reused": True}
                     report = scan_project(
                         self.repository,
@@ -206,7 +206,7 @@ class ProjectAPI:
                     if not saved:
                         winner = self.repository.get_idempotency_key(f"project.scan:{project_id}", request_id)
                         if winner is None or winner["request_hash"] != _hash(request_payload):
-                            raise ProjectError("request_id_conflict", "同一 request_id 的请求内容不一致")
+                            raise ProjectError("request_id_conflict", "本次操作与上次提交的内容不同，请重新打开页面后再试")
                     return 200, {"ok": True, "scan": asdict(report)}
                 if method == "GET" and len(parts) == 4 and parts[3] == "source-files":
                     return 200, {
@@ -266,15 +266,15 @@ class ProjectAPI:
         except ProjectError as exc:
             return exc.status, _error(exc.code, exc.message, fields=exc.fields)
         except (KeyError, TypeError, ValueError) as exc:
-            return 422, _error("validation_failed", "请求参数无效", fields={"request": str(exc)})
+            return 422, _error("validation_failed", "操作未完成：提交的信息无效", fields={"request": str(exc)})
 
     @staticmethod
     def _project_payload(raw: Any) -> dict[str, Any]:
         if not isinstance(raw, dict):
-            raise ProjectError("validation_failed", "project 必须是对象", status=422, fields={"project": "类型错误"})
+            raise ProjectError("validation_failed", "项目信息格式不正确，无法完成操作", status=422, fields={"project": "类型错误"})
         _strict(raw, {"name", "description", "config"}, {"name", "config"})
         if not isinstance(raw["config"], dict):
-            raise ProjectError("validation_failed", "config 必须是对象", status=422, fields={"project.config": "类型错误"})
+            raise ProjectError("validation_failed", "项目设置格式不正确，无法完成操作", status=422, fields={"project.config": "类型错误"})
         return {"name": str(raw["name"]), "description": str(raw.get("description") or ""), "config": raw["config"]}
 
     def _require_project(self, project_id: str) -> None:
@@ -310,7 +310,7 @@ class ProjectAPI:
             return self._record_initial_scan_failure(
                 project_id,
                 code="initial_scan_failed",
-                message="项目已创建，但首次回溯扫描启动失败",
+                message="项目已创建，但未能开始扫描已有录像",
             )
 
     def _record_initial_scan_failure(self, project_id: str, *, code: str, message: str) -> dict[str, Any]:
@@ -394,13 +394,13 @@ class ProjectAPI:
     def _runs_page(self, project_id: str, query: dict[str, list[str]]) -> dict[str, Any]:
         filter_name = (query.get("filter") or ["all"])[0]
         if filter_name not in {"all", "active", "attention", "completed"}:
-            raise ProjectError("validation_failed", "无效的剪辑记录筛选", status=422)
+            raise ProjectError("validation_failed", "筛选条件无效，请重新选择", status=422)
         try:
             limit = int((query.get("limit") or ["50"])[0])
         except ValueError as exc:
-            raise ProjectError("validation_failed", "limit 必须是整数", status=422) from exc
+            raise ProjectError("validation_failed", "每次加载的记录数量必须是整数", status=422) from exc
         if not 1 <= limit <= 100:
-            raise ProjectError("validation_failed", "limit 必须在 1 到 100 之间", status=422)
+            raise ProjectError("validation_failed", "每次可加载 1～100 条记录", status=422)
         statuses = {
             "active": {"queued", "processing"},
             "attention": {"failed"},
@@ -422,7 +422,7 @@ class ProjectAPI:
                 marker = base64.urlsafe_b64decode(cursor_value.encode("ascii")).decode("utf-8")
                 queued_at, run_id = marker.split("\0", 1)
             except Exception as exc:  # noqa: BLE001 - malformed external cursor.
-                raise ProjectError("validation_failed", "cursor 无效", status=422) from exc
+                raise ProjectError("validation_failed", "无法继续加载记录，请刷新后重试", status=422) from exc
             runs = [run for run in runs if (run.queued_at, run.run_id) > (queued_at, run_id)]
         page = runs[:limit]
         next_cursor = None

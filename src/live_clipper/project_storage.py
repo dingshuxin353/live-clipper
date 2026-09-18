@@ -2644,7 +2644,7 @@ class ProjectRepository:
                     timestamp if run_status == "completed" else None,
                     timestamp,
                     "result_unavailable" if run_status == "failed" else None,
-                    "结果不可用" if run_status == "failed" else None,
+                    "处理结果暂时不可用" if run_status == "failed" else None,
                     output.run_id,
                 ),
             )
@@ -2662,11 +2662,11 @@ class ProjectRepository:
                     issue_group_key=f"output:{status}",
                     status="action_required",
                     impact_level="partial" if projected.available_output_count else "blocking",
-                    title="成片不可用",
-                    summary=error_summary or "成片处理未成功",
-                    impact="该成片当前不可用",
-                    preserved_content="其他已完成内容保持不变",
-                    next_step="检查后重试该成片",
+                    title="成片暂时不可用",
+                    summary=error_summary or "成片生成未完成。",
+                    impact="此成片暂时不可用。",
+                    preserved_content="其他已完成的内容会保留。",
+                    next_step="检查通过后，重新生成此成片。",
                     recovery_capability="retry_output",
                     occurred_at=timestamp,
                 )
@@ -2937,11 +2937,11 @@ class ProjectRepository:
         output_id: str | None = None,
         material_id: str | None = None,
         impact_level: str = "blocking",
-        title: str = "处理问题",
+        title: str = "处理遇到问题",
         summary: str = "处理未完成",
-        impact: str = "当前对象不可继续处理",
-        preserved_content: str = "已完成内容保持不变",
-        next_step: str = "检查问题后继续",
+        impact: str = "暂时无法继续处理。",
+        preserved_content: str = "已完成的内容会保留。",
+        next_step: str = "检查通过后，再继续处理。",
         recovery_capability: str = "none",
         root_cause_ref: str | None = None,
         safe_checkpoint: str | None = None,
@@ -3478,7 +3478,7 @@ class ProjectRepository:
             if current is None:
                 raise MigrationStateError("migration session does not exist")
             self._require_migration_revision(current, expected_revision)
-            if "failed_rolled_back" not in _MIGRATION_TRANSITIONS[current.state]:
+            if current.state != "failed_rolled_back" and "failed_rolled_back" not in _MIGRATION_TRANSITIONS[current.state]:
                 raise MigrationStateError("migration cannot fail from the current state")
             self.connection.execute(
                 """UPDATE migration_sessions
@@ -3612,7 +3612,7 @@ class ProjectRepository:
                     readiness_state,
                     auto_scan_state,
                     blockers[0] if blockers else None,
-                    "迁移完成后需要修复项目条件" if blockers else None,
+                    "升级已完成，请检查项目设置后再启用。" if blockers else None,
                     timestamp,
                 ),
             )
@@ -3642,7 +3642,7 @@ class ProjectRepository:
                         entry.get("failure_code")
                         or ("legacy_compatibility_history" if entry.get("category") == "compatibility" else "legacy_import_failed")
                     )
-                    error_summary = "历史处理记录已保留，且不会进入处理队列"
+                    error_summary = "历史记录已保留，不会自动继续处理。"
                 self.connection.execute(
                     """INSERT INTO runs(
                          run_id, project_id, content_id, processing_sequence, origin_run_id,
@@ -3692,7 +3692,7 @@ class ProjectRepository:
                          overall_summary, warnings_json, candidate_count, selected_count, rejected_count,
                          evidence_relative_path, evidence_sha256, started_at, completed_at, validated_at, updated_at
                        ) VALUES (?, ?, 1, 'selected', 'legacy.analysis.default', 'legacy', 'migration_v1',
-                         1, '{}', 1, '历史安全结果', '[]', 1, 1, 0, NULL, ?, ?, ?, ?, ?)""",
+                         1, '{}', 1, '旧版成片', '[]', 1, 1, 0, NULL, ?, ?, ?, ?, ?)""",
                     (review_id, run_id, str(fact["sha256"]), timestamp, timestamp, timestamp, timestamp),
                 )
                 self.connection.execute(
@@ -3726,7 +3726,7 @@ class ProjectRepository:
                          selected_end_ms, remove_ranges_json, hook, core_value, reason,
                          risks_json, transcript_excerpt, output_id
                        ) VALUES (?, ?, ?, ?, 'selected', 1, 'legacy_safe_result', 0, ?, 0, ?,
-                         '[]', '', '', '历史安全结果', '[]', '', ?)""",
+                         '[]', '', '', '旧版成片', '[]', '', ?)""",
                     (decision_id, review_id, run_id, candidate_id, duration_ms, duration_ms, output_id),
                 )
                 self.connection.execute(
@@ -3743,12 +3743,13 @@ class ProjectRepository:
                          rejected_count, available_output_count, failed_output_count, total_duration_ms,
                          overall_summary, warnings_json, format_version, result_revision, source_kind,
                          evidence_hash, completed_at, updated_at
-                       ) VALUES (?, ?, 'clips_ready', 1, 1, 0, 1, 0, ?, '历史安全结果', '[]',
+                       ) VALUES (?, ?, 'clips_ready', 1, 1, 0, 1, 0, ?, '旧版成片', '[]',
                          1, 1, 'indexed_v1', ?, ?, ?)""",
                     (run_id, review_id, duration_ms, str(fact["sha256"]), timestamp, timestamp),
                 )
             inject("after_results")
 
+            blocker_labels = {"asr": "语音识别设置", "ai": "AI 模型设置", "source_directory": "录像文件夹", "output_directory": "成片保存位置", "backup_space": "备份空间", "resource_validation_required": "模型尚未检查"}
             for code in blockers:
                 self._discover_issue_in_transaction(
                     issue_code=code,
@@ -3761,11 +3762,11 @@ class ProjectRepository:
                     issue_group_key="migration-readiness",
                     status="action_required",
                     impact_level="blocking",
-                    title="迁移后项目条件需要修复",
-                    summary=f"迁移计划记录了待修复条件：{code}",
-                    impact="项目不会自动扫描或创建新 Run",
-                    preserved_content="历史记录与备份已安全保留",
-                    next_step="进入项目问题页完成修复",
+                    title="请检查项目设置后再启用",
+                    summary=f"项目还有待处理的问题：{blocker_labels[code]}。" if code in blocker_labels else f"项目还有待处理的问题。问题编号：{code}",
+                    impact="项目暂时不会自动扫描或开始新的处理。",
+                    preserved_content="历史记录和升级备份已保留。",
+                    next_step="在项目的待处理问题中查看原因和处理方法。",
                     recovery_capability="operational_repair",
                     occurred_at=timestamp,
                     issue_id=legacy_id(fingerprint, f"issue:readiness:{code}"),
@@ -3857,7 +3858,7 @@ class ProjectRepository:
             self.connection.execute(
                 """UPDATE project_runtime SET readiness_state = 'blocked', auto_scan_state = 'blocked',
                      failure_code = ?, failure_summary = ? WHERE project_id = ?""",
-                (code, "迁移完成，但项目运行服务尚未就绪", current.project_id),
+                (code, "数据升级已完成，后台服务暂时不可用。", current.project_id),
             )
             self._discover_issue_in_transaction(
                 issue_code=code,
@@ -3870,11 +3871,11 @@ class ProjectRepository:
                 issue_group_key="migration-runtime-readiness",
                 status="action_required",
                 impact_level="blocking",
-                title="迁移完成后服务尚未就绪",
-                summary="项目数据已安全迁移，但运行服务需要修复",
-                impact="项目不会自动扫描或创建新 Run",
-                preserved_content="迁移项目、历史和备份均已保留",
-                next_step="进入项目问题页完成运行环境修复",
+                title="后台服务暂时不可用",
+                summary="数据升级已完成，请先处理后台服务问题。",
+                impact="项目暂时不会自动扫描或开始新的处理。",
+                preserved_content="项目、历史记录和升级备份已保留。",
+                next_step="在项目的待处理问题中查看原因和处理方法。",
                 recovery_capability="operational_repair",
                 occurred_at=timestamp,
                 issue_id=legacy_id(current.source_fingerprint, "issue:migration-runtime-readiness"),

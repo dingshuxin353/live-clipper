@@ -69,10 +69,10 @@ def _selected_paths(root: Path, relative_paths: Iterable[str]) -> list[Path]:
     for value in relative_paths:
         relative = Path(value)
         if relative.is_absolute() or ".." in relative.parts:
-            raise ProjectScanError("source_path_outside_project", "选择的文件不在项目录像目录内", status=422)
+            raise ProjectScanError("source_path_outside_project", "所选文件不在项目的录像文件夹内", status=422)
         candidate = root / relative
         if not _contained(candidate, root):
-            raise ProjectScanError("source_path_outside_project", "选择的文件不在项目录像目录内", status=422)
+            raise ProjectScanError("source_path_outside_project", "所选文件不在项目的录像文件夹内", status=422)
         selected.append(candidate)
     return selected
 
@@ -114,10 +114,10 @@ def scan_project(
     if project is None:
         raise ProjectScanError("project_not_found", "项目不存在", status=404)
     if project.activation_state == "inactive" or (trigger_source == "scheduled" and project.activation_state != "active"):
-        raise ProjectScanError("project_inactive", "项目未启用")
+        raise ProjectScanError("project_inactive", "请先启用项目，再扫描录像")
     runtime = repository.get_runtime(project_id)
     if runtime is None or runtime.readiness_state != "ready":
-        raise ProjectScanError("project_not_ready", "项目尚未就绪")
+        raise ProjectScanError("project_not_ready", "项目暂时无法运行，请先处理项目中的问题")
     running = repository.get_running_scan(project_id)
     if running is not None:
         return ScanReport(
@@ -135,18 +135,18 @@ def scan_project(
         )
     revision = repository.get_config_revision(project_id)
     if revision is None:
-        raise ProjectScanError("data_integrity_error", "项目配置版本不存在", status=500)
+        raise ProjectScanError("data_integrity_error", "找不到项目设置，请联系支持排查", status=500)
     config = revision.config
     source_root = Path(str(config["source"]["directory"])).resolve(strict=False)
     if not source_root.is_dir():
-        raise ProjectScanError("source_unavailable", "项目录像目录不可用")
+        raise ProjectScanError("source_unavailable", "项目的录像文件夹不可用")
     output_root = Path(str(config["output"]["directory"])).resolve(strict=False)
     if not output_directory_is_writable(output_root):
-        raise ProjectScanError("output_unwritable", "项目输出目录不可写")
+        raise ProjectScanError("output_unwritable", "无法写入成片保存位置")
     try:
         snapshot = resolve_parameter_snapshot(config, settings, repository=repository)
     except ResourceUnavailableError as exc:
-        raise ProjectScanError("resource_unavailable", "项目使用的处理资源不可用，请检查项目设置") from exc
+        raise ProjectScanError("resource_unavailable", "项目使用的模型或工具不可用，请检查项目设置") from exc
     candidates = _candidate_paths(source_root, scope=scope, selected_relative_paths=selected_relative_paths)
     try:
         scan = repository.create_scan_event(
@@ -299,7 +299,7 @@ def list_source_files(repository: ProjectRepository, project_id: str) -> list[So
         raise ProjectScanError("project_not_found", "项目不存在", status=404)
     root = Path(str(revision.config["source"]["directory"])).resolve(strict=False)
     if not root.is_dir():
-        raise ProjectScanError("source_unavailable", "项目录像目录不可用")
+        raise ProjectScanError("source_unavailable", "项目的录像文件夹不可用")
     supported = {str(extension).lower() for extension in revision.config["source"]["supported_extensions"]}
     files = []
     for path in sorted(
@@ -330,13 +330,13 @@ def scan_preview(
 ) -> dict[str, Any]:
     root = Path(source_directory).expanduser().resolve(strict=False)
     if not root.is_dir():
-        raise ProjectScanError("source_unavailable", "录像目录不可用", status=422)
+        raise ProjectScanError("source_unavailable", "录像文件夹不可用", status=422)
     if first_scan_mode not in {"new_only", "recent", "choose_existing"}:
-        raise ProjectScanError("validation_failed", "首次扫描方式无效，请重新选择", status=422)
+        raise ProjectScanError("validation_failed", "已有录像的处理方式无效，请重新选择", status=422)
     if first_scan_mode == "recent" and lookback_days not in {3, 7, 30}:
-        raise ProjectScanError("validation_failed", "最近扫描天数只能是 3、7 或 30", status=422)
+        raise ProjectScanError("validation_failed", "请选择最近 3 天、7 天或 30 天的录像", status=422)
     if first_scan_mode != "recent" and lookback_days is not None:
-        raise ProjectScanError("validation_failed", "仅最近扫描模式可以设置回溯天数", status=422)
+        raise ProjectScanError("validation_failed", "选择“同时处理最近的录像”后，才能设置天数", status=422)
     supported = {str(extension).lower() for extension in supported_extensions}
     paths = [path for path in root.rglob("*") if path.is_file() and _contained(path, root)]
     supported_paths = [path for path in paths if path.suffix.lower() in supported]
@@ -349,7 +349,7 @@ def scan_preview(
         processable = [path for path in supported_paths if datetime.fromtimestamp(path.stat().st_mtime, UTC) >= cutoff]
     warnings = []
     if len(processable) >= 100:
-        warnings.append("预计会创建较多剪辑记录")
+        warnings.append("可处理的录像较多，预计会创建较多剪辑记录")
     return {
         "estimated_files": len(paths),
         "supported_files": len(supported_paths),

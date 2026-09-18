@@ -55,21 +55,21 @@ def normalize_api_base(api_base: str, *, allow_loopback: bool = False) -> str:
         host = (parsed.hostname or "").lower().rstrip(".")
         _port = parsed.port
     except ValueError as exc:
-        raise ResourceError("invalid_api_base", "服务地址必须是完整的 HTTPS 地址") from exc
+        raise ResourceError("invalid_api_base", "请填写完整的服务地址。") from exc
     if parsed.scheme not in {"https", "http"} or not parsed.netloc:
-        raise ResourceError("invalid_api_base", "服务地址必须是完整的 HTTPS 地址")
+        raise ResourceError("invalid_api_base", "请填写完整的服务地址。")
     if parsed.username or parsed.password or parsed.fragment or parsed.query:
-        raise ResourceError("invalid_api_base", "服务地址不能包含凭据、查询参数或片段")
+        raise ResourceError("invalid_api_base", "服务地址中不能包含账号密码、查询参数或 # 后的内容。")
     loopback = host in {"127.0.0.1", "localhost", "::1"}
     if parsed.scheme != "https" and not (allow_loopback and loopback):
-        raise ResourceError("invalid_api_base", "远程服务必须使用 HTTPS")
+        raise ResourceError("invalid_api_base", "远程服务地址需使用 HTTPS。")
     if not loopback:
         try:
             ip = ipaddress.ip_address(host)
         except ValueError:
             ip = None
         if (ip is not None and (ip.is_private or ip.is_link_local or ip.is_reserved)) or host.endswith(".internal"):
-            raise ResourceError("invalid_api_base", "服务地址不在允许范围内")
+            raise ResourceError("invalid_api_base", "此服务地址不受支持。")
     return value
 
 

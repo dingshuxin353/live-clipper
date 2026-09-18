@@ -32,11 +32,11 @@ from .project_storage import MigrationSession, MigrationStateError, ProjectRepos
 _PUBLIC_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 
 _HISTORY_REASON_LABELS = {
-    "content_identity_missing": "缺少可验证的内容身份，已隔离",
-    "duplicate_content_identity": "内容身份重复，已隔离",
-    "source_identity_unsupported": "录像来源无法安全确认，已隔离",
-    "timestamp_untrusted": "时间信息无法安全确认，已隔离",
-    "state_unrecognized": "旧状态无法识别，已隔离",
+    "content_identity_missing": "缺少识别录像所需的信息，无法导入项目。",
+    "duplicate_content_identity": "录像标识重复，无法导入项目。",
+    "source_identity_unsupported": "无法确认录像来源，不能导入项目。",
+    "timestamp_untrusted": "记录的时间信息不完整或不符合要求，无法导入项目。",
+    "state_unrecognized": "无法识别旧版处理状态，不能导入项目。",
 }
 
 
@@ -65,11 +65,13 @@ def _require_fields(body: Mapping[str, Any], allowed: set[str], required: set[st
     missing = required - set(body)
     if unknown or missing:
         fields = {key: "unsupported" for key in sorted(unknown)} | {key: "required" for key in sorted(missing)}
-        raise MigrationError("validation_failed", "升级信息不完整，请重新打开升级页面", status=422, fields=fields)
+        raise MigrationError("validation_failed", "无法读取本次操作的信息，请重新读取升级状态。", status=422, fields=fields)
 
 
-def _safe_failure_summary(_error: BaseException) -> str:
-    return "迁移未提交，旧数据保持不变，可在确认后重试"
+def _safe_failure_summary(error: BaseException) -> str:
+    if isinstance(error, MigrationError):
+        return error.message
+    return "升级未完成，本次升级未修改旧版数据。请查看问题提示后重试。"
 
 
 class MigrationCoordinator:
@@ -110,7 +112,7 @@ class MigrationCoordinator:
         try:
             return inspect_legacy_state(self.service_dir, config_path=self.config_path)
         except LegacySourceError as exc:
-            raise MigrationError(exc.code, "旧版数据无法安全读取", status=409) from exc
+            raise MigrationError(exc.code, "无法读取旧版数据，请记录问题编号以便排查。", status=409) from exc
 
     @staticmethod
     def _plan_payload(plan: MigrationPlan) -> dict[str, Any]:
@@ -123,13 +125,13 @@ class MigrationCoordinator:
             category = str(item["category"])
             reason_code = str(item["reason_code"]) if item.get("reason_code") else None
             if reason_code is not None:
-                reason_label = _HISTORY_REASON_LABELS.get(reason_code, "旧记录无法安全转换，已隔离")
+                reason_label = _HISTORY_REASON_LABELS.get(reason_code, "这条记录无法导入项目，将保留在升级备份中。")
             elif category == "compatibility":
-                reason_label = "需要在新版本中继续处理"
+                reason_label = "这条记录尚未处理完成，升级后不会自动继续处理。"
             elif item.get("safe_result"):
-                reason_label = "可安全导入，已有成片已核验"
+                reason_label = "记录可导入，关联成片将在升级时核验。"
             else:
-                reason_label = "可安全导入"
+                reason_label = "记录可导入"
             public_entries.append(
                 {
                     "display_identity": f"历史记录 {position}",
@@ -197,6 +199,19 @@ class MigrationCoordinator:
             sessions = repository.list_migration_sessions()
             return sessions[0] if sessions else None
 
+    @staticmethod
+    def _completion_consistent(repository: ProjectRepository, session: MigrationSession) -> bool:
+        return bool(
+            repository.get_data_mode() == "projects"
+            and session.project_id
+            and repository.get_project(session.project_id)
+            and session.report
+            and session.report.get("project", {}).get("project_id") == session.project_id
+            and session.report.get("backup_created") is True
+            and session.backup_status == "completed"
+            and session.backup_path
+        )
+
     def snapshot(self) -> dict[str, Any]:
         session = self._read_session()
         report = ({**session.report, "acknowledged_at": session.acknowledged_at} if session and session.report else None)
@@ -217,12 +232,7 @@ class MigrationCoordinator:
             plan = None
             if session.state.startswith("completed_"):
                 with ProjectRepository(self.service_dir) as repository:
-                    consistent = (
-                        repository.get_data_mode() == "projects"
-                        and session.project_id is not None
-                        and repository.get_project(session.project_id) is not None
-                        and session.report is not None
-                    )
+                    consistent = self._completion_consistent(repository, session)
                 if not consistent:
                     entry = "diagnostic"
         else:
@@ -270,17 +280,17 @@ class MigrationCoordinator:
     def validate(self, body: Mapping[str, Any]) -> tuple[int, dict[str, Any]]:
         _require_fields(body, {"source_fingerprint", "plan_hash", "choices"}, {"source_fingerprint", "plan_hash", "choices"})
         if not isinstance(body["choices"], Mapping):
-            raise MigrationError("validation_failed", "choices 必须是对象", status=422)
+            raise MigrationError("validation_failed", "无法读取升级设置，请返回后重试。", status=422)
         inspection = self._inspection()
         if body["source_fingerprint"] != inspection.source_fingerprint:
-            raise MigrationError("migration_source_changed", "旧版数据已变化，请重新检查", status=409)
+            raise MigrationError("migration_source_changed", "旧版数据已变化，请重新检查。", status=409)
         baseline = build_migration_plan(inspection, backup_root=self.backup_root)
         if body["plan_hash"] != baseline.plan_hash:
-            raise MigrationError("migration_plan_changed", "升级内容已变化，请重新检查", status=409)
+            raise MigrationError("migration_plan_changed", "升级设置已变化，请重新检查。", status=409)
         try:
             plan = build_migration_plan(inspection, choices=body["choices"], backup_root=self.backup_root)
         except ValueError as exc:
-            raise MigrationError("validation_failed", "升级选项无效，请重新选择", status=422) from exc
+            raise MigrationError("validation_failed", "升级设置有误，请检查后重试。", status=422) from exc
         return 200, {"ok": True, "plan": self._plan_payload(plan)}
 
     def _validated_execution(self, body: Mapping[str, Any]) -> tuple[LegacyInspection, MigrationPlan, str]:
@@ -291,24 +301,24 @@ class MigrationCoordinator:
         )
         request_id = str(body["request_id"])
         if not _PUBLIC_ID.fullmatch(request_id):
-            raise MigrationError("validation_failed", "操作信息无效，请重新打开升级页面", status=422)
+            raise MigrationError("validation_failed", "无法确认本次操作，请返回后重新检查。", status=422)
         if not isinstance(body["choices"], Mapping):
-            raise MigrationError("validation_failed", "choices 必须是对象", status=422)
+            raise MigrationError("validation_failed", "无法读取升级设置，请返回后重试。", status=422)
         inspection = self._inspection()
         if body["source_fingerprint"] != inspection.source_fingerprint:
-            raise MigrationError("migration_source_changed", "旧版数据已变化，请重新检查", status=409)
+            raise MigrationError("migration_source_changed", "旧版数据已变化，请重新检查。", status=409)
         try:
             plan = build_migration_plan(inspection, choices=body["choices"], backup_root=self.backup_root)
         except ValueError as exc:
-            raise MigrationError("validation_failed", "升级选项无效，请重新选择", status=422) from exc
+            raise MigrationError("validation_failed", "升级设置有误，请检查后重试。", status=422) from exc
         if body["plan_hash"] != plan.plan_hash:
-            raise MigrationError("migration_plan_changed", "升级内容已变化，请重新检查", status=409)
+            raise MigrationError("migration_plan_changed", "升级设置已变化，请重新检查。", status=409)
         if plan.backup_summary["space_status"] != "ready":
-            raise MigrationError("migration_space_insufficient", "迁移备份空间不足", status=409)
+            raise MigrationError("migration_space_insufficient", "备份空间不足，请释放磁盘空间后重新检查。", status=409)
         if plan.requires_user_choices:
             raise MigrationError(
                 "migration_choices_required",
-                "迁移仍有必须确认的选择",
+                "还有设置需要补充，请返回修改。",
                 status=422,
                 fields={str(item): "required" for item in plan.requires_user_choices},
             )
@@ -336,8 +346,8 @@ class MigrationCoordinator:
                 if same:
                     return 202, {"ok": True, "session": self._session_payload(durable)}
                 if existing is not None:
-                    raise MigrationError("request_id_conflict", "这次操作与上次提交的内容不一致，请重新检查升级内容", status=409)
-                raise MigrationError("migration_conflict", "已有不同的迁移事实", status=409)
+                    raise MigrationError("request_id_conflict", "当前设置与上次提交的不一致，请先确认上次升级的状态。", status=409)
+                raise MigrationError("migration_conflict", "已有另一条升级记录，请先查看其状态。", status=409)
         inspection, plan, request_id = self._validated_execution(body)
         canonical = {
             "source_fingerprint": plan.source_fingerprint,
@@ -351,7 +361,7 @@ class MigrationCoordinator:
             try:
                 existing_request = repository.get_migration_session_by_request(request_id)
                 if existing_request is not None and existing_request.request_hash != request_hash:
-                    raise MigrationError("request_id_conflict", "这次操作与上次提交的内容不一致，请重新检查升级内容", status=409)
+                    raise MigrationError("request_id_conflict", "当前设置与上次提交的不一致，请先确认上次升级的状态。", status=409)
                 try:
                     session = repository.create_migration_session(
                         migration_id=migration_id,
@@ -365,9 +375,9 @@ class MigrationCoordinator:
                         backup_path=str(self.backup_root / migration_id),
                     )
                 except RequestConflictError as exc:
-                    raise MigrationError("request_id_conflict", "这次操作与上次提交的内容不一致，请重新检查升级内容", status=409) from exc
+                    raise MigrationError("request_id_conflict", "当前设置与上次提交的不一致，请先确认上次升级的状态。", status=409) from exc
                 except MigrationStateError as exc:
-                    raise MigrationError("migration_conflict", "已有其他迁移事实", status=409) from exc
+                    raise MigrationError("migration_conflict", "已有另一条升级记录，请先查看其状态。", status=409) from exc
             finally:
                 repository.close()
             key = (str(self.service_dir), session.migration_id)
@@ -381,54 +391,57 @@ class MigrationCoordinator:
         request_id = str(body["request_id"])
         migration_id = str(body["migration_id"])
         if not _PUBLIC_ID.fullmatch(request_id) or not _PUBLIC_ID.fullmatch(migration_id):
-            raise MigrationError("validation_failed", "升级记录无效，请重新打开升级页面", status=422)
+            raise MigrationError("validation_failed", "无法识别升级记录，请重新读取升级状态。", status=422)
         expected_revision = body["expected_revision"]
         if not isinstance(expected_revision, int) or isinstance(expected_revision, bool):
-            raise MigrationError("validation_failed", "升级状态无效，请重新打开升级页面", status=422)
+            raise MigrationError("validation_failed", "无法确认升级状态，请重新读取后重试。", status=422)
         with self._lock, ProjectRepository(self.service_dir) as repository:
             current = repository.get_migration_session(migration_id)
             if current is None:
-                raise MigrationError("migration_not_found", "迁移不存在", status=404)
+                raise MigrationError("migration_not_found", "找不到这条升级记录，请重新读取升级状态。", status=404)
+            scope = "migration.retry"
+            digest = _request_hash({"migration_id": migration_id, "expected_revision": expected_revision})
+            existing = repository.get_idempotency_key(scope, request_id)
+            if existing:
+                if existing["request_hash"] != digest or existing["object_id"] != migration_id:
+                    raise MigrationError("request_id_conflict", "当前设置与上次提交的不一致，请先确认上次升级的状态。")
+                return 202, {"ok": True, "session": self._session_payload(current)}
             if current.state != "failed_rolled_back":
                 return 202, {"ok": True, "session": self._session_payload(current)}
+            if current.revision != expected_revision:
+                raise MigrationError("revision_conflict", "升级状态已变化，请重新读取后重试。")
             try:
-                retrying = repository.update_migration_stage(
-                    migration_id,
-                    expected_revision,
-                    state="backing_up",
-                    stage="copy",
-                    backup_status="pending",
-                )
-            except RevisionConflictError as exc:
-                raise MigrationError("revision_conflict", "迁移状态已变化", status=409) from exc
-            inspection = self._inspection()
-            if inspection.source_fingerprint != current.source_fingerprint:
-                repository.record_migration_failure(
-                    migration_id,
-                    retrying.revision,
-                    failure_code="migration_source_changed",
-                    failure_summary="旧版数据已变化，请重新检查",
-                    backup_status=current.backup_status,
-                )
-                raise MigrationError("migration_source_changed", "旧版数据已变化，请重新检查", status=409)
-            plan = build_migration_plan(inspection, choices=current.choices, backup_root=self.backup_root)
-            if plan.plan_hash != current.plan_hash:
-                repository.record_migration_failure(
-                    migration_id,
-                    retrying.revision,
-                    failure_code="migration_plan_changed",
-                    failure_summary="迁移条件已变化，请重新检查",
-                    backup_status=current.backup_status,
-                )
-                raise MigrationError("migration_plan_changed", "升级内容已变化，请重新检查", status=409)
+                inspection = self._inspection()
+                if inspection.source_fingerprint != current.source_fingerprint:
+                    raise MigrationError("migration_source_changed", "旧版数据与本次升级记录不一致，无法直接继续升级。请记录问题编号并联系开发者排查。")
+                plan = build_migration_plan(inspection, choices=current.choices, backup_root=self.backup_root)
+                if plan.backup_summary["space_status"] != "ready":
+                    raise MigrationError("migration_space_insufficient", "备份空间不足，请释放磁盘空间后重试升级。")
+                if plan.plan_hash != current.plan_hash:
+                    raise MigrationError("migration_plan_changed", "当前检查结果与本次升级记录不一致，无法直接继续升级。请记录问题编号并联系开发者排查。")
+            except Exception as exc:
+                error = exc if isinstance(exc, MigrationError) else MigrationError("migration_inspection_failed", "无法读取当前升级条件，请记录问题编号以便排查。")
+                repository.record_migration_failure(migration_id, current.revision, failure_code=error.code, failure_summary=error.message, backup_status=current.backup_status)
+                if error is exc:
+                    raise
+                raise error from exc
+            with repository.transaction():
+                retrying = repository.update_migration_stage(migration_id, expected_revision, state="backing_up", stage="copy", backup_status="pending")
+                repository.save_idempotency_key(scope, request_id, request_hash=digest, object_type="migration", object_id=migration_id)
             key = (str(self.service_dir), migration_id)
-            self._futures[key] = self._executor.submit(self._run, inspection, plan, migration_id)
+            try:
+                self._futures[key] = self._executor.submit(self._run, inspection, plan, migration_id)
+            except Exception as exc:
+                repository.record_migration_failure(migration_id, retrying.revision, failure_code="migration_apply_failed", failure_summary=_safe_failure_summary(exc), backup_status=current.backup_status)
+                raise MigrationError("migration_apply_failed", "无法开始升级，请重新读取升级状态。") from exc
         return 202, {"ok": True, "session": self._session_payload(retrying)}
 
     def acknowledge(self, body: Mapping[str, Any]) -> tuple[int, dict[str, Any]]:
         _require_fields(body, {"request_id", "migration_id", "expected_revision"}, {"request_id", "migration_id", "expected_revision"})
         with ProjectRepository(self.service_dir) as repository:
             current = repository.get_migration_session(str(body["migration_id"]))
+            if current is not None and current.state.startswith("completed_") and not self._completion_consistent(repository, current):
+                raise MigrationError("diagnostic_required", "暂时无法确认升级结果，请记录问题编号并联系开发者排查。")
             if current is not None and current.acknowledged_at is not None:
                 return 200, {
                     "ok": True,
@@ -440,16 +453,16 @@ class MigrationCoordinator:
                     str(body["migration_id"]), int(body["expected_revision"])
                 )
             except (MigrationStateError, RevisionConflictError, ValueError) as exc:
-                raise MigrationError("revision_conflict", "迁移状态已变化或不可确认", status=409) from exc
+                raise MigrationError("revision_conflict", "升级状态已变化，暂时无法进入项目。请重新读取状态后重试。", status=409) from exc
         return 200, {"ok": True, "session": self._session_payload(session), "project_id": session.project_id}
 
     @staticmethod
     def _directory_identity(path: Path) -> tuple[int, int]:
         details = path.lstat()
         if stat.S_ISLNK(details.st_mode):
-            raise MigrationError("diagnostic_required", "备份记录无法验证，升级已停止", status=409)
+            raise MigrationError("diagnostic_required", "无法确认备份位置，请记录问题编号以便排查。", status=409)
         if not stat.S_ISDIR(details.st_mode):
-            raise MigrationError("backup_not_available", "迁移备份不可用", status=404)
+            raise MigrationError("backup_not_available", "暂时无法显示升级备份，请重新读取升级状态后重试。", status=404)
         return details.st_dev, details.st_ino
 
     def _authorized_backup_path(self, migration_id: str, recorded_path: str) -> Path:
@@ -457,34 +470,34 @@ class MigrationCoordinator:
         expected = approved_root / migration_id
         recorded = Path(recorded_path)
         if not recorded.is_absolute() or recorded != expected:
-            raise MigrationError("diagnostic_required", "备份记录无法验证，升级已停止", status=409)
+            raise MigrationError("diagnostic_required", "无法确认备份位置，请记录问题编号以便排查。", status=409)
         try:
             root_identity = self._directory_identity(approved_root)
             target_identity = self._directory_identity(expected)
             real_root = approved_root.resolve(strict=True)
             real_target = expected.resolve(strict=True)
         except FileNotFoundError as exc:
-            raise MigrationError("backup_not_available", "迁移备份不可用", status=404) from exc
+            raise MigrationError("backup_not_available", "暂时无法显示升级备份，请重新读取升级状态后重试。", status=404) from exc
         except OSError as exc:
-            raise MigrationError("diagnostic_required", "备份记录无法验证，升级已停止", status=409) from exc
+            raise MigrationError("diagnostic_required", "无法确认备份位置，请记录问题编号以便排查。", status=409) from exc
         if real_target != real_root / migration_id or real_target.parent != real_root:
-            raise MigrationError("diagnostic_required", "备份记录无法验证，升级已停止", status=409)
+            raise MigrationError("diagnostic_required", "无法确认备份位置，请记录问题编号以便排查。", status=409)
         try:
             if self._directory_identity(approved_root) != root_identity:
-                raise MigrationError("diagnostic_required", "备份记录无法验证，升级已停止", status=409)
+                raise MigrationError("diagnostic_required", "无法确认备份位置，请记录问题编号以便排查。", status=409)
             if self._directory_identity(expected) != target_identity:
-                raise MigrationError("diagnostic_required", "备份记录无法验证，升级已停止", status=409)
+                raise MigrationError("diagnostic_required", "无法确认备份位置，请记录问题编号以便排查。", status=409)
         except FileNotFoundError as exc:
-            raise MigrationError("backup_not_available", "迁移备份不可用", status=404) from exc
+            raise MigrationError("backup_not_available", "暂时无法显示升级备份，请重新读取升级状态后重试。", status=404) from exc
         except OSError as exc:
-            raise MigrationError("diagnostic_required", "备份记录无法验证，升级已停止", status=409) from exc
+            raise MigrationError("diagnostic_required", "无法确认备份位置，请记录问题编号以便排查。", status=409) from exc
         return real_target
 
     def backup_grant(self, migration_id: str, *, auth_context: str) -> tuple[int, dict[str, Any]]:
         if auth_context != "bearer":
-            raise MigrationError("bearer_required", "备份动作仅允许桌面主进程访问", status=403)
+            raise MigrationError("bearer_required", "请在 Venus 桌面应用中显示备份。", status=403)
         if not _PUBLIC_ID.fullmatch(migration_id):
-            raise MigrationError("backup_not_available", "迁移备份不可用", status=404)
+            raise MigrationError("backup_not_available", "暂时无法显示升级备份，请重新读取升级状态后重试。", status=404)
         with ProjectRepository(self.service_dir) as repository:
             session = repository.get_migration_session(migration_id)
         if (
@@ -493,7 +506,7 @@ class MigrationCoordinator:
             or session.backup_status != "completed"
             or not session.backup_path
         ):
-            raise MigrationError("backup_not_available", "迁移备份不可用", status=404)
+            raise MigrationError("backup_not_available", "暂时无法显示升级备份，请重新读取升级状态后重试。", status=404)
         target = self._authorized_backup_path(migration_id, session.backup_path)
         return 200, {
             "ok": True,
@@ -584,7 +597,7 @@ class MigrationCoordinator:
         try:
             current_inspection = self._inspection()
             if current_inspection.source_fingerprint != inspection.source_fingerprint:
-                raise MigrationError("migration_source_changed", "旧版数据已变化")
+                raise MigrationError("migration_source_changed", "旧版数据与本次升级记录不一致，无法直接继续升级。请记录问题编号并联系开发者排查。")
             backup = create_migration_backup(
                 current_inspection,
                 backup_root=self.backup_root,
@@ -604,7 +617,7 @@ class MigrationCoordinator:
             )
             after_backup = self._inspection()
             if after_backup.source_fingerprint != inspection.source_fingerprint:
-                raise MigrationError("migration_source_changed", "备份后旧版数据发生变化")
+                raise MigrationError("migration_source_changed", "备份后检测到旧版数据与本次升级记录不一致，无法直接继续升级。请记录问题编号并联系开发者排查。")
             migrating = repository.update_migration_stage(
                 migration_id,
                 backed_up.revision,
@@ -633,6 +646,7 @@ class MigrationCoordinator:
                 "project": {"project_id": project_id, "name": plan.project_preview["name"]},
                 "discovery": {
                     **dict(plan.discovery_summary),
+                    "timezone": plan.project_preview["timezone"],
                     "trigger_mode": plan.project_preview["trigger_mode"],
                     "schedule_mode": plan.project_preview["schedule_mode"],
                     "daily_time": plan.project_preview["daily_time"],
@@ -770,7 +784,7 @@ class MigrationCoordinator:
                 session.migration_id,
                 session.revision,
                 failure_code="migration_interrupted",
-                failure_summary="迁移进程已中断，旧数据保持不变，可确认后重试",
+                failure_summary="升级已中断，本次升级未修改旧版数据。请重试升级。",
                 backup_status=backup_status,
             )
 

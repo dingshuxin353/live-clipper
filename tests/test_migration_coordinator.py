@@ -290,14 +290,14 @@ def test_plan_exposes_stable_safe_history_details_without_legacy_identifiers(tmp
             "display_identity": "历史记录 1",
             "category": "importable",
             "reason_code": None,
-            "reason_label": "可安全导入",
+            "reason_label": "记录可导入",
             "safe_result": False,
         },
         {
             "display_identity": "历史记录 2",
             "category": "quarantined",
             "reason_code": "content_identity_missing",
-            "reason_label": "缺少可验证的内容身份，已隔离",
+            "reason_label": "缺少识别录像所需的信息，无法导入项目。",
             "safe_result": False,
         },
     ]
@@ -640,11 +640,11 @@ def test_retry_plan_change_returns_to_durable_failed_state(tmp_path, monkeypatch
             }
         )
 
-    assert changed.value.code == "migration_plan_changed"
+    assert changed.value.code == "migration_space_insufficient"
     current = coordinator.snapshot()["session"]
     assert current["state"] == "failed_rolled_back"
     assert current["stage"] == "rolled_back"
-    assert current["failure"]["code"] == "migration_plan_changed"
+    assert current["failure"]["code"] == "migration_space_insufficient"
     with ProjectRepository(service) as repository:
         assert repository.get_data_mode() == "legacy"
         assert repository.list_projects() == []
@@ -675,3 +675,51 @@ def test_retry_does_not_guess_previously_redacted_directories(tmp_path):
         assert repository.get_data_mode() == "legacy"
         assert repository.list_projects() == []
     assert _tree_facts(backup) == before
+
+
+@pytest.mark.parametrize("cause", ["unreadable", "source_changed"])
+def test_retry_checks_before_transition_and_preserves_original_session(tmp_path, monkeypatch, cause):
+    coordinator, service = _legacy_home(tmp_path)
+    plan = _validated(coordinator)
+    coordinator.fault_injection = lambda phase: (_ for _ in ()).throw(RuntimeError("fault")) if phase == "after_project" else None
+    accepted = coordinator.execute({"request_id": "original", "source_fingerprint": plan["source_fingerprint"], "plan_hash": plan["plan_hash"], "choices": plan["choices"]})[1]
+    failed = _wait_completed(coordinator, accepted["session"]["migration_id"])["session"]
+    coordinator.fault_injection = None
+    backup = coordinator.backup_root / failed["migration_id"]
+    before = _tree_facts(backup)
+    inspect = coordinator._inspection
+    if cause == "unreadable":
+        monkeypatch.setattr(coordinator, "_inspection", lambda: (_ for _ in ()).throw(MigrationError("legacy_source_unreadable", "无法读取旧版数据。")))
+    else:
+        with (service / "runs.json").open("a") as handle:
+            handle.write("\n")
+    with pytest.raises(MigrationError):
+        coordinator.retry({"request_id": "rejected-retry", "migration_id": failed["migration_id"], "expected_revision": failed["revision"]})
+    current = coordinator.snapshot()["session"]
+    assert current["state"] == "failed_rolled_back" and current["stage"] == "rolled_back"
+    with ProjectRepository(service) as repository:
+        stored = repository.get_migration_session(failed["migration_id"])
+        assert stored.choices == plan["choices"] and stored.source_fingerprint == plan["source_fingerprint"]
+        assert len(repository.list_migration_sessions()) == 1 and not repository.list_projects()
+    assert _tree_facts(backup) == before
+    if cause == "unreadable":
+        monkeypatch.setattr(coordinator, "_inspection", inspect)
+        body = {"request_id": "accepted-retry", "migration_id": failed["migration_id"], "expected_revision": current["revision"]}
+        coordinator.retry(body)
+        completed = _wait_completed(coordinator, failed["migration_id"])
+        assert completed["session"]["state"] == "completed_attention"
+        assert coordinator.retry(body)[1]["session"]["revision"] == completed["session"]["revision"]
+    else:
+        assert current["failure"]["code"] == "migration_source_changed"
+        assert "无法直接继续升级" in current["failure"]["summary"]
+
+
+def test_completed_snapshot_and_acknowledgement_reject_inconsistent_backup(tmp_path):
+    coordinator, service = _legacy_home(tmp_path)
+    session = _execute_completed(coordinator)
+    with ProjectRepository(service) as repository:
+        with repository.transaction():
+            repository.connection.execute("UPDATE migration_sessions SET report_json=json_set(report_json, '$.backup_created', json('false')) WHERE migration_id=?", (session["migration_id"],))
+    assert coordinator.snapshot()["entry"] == "diagnostic"
+    with pytest.raises(MigrationError, match="diagnostic_required"):
+        coordinator.acknowledge({"request_id": "ack", "migration_id": session["migration_id"], "expected_revision": session["revision"]})

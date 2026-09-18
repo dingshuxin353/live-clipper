@@ -59,8 +59,8 @@ test("output actions reject invalid IDs, backend paths, shell failures, and quit
     runtime,
   });
 
-  await assert.rejects(actions.openOutput("output-1"), /路径无法读取/);
-  assert.throws(() => actions.openOutput(""), /output_id无效/);
+  await assert.rejects(actions.openOutput("output-1"), /无法读取成片文件位置/);
+  assert.throws(() => actions.openOutput(""), /成片无效/);
   runtime.beginQuit();
   assert.throws(() => actions.revealOutput("output-1"), /正在退出/);
 

@@ -32,7 +32,7 @@ def resource_options(repository: ProjectRepository) -> tuple[ResourceOption, ...
     return tuple(ResourceOption(
         resource_id=r['resource_id'], display_name=r['name'],
         resource_type='asr' if r['kind'] in {'local_asr', 'cloud_asr'} else ('review' if r['kind'] == 'local_agent' else 'analysis'),
-        ready=r['ready'], problem=None if r['ready'] else '资源尚未通过用途验证', version=r['config'].get('model', 'Claude Code'),
+        ready=r['ready'], problem=None if r['ready'] else '所选配置尚未通过此用途的检查', version=r['config'].get('model', 'Claude Code'),
         purposes=tuple(r['config']['purposes']), ready_purposes=tuple(p for p, v in r['validation'].items() if v['state'] == 'ready'),
     ) for r in ResourceStore(repository).list())
 

@@ -13,6 +13,7 @@ from .project_resources import ResourceUnavailableError, resolve_parameter_snaps
 from .project_result_domain import RequestConflictError, RevisionConflictError
 from .project_service import ProjectError, ProjectManager
 from .project_storage import ProjectRepository
+from .resource_providers import PROVIDERS
 
 _TERMINAL = {"completed", "failed"}
 _SOURCE_BLOCKERS = {"source_missing", "source_identity_mismatch"}
@@ -30,6 +31,13 @@ def _settings_summary(snapshot: dict[str, Any]) -> dict[str, Any]:
     resources = snapshot.get("resources", {})
     processing = snapshot.get("processing", {})
     output = snapshot.get("output", {})
+    resources = dict(resources)
+    for purpose in ("asr", "analysis", "review"):
+        resource = resources.get(purpose)
+        if isinstance(resource, dict):
+            provider = resource.get("config", {}).get("provider", resource.get("provider"))
+            if provider in PROVIDERS:
+                resources[purpose] = {**resource, "provider_name": PROVIDERS[provider]["name"]}
     return {
         "asr": resources.get("asr"),
         "analysis": resources.get("analysis"),
@@ -77,7 +85,7 @@ class ProjectReprocess:
         runtime = self.repository.get_runtime(run.project_id)
         revision = self.repository.get_config_revision(run.project_id)
         if project is None or runtime is None or revision is None:
-            raise ProjectError("data_integrity_error", "项目运行数据不完整", status=500)
+            raise ProjectError("data_integrity_error", "项目数据不完整，暂时无法重新处理。", status=500)
         if project.activation_state == "inactive":
             blockers.append(_blocker("project_inactive", "project_settings", project.project_id))
         if runtime.readiness_state != "ready" or runtime.failure_code:
@@ -189,14 +197,14 @@ class ProjectReprocess:
         existing = self.repository.get_idempotency_key(f"run_reprocess:{run_id}", request_id)
         if existing is not None:
             if existing["request_hash"] != request_hash:
-                raise ProjectError("request_id_conflict", "这次操作与上次提交的内容不一致，请重新打开页面后再试")
+                raise ProjectError("request_id_conflict", "本次提交与之前的内容不一致，请先确认上次操作结果。")
             run = self._run(str(existing["object_id"]))
             return {"ok": True, "run": self._version_identity(run), "created": False, "reuse_reason": "idempotent_request"}, 200
         preflight = self.preflight(run_id)
         if preflight["preflight_revision"] != expected_preflight_revision:
-            raise ProjectError("preflight_changed", "预检状态已变化，请重新确认", status=409)
+            raise ProjectError("preflight_changed", "检查结果有变化，请核对后再开始。", status=409)
         if preflight["blockers"]:
-            raise ProjectError("reprocess_blocked", "当前记录无法重新处理", status=422)
+            raise ProjectError("reprocess_blocked", "这条记录暂时无法重新处理，请查看具体原因。", status=422)
         try:
             run, reason = self.repository.create_reprocess_run(
                 run_id,
@@ -207,9 +215,9 @@ class ProjectReprocess:
                 source_path=str(preflight["source"]["path"]),
             )
         except RequestConflictError as exc:
-            raise ProjectError("request_id_conflict", "这次操作与上次提交的内容不一致，请重新打开页面后再试") from exc
+            raise ProjectError("request_id_conflict", "本次提交与之前的内容不一致，请先确认上次操作结果。") from exc
         except RevisionConflictError as exc:
-            raise ProjectError("preflight_changed", "预检状态已变化，请重新确认", status=409) from exc
+            raise ProjectError("preflight_changed", "检查结果有变化，请核对后再开始。", status=409) from exc
         return {
             "ok": True,
             "run": self._version_identity(run),
@@ -221,7 +229,7 @@ class ProjectReprocess:
         preflight = self.preflight(run_id)
         source_blocker = next((item for item in preflight["blockers"] if item["code"] in _SOURCE_BLOCKERS), None)
         if source_blocker is None:
-            raise ProjectError("source_repair_not_required", "当前记录没有来源问题", status=409)
+            raise ProjectError("source_repair_not_required", "当前没有需要重新选择原始录像的问题。", status=409)
         run = self._run(run_id)
         group = f"reprocess-source:{run_id}"
         existing = next(
@@ -235,15 +243,15 @@ class ProjectReprocess:
             project_id=run.project_id,
             run_id=run.run_id,
             issue_group_key=group,
-            title="原始录像需要重新定位",
+            title="请重新选择原始录像。",
             summary=(
-                "原始录像不存在或不可读"
+                "找不到原始录像或无法读取。"
                 if source_blocker["code"] == "source_missing"
-                else "当前录像与原始内容不一致"
+                else "所选录像与原始录像的内容不一致。"
             ),
-            impact="重新处理已阻止",
-            preserved_content="既有版本与成片保持不变",
-            next_step="选择与原始内容一致的录像文件",
+            impact="暂时无法重新处理",
+            preserved_content="已有处理记录和成片不会改变。",
+            next_step="请选择与原始录像内容一致的文件。",
             recovery_capability="operational_repair",
             safe_checkpoint="source_identity",
         )

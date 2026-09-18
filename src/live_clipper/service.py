@@ -23,7 +23,7 @@ from .review_selection import validate_selected_clips_file
 from .utils import ensure_dir, read_json, review_material_path, self_command, write_json
 
 DEFAULT_SERVICE_DIR = Path("work") / "service"
-PIPELINE_CONFIGURATION_MESSAGE = "请先到「设置 → AI 服务」配置 AI API Key，再开始处理录播。"
+PIPELINE_CONFIGURATION_MESSAGE = "内容分析模型缺少 API Key，请在模型详情中补充。"
 CONTENT_HASH_CHUNK_SIZE = 16 * 1024 * 1024
 MAX_CONCURRENT_PIPELINES = 1
 
@@ -60,7 +60,7 @@ def project_mode_active(service_dir: Path = DEFAULT_SERVICE_DIR) -> bool:
 
 def require_pipeline_configuration(settings: Settings) -> None:
     if not settings.resource_execution_policy:
-        raise PipelineConfigurationError("原处理资源身份不明，请在项目中明确选择资源后新建处理记录。")
+        raise PipelineConfigurationError("无法确定这条记录使用的模型。请在项目设置中选择模型后重新处理。")
     if not settings.cheap_model_api_key:
         raise PipelineConfigurationError(PIPELINE_CONFIGURATION_MESSAGE)
 
@@ -135,11 +135,11 @@ def check_service_ready(
 
     embedded = embedded_service_active()
     if embedded and not bool(_EMBEDDED.get("enabled_event") and _EMBEDDED["enabled_event"].is_set()):
-        return {"ok": False, "error_code": "service_not_ready", "message": "处理服务已暂停"}
+        return {"ok": False, "error_code": "service_not_ready", "message": "后台服务已暂停"}
     if not embedded:
         status = get_service_status(service_dir=service_dir)
         if not status.get("running") or status.get("service", {}).get("status") == "paused":
-            return {"ok": False, "error_code": "service_not_ready", "message": "处理服务尚未启动"}
+            return {"ok": False, "error_code": "service_not_ready", "message": "后台服务尚未启动"}
 
     settings: Settings | None = None
     if settings_loader is not None:
@@ -147,33 +147,33 @@ def check_service_ready(
             settings = settings_loader()
             validate_service_settings(settings)
         except Exception:
-            return {"ok": False, "error_code": "service_not_ready", "message": "处理服务配置尚未就绪"}
+            return {"ok": False, "error_code": "service_not_ready", "message": "后台服务的设置无法使用"}
         import shutil
 
         if shutil.which(settings.render.ffmpeg_path) is None or shutil.which("ffprobe") is None:
-            return {"ok": False, "error_code": "service_not_ready", "message": "FFmpeg 运行时尚未就绪"}
+            return {"ok": False, "error_code": "service_not_ready", "message": "缺少音视频处理组件（FFmpeg 或 ffprobe）"}
 
     if project_id is not None:
         if not database_path(service_dir).exists():
-            return {"ok": False, "error_code": "service_not_ready", "message": "项目数据库尚未就绪"}
+            return {"ok": False, "error_code": "service_not_ready", "message": "找不到项目数据库"}
         try:
             with ProjectRepository(service_dir) as repository:
                 project = repository.get_project(project_id)
                 runtime = repository.get_runtime(project_id)
                 config_revision = repository.get_config_revision(project_id)
                 if project is None or runtime is None or project.activation_state != "active":
-                    return {"ok": False, "error_code": "service_not_ready", "message": "首项目尚未启用"}
+                    return {"ok": False, "error_code": "service_not_ready", "message": "项目尚未启用"}
                 if runtime.readiness_state != "ready":
-                    return {"ok": False, "error_code": "service_not_ready", "message": "首项目尚未就绪"}
+                    return {"ok": False, "error_code": "service_not_ready", "message": "项目暂时无法处理录像"}
                 if settings is not None:
                     if config_revision is None or config_revision.config["processing"]["review_strategy"] != "ai_auto":
-                        return {"ok": False, "error_code": "service_not_ready", "message": "首项目处理策略尚未就绪"}
+                        return {"ok": False, "error_code": "service_not_ready", "message": "项目的自动剪辑设置不可用"}
                     resources = resource_map(repository)
                     refs = effective_references(config_revision.config)
                     for purpose, identifier in refs.items():
                         resource = resources.get(identifier)
                         if resource is None or purpose not in resource.ready_purposes:
-                            return {"ok": False, "error_code": "service_not_ready", "message": "首项目资源尚未就绪"}
+                            return {"ok": False, "error_code": "service_not_ready", "message": "项目使用的模型不可用"}
                 try:
                     quick = repository.connection.execute("PRAGMA quick_check").fetchone()
                 except Exception:
@@ -181,7 +181,7 @@ def check_service_ready(
                 if not quick or quick[0] != "ok":
                     return {"ok": False, "error_code": "service_not_ready", "message": "项目数据库检查失败"}
         except Exception:
-            return {"ok": False, "error_code": "service_not_ready", "message": "项目运行环境尚未就绪"}
+            return {"ok": False, "error_code": "service_not_ready", "message": "无法检查项目状态"}
     return {"ok": True, "ready": True}
 
 

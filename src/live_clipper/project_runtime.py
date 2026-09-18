@@ -68,7 +68,7 @@ def dispatch_queued(
                     event_type="failed",
                     detail={"reason": source_error},
                     error_code=source_error,
-                    error_summary="原始录像已变化，重新处理已停止",
+                    error_summary="原始录像内容已变化，已停止重新处理。",
                 )
                 failed.append(run.run_id)
                 continue
@@ -92,7 +92,7 @@ def dispatch_queued(
                 event_type="failed",
                 detail={"reason": error_code},
                 error_code=error_code,
-                error_summary="处理资源不可用" if error_code.endswith("resource_unavailable") else "处理任务启动失败",
+                error_summary="处理所需的模型不可用" if error_code.endswith("resource_unavailable") else "处理任务未能启动。",
             )
             if run.parameter_snapshot.get("schema_version") == 2 and error_code in {
                 "asr_resource_unavailable",
@@ -141,7 +141,7 @@ def recover_processing(
                 event_type="recovery_failed",
                 detail={"reason": "stage_not_recoverable"},
                 error_code="recovery_failed",
-                error_summary="重启后无法恢复当前处理阶段",
+                error_summary="重启后无法继续上次的处理步骤。",
             )
             failed.append(run.run_id)
     return RuntimeReport(recovered_run_ids=tuple(recovered), failed_run_ids=tuple(failed))
@@ -229,7 +229,7 @@ def reconcile_processing(repository: ProjectRepository, *, work_dir: str | Path,
                     stage=run.current_stage or "read_source",
                     event_type="recovery_failed",
                     error_code="processing_interrupted",
-                    error_summary="处理进程中断且没有可验证产物",
+                    error_summary="处理已中断，未找到可用于继续处理的完整结果。",
                 )
                 changed.append(run.run_id)
     return list(dict.fromkeys(changed))
@@ -285,7 +285,7 @@ def ensure_retention_confirmations(
             action="cleanup_confirm",
             run_id=run.run_id,
             target_path=target,
-            reason="项目中间产物已达到保留策略的提醒时间",
+            reason="临时文件已到清理提醒时间。",
             risk_level="high",
             validation={"cleanup_targets": safe_targets, "project_run": True},
             service_dir=service_dir,

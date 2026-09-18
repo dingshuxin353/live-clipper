@@ -177,15 +177,15 @@ class ProjectResultAPI:
         except ResultAPIError as exc:
             return exc.status, _error(exc)
         except FileSelectionGrantError as exc:
-            return 409, _error(ResultAPIError(exc.code, "文件选择授权无效或已失效"))
+            return 409, _error(ResultAPIError(exc.code, "文件选择已失效，请重新选择。"))
         except RevisionConflictError:
-            return 409, _error(ResultAPIError("revision_conflict", "服务器内容已更新，请刷新后重试"))
+            return 409, _error(ResultAPIError("revision_conflict", "内容已更新，请重新读取后核对。"))
         except RequestConflictError:
-            return 409, _error(ResultAPIError("request_id_conflict", "同一 request_id 不能用于不同操作"))
+            return 409, _error(ResultAPIError("request_id_conflict", "本次提交与之前的操作不一致，请先确认之前的操作结果。"))
         except (KeyError, TypeError, ValueError):
-            return 422, _error(ResultAPIError("validation_failed", "请求参数无效", status=422))
+            return 422, _error(ResultAPIError("validation_failed", "提交的信息不符合要求。", status=422))
         except Exception:  # noqa: BLE001 - external responses must never expose raw exceptions.
-            return 500, _error(ResultAPIError("internal_error", "服务暂时无法完成请求", status=500))
+            return 500, _error(ResultAPIError("internal_error", "后台服务暂时无法完成此操作。", status=500))
 
     def clips(self, query: Mapping[str, list[str]]) -> dict[str, Any]:
         unknown = set(query) - {"view", "limit", "cursor"}
@@ -193,16 +193,16 @@ class ProjectResultAPI:
         if unknown or repeated:
             fields = {key: "未知查询参数" for key in sorted(unknown)}
             fields.update({key: "查询参数不能重复" for key in sorted(repeated)})
-            raise ResultAPIError("validation_failed", "查询参数无效", status=422, fields=fields)
+            raise ResultAPIError("validation_failed", "查询条件不符合要求。", status=422, fields=fields)
         view = (query.get("view") or ["new"])[0]
         if view not in {"new", "all"}:
-            raise ResultAPIError("validation_failed", "view 无效", status=422, fields={"view": "仅支持 new 或 all"})
+            raise ResultAPIError("validation_failed", "无法识别所选筛选条件。", status=422, fields={"view": "仅支持 new 或 all"})
         try:
             limit = int((query.get("limit") or ["50"])[0])
         except ValueError as exc:
-            raise ResultAPIError("validation_failed", "limit 必须是整数", status=422) from exc
+            raise ResultAPIError("validation_failed", "加载数量格式不正确。", status=422) from exc
         if not 1 <= limit <= 100:
-            raise ResultAPIError("validation_failed", "limit 必须在 1 到 100 之间", status=422)
+            raise ResultAPIError("validation_failed", "每次可加载 1～100 条结果。", status=422)
         results = [
             result
             for result in self.repository.list_run_results(unseen_only=view == "new")
@@ -236,7 +236,7 @@ class ProjectResultAPI:
                 raise ValueError
             return completed_at, run_id
         except Exception as exc:  # noqa: BLE001 - external opaque cursor.
-            raise ResultAPIError("validation_failed", "cursor 无效", status=422, fields={"cursor": "格式错误"}) from exc
+            raise ResultAPIError("validation_failed", "无法读取下一页位置，请重新加载列表。", status=422, fields={"cursor": "格式错误"}) from exc
 
     def result_summary(self, result: Any) -> dict[str, Any]:
         run = self.repository.get_run(result.run_id)
@@ -269,7 +269,7 @@ class ProjectResultAPI:
         if result is None:
             raise ResultAPIError(
                 "result_not_ready",
-                "剪辑结果尚未形成",
+                "尚无处理结果",
                 current={"run_id": run.run_id, "status": run.status, "current_stage": run.current_stage},
             )
         session = self.repository.get_ai_review_session(result.review_session_id)
@@ -358,12 +358,12 @@ class ProjectResultAPI:
         if result is None:
             if self.repository.get_run(run_id) is None:
                 raise ResultAPIError("run_not_found", "剪辑记录不存在", status=404)
-            raise ResultAPIError("result_not_ready", "剪辑结果尚未形成")
+            raise ResultAPIError("result_not_ready", "尚无处理结果")
         operation = {"run_id": run_id, "expected_result_revision": expected}
         if self._idempotent("result.seen", request_id, operation, run_id):
             return {"ok": True, "result": self.result_dto(result), "unseen_result_count": self.unseen_result_count(), "reused": True}
         if result.result_revision != expected:
-            raise ResultAPIError("revision_conflict", "结果已更新", current=self.result_dto(result))
+            raise ResultAPIError("revision_conflict", "处理结果已更新，请重新读取。", current=self.result_dto(result))
         updated = self.repository.mark_result_seen(run_id, expected_result_revision=expected)
         self._save_idempotency("result.seen", request_id, operation, "run_result", run_id)
         return {"ok": True, "result": self.result_dto(updated), "unseen_result_count": self.unseen_result_count(), "reused": False}
@@ -371,7 +371,7 @@ class ProjectResultAPI:
     def output_dto(self, output_id: str, *, include_path: bool = False) -> dict[str, Any]:
         output = self.repository.get_run_output(output_id)
         if output is None:
-            raise ResultAPIError("output_not_found", "成片不存在", status=404)
+            raise ResultAPIError("output_not_found", "找不到这条成片记录。", status=404)
         run = self.repository.get_run(output.run_id)
         if run is None:
             raise ResultAPIError("data_integrity_error", "成片关联的剪辑记录不存在", status=500)
@@ -416,28 +416,28 @@ class ProjectResultAPI:
     def resolve_output_path(self, output_id: str, *, require_available: bool = True) -> Path:
         output = self.repository.get_run_output(output_id)
         if output is None:
-            raise ResultAPIError("output_not_found", "成片不存在", status=404)
+            raise ResultAPIError("output_not_found", "找不到这条成片记录。", status=404)
         run = self.repository.get_run(output.run_id)
         if run is None:
-            raise ResultAPIError("output_not_found", "成片不存在", status=404)
+            raise ResultAPIError("output_not_found", "找不到这条成片记录。", status=404)
         if output.storage_kind == "project_output":
             root_value = run.parameter_snapshot.get("output", {}).get("directory")
             root = Path(str(root_value or "")).expanduser().resolve()
         elif output.storage_kind == "run_workspace_compat":
             root = (self.settings.paths.work_dir / "projects" / run.project_id / "runs" / run.run_id).expanduser().resolve()
         else:
-            raise ResultAPIError("output_unavailable", "成片存储类型不受支持")
+            raise ResultAPIError("output_unavailable", "暂不支持此成片的存储方式。")
         relative = Path(output.relative_path)
         if relative.is_absolute():
-            raise ResultAPIError("output_unavailable", "成片路径不在受控目录内")
+            raise ResultAPIError("output_unavailable", "成片位置不在 Venus 可访问的范围内。")
         target = (root / relative).resolve()
         try:
             target.relative_to(root)
         except ValueError as exc:
-            raise ResultAPIError("output_unavailable", "成片路径不在受控目录内") from exc
+            raise ResultAPIError("output_unavailable", "成片位置不在 Venus 可访问的范围内。") from exc
         if require_available and (output.status != "ready" or not self._output_is_verified(output, run, target)):
             self._record_unavailable_output(output, target)
-            raise ResultAPIError("output_unavailable", "成片当前不可用")
+            raise ResultAPIError("output_unavailable", "成片暂时不可用")
         return target
 
     def _output_is_verified(self, output: Any, run: Any, target: Path) -> bool:
@@ -477,7 +477,7 @@ class ProjectResultAPI:
             return
         status = "missing" if not target.is_file() else "unreadable"
         code = "output_missing" if status == "missing" else "output_unreadable"
-        summary = "已登记成片文件不存在" if status == "missing" else "已登记成片文件完整性校验失败"
+        summary = "找不到成片文件。" if status == "missing" else "成片文件检查未通过。"
         self.repository.update_output_and_reproject_result(
             output.output_id,
             status=status,
@@ -488,7 +488,7 @@ class ProjectResultAPI:
     def media(self, output_id: str, range_header: str | None = None, *, head_only: bool = False) -> MediaResponse:
         output = self.repository.get_run_output(output_id)
         if output is None:
-            raise ResultAPIError("output_not_found", "成片不存在", status=404)
+            raise ResultAPIError("output_not_found", "找不到这条成片记录。", status=404)
         target = self.resolve_output_path(output_id)
         size = target.stat().st_size
         start, end, status = 0, max(size - 1, 0), 200
@@ -517,10 +517,10 @@ class ProjectResultAPI:
     @staticmethod
     def _parse_range(header: str, size: int) -> tuple[int, int]:
         if size <= 0 or not header.startswith("bytes=") or "," in header:
-            raise ResultAPIError("range_not_satisfiable", "媒体 Range 无效", status=416)
+            raise ResultAPIError("range_not_satisfiable", "视频读取请求不符合要求。", status=416)
         value = header[6:].strip()
         if "-" not in value:
-            raise ResultAPIError("range_not_satisfiable", "媒体 Range 无效", status=416)
+            raise ResultAPIError("range_not_satisfiable", "视频读取请求不符合要求。", status=416)
         first, last = value.split("-", 1)
         try:
             if not first:
@@ -534,14 +534,14 @@ class ProjectResultAPI:
                 raise ValueError
             return start, min(end, size - 1)
         except ValueError as exc:
-            raise ResultAPIError("range_not_satisfiable", "媒体 Range 无效", status=416) from exc
+            raise ResultAPIError("range_not_satisfiable", "视频读取请求不符合要求。", status=416) from exc
 
     def material_dto(self, output_id: str) -> dict[str, Any]:
         material = self.repository.get_output_material(output_id)
         if material is None:
             if self.repository.get_run_output(output_id) is None:
-                raise ResultAPIError("output_not_found", "成片不存在", status=404)
-            raise ResultAPIError("material_not_found", "发布物料不存在", status=404)
+                raise ResultAPIError("output_not_found", "找不到这条成片记录。", status=404)
+            raise ResultAPIError("material_not_found", "找不到这条成片的发布文案。", status=404)
         issues = [
             item
             for item in self.repository.list_issues(run_id=self.repository.get_run_output(output_id).run_id, active_only=True)
@@ -581,35 +581,39 @@ class ProjectResultAPI:
         expected = _integer(payload["expected_revision"], "expected_revision")
         current = self.repository.get_output_material(output_id)
         if current is None:
-            raise ResultAPIError("material_not_found", "发布物料不存在", status=404)
+            raise ResultAPIError("material_not_found", "找不到这条成片的发布文案。", status=404)
         titles = payload["titles"]
         if not isinstance(titles, list) or len(titles) != len(current.title_candidates):
-            raise ResultAPIError("validation_failed", "标题候选集合不能增删", status=422, fields={"titles": "集合不一致"})
+            raise ResultAPIError("validation_failed", "只能修改现有标题，暂不支持新增或删除标题。", status=422, fields={"titles": "提交的标题数量与原记录不一致。"})
         normalized_titles: list[dict[str, str]] = []
         for index, item in enumerate(titles):
             if not isinstance(item, dict) or set(item) != {"title_id", "text"}:
-                raise ResultAPIError("validation_failed", "标题格式无效", status=422, fields={f"titles.{index}": "格式错误"})
+                raise ResultAPIError("validation_failed", "标题数据格式不正确。", status=422, fields={f"titles.{index}": "标题数据格式不正确。"})
             normalized_titles.append({
                 "title_id": _clean_string(item["title_id"], f"titles.{index}.title_id", maximum=128),
                 "text": _clean_string(item["text"], f"titles.{index}.text", maximum=100),
             })
         current_ids = {item["title_id"] for item in current.title_candidates}
         if {item["title_id"] for item in normalized_titles} != current_ids:
-            raise ResultAPIError("validation_failed", "标题候选 ID 集合不能改变", status=422, fields={"titles": "ID 集合不一致"})
+            raise ResultAPIError("validation_failed", "提交的标题与原记录不对应，无法保存。", status=422, fields={"titles": "标题与原记录不对应。"})
         preferred = _clean_string(payload["preferred_title_id"], "preferred_title_id", maximum=128)
         if preferred not in current_ids:
-            raise ResultAPIError("validation_failed", "首选标题不属于候选集合", status=422, fields={"preferred_title_id": "引用无效"})
+            raise ResultAPIError("validation_failed", "请选择已有标题中的一个作为首选。", status=422, fields={"preferred_title_id": "首选标题无效。"})
         description = str(payload["description"])
         if _CONTROL_CHARACTER.search(description) or len(description) > 2000:
-            raise ResultAPIError("validation_failed", "描述内容无效", status=422, fields={"description": "最多 2000 字且不能包含控制字符"})
+            raise ResultAPIError("validation_failed", "视频描述不符合要求，请检查长度和字符。", status=422, fields={"description": "视频描述最多 2000 字，不能包含无效控制字符。"})
         raw_tags = payload["tags"]
-        if not isinstance(raw_tags, list) or len(raw_tags) > 20:
-            raise ResultAPIError("validation_failed", "标签最多 20 个", status=422, fields={"tags": "数量无效"})
+        if not isinstance(raw_tags, list):
+            raise ResultAPIError("validation_failed", "标签格式不正确。", status=422, fields={"tags": "请提交标签列表。"})
+        if len(raw_tags) > 20:
+            raise ResultAPIError("validation_failed", "最多添加 20 个标签。", status=422, fields={"tags": "标签数量不符合要求。"})
         tags: list[str] = []
         for index, tag in enumerate(raw_tags):
-            normalized = _clean_string(tag, f"tags.{index}", maximum=31).lstrip("#").strip()
-            if not 1 <= len(normalized) <= 30:
-                raise ResultAPIError("validation_failed", "标签长度无效", status=422, fields={f"tags.{index}": "应为 1～30 字"})
+            if not isinstance(tag, str):
+                raise ResultAPIError("validation_failed", "标签格式不正确。", status=422, fields={f"tags.{index}": "每个标签应为文字。"})
+            normalized = tag.strip().lstrip("#").strip()
+            if not 1 <= len(normalized) <= 30 or _CONTROL_CHARACTER.search(normalized):
+                raise ResultAPIError("validation_failed", "标签需为 1～30 字。", status=422, fields={f"tags.{index}": "每个标签需为 1～30 字。"})
             if normalized not in tags:
                 tags.append(normalized)
         operation = {
@@ -624,30 +628,31 @@ class ProjectResultAPI:
         if self._idempotent(scope, request_id, operation, current.material_id):
             return {"ok": True, "material": self.material_dto(output_id), "reused": True}
         if current.material_revision != expected:
-            raise ResultAPIError("revision_conflict", "发布物料已更新", current=self.material_dto(output_id))
-        updated = self.repository.update_output_material(
-            output_id,
-            expected_material_revision=expected,
-            title_candidates=normalized_titles,
-            preferred_title_id=preferred,
-            description=description,
-            tags=tags,
-        )
-        for issue in self.repository.list_issues(run_id=self.repository.get_run_output(output_id).run_id, active_only=True):
-            if issue.material_id == updated.material_id and issue.issue_code == "material_generation_failed":
-                self.repository.transition_issue(
-                    issue.issue_id,
-                    expected_issue_revision=issue.issue_revision,
-                    status="resolved",
-                    event_type="material_saved",
-                )
-        self._save_idempotency(scope, request_id, operation, "material", updated.material_id)
+            raise ResultAPIError("revision_conflict", "发布文案已被其他操作修改，请核对最新内容。", current=self.material_dto(output_id))
+        with self.repository.transaction():
+            updated = self.repository.update_output_material(
+                output_id,
+                expected_material_revision=expected,
+                title_candidates=normalized_titles,
+                preferred_title_id=preferred,
+                description=description,
+                tags=tags,
+            )
+            for issue in self.repository.list_issues(run_id=self.repository.get_run_output(output_id).run_id, active_only=True):
+                if issue.material_id == updated.material_id and issue.issue_code == "material_generation_failed":
+                    self.repository.transition_issue(
+                        issue.issue_id,
+                        expected_issue_revision=issue.issue_revision,
+                        status="resolved",
+                        event_type="material_saved",
+                    )
+            self._save_idempotency(scope, request_id, operation, "material", updated.material_id)
         return {"ok": True, "material": self.material_dto(output_id), "reused": False}
 
     def _issue(self, issue_id: str) -> Any:
         issue = self.repository.get_issue(issue_id)
         if issue is None:
-            raise ResultAPIError("issue_not_found", "问题不存在", status=404)
+            raise ResultAPIError("issue_not_found", "找不到这个问题。", status=404)
         return issue
 
     def issue_summary(self, issue: Any) -> dict[str, Any]:
@@ -739,52 +744,65 @@ class ProjectResultAPI:
             _strict(payload, allowed, allowed)
             request_id = _clean_string(payload["request_id"], "request_id", maximum=128)
             expected = _integer(payload["expected_issue_revision"], "expected_issue_revision")
-            issue = self._issue(issue_id)
-            if issue.issue_revision != expected:
-                raise ResultAPIError("revision_conflict", "问题已更新", current=self.issue_dto(issue))
             operation = {"issue_id": issue_id, "action": action, "expected_issue_revision": expected}
-            scope = f"issue.{action}:{issue_id}"
-            if self._idempotent(scope, request_id, operation, issue_id):
-                return {"ok": True, "issue": self.issue_dto(self._issue(issue_id)), "reused": True}
-            overrides: dict[str, Any] | None = None
             if action != "recheck":
-                kind = "source" if action == "source" else "recovery_output"
-                selected = self.grants.consume(str(payload["selection_token"]), issue_id=issue_id, kind=kind)
-                overrides = {"source_path" if kind == "source" else "output_directory": str(selected)}
-            updated = recheck_issue(
-                self.repository,
-                issue_id,
-                expected_issue_revision=expected,
-                operational_overrides=overrides,
-                settings=self.settings,
-            )
-            if action == "source" and updated.status not in {"ready_to_recover", "resolved"}:
-                raise ResultAPIError("source_identity_mismatch", "所选录像与原始内容不一致")
-            self._save_idempotency(scope, request_id, operation, "issue", issue_id)
+                operation["selection_digest"] = hashlib.sha256(str(payload["selection_token"]).encode()).hexdigest()
+            scope = f"issue.{action}:{issue_id}"
+            with self.repository.transaction():
+                if self._idempotent(scope, request_id, operation, issue_id):
+                    return {"ok": True, "issue": self.issue_dto(self._issue(issue_id)), "reused": True}
+                issue = self._issue(issue_id)
+                if issue.issue_revision != expected:
+                    raise ResultAPIError("revision_conflict", "问题状态已更新，请重新检查。", current=self.issue_dto(issue))
+                overrides: dict[str, Any] | None = None
+                if action != "recheck":
+                    kind = "source" if action == "source" else "recovery_output"
+                    selected = self.grants.consume(str(payload["selection_token"]), issue_id=issue_id, kind=kind)
+                    overrides = {"source_path" if kind == "source" else "output_directory": str(selected)}
+                updated = recheck_issue(
+                    self.repository,
+                    issue_id,
+                    expected_issue_revision=expected,
+                    operational_overrides=overrides,
+                    settings=self.settings,
+                )
+                if action == "source" and updated.status not in {"ready_to_recover", "resolved"}:
+                    raise ResultAPIError("source_identity_mismatch", "所选录像与原始录像的内容不一致。")
+                self._save_idempotency(scope, request_id, operation, "issue", issue_id)
             return {"ok": True, "issue": self.issue_dto(updated), "reused": False}
         if action in {"continue", "retry-output", "retry-material"}:
             _strict(payload, {"request_id", "expected_issue_revision"}, {"request_id", "expected_issue_revision"})
             request_id = _clean_string(payload["request_id"], "request_id", maximum=128)
             expected = _integer(payload["expected_issue_revision"], "expected_issue_revision")
+            operation = {"issue_id": issue_id, "action": action, "expected_issue_revision": expected}
+            scope = f"issue.{action}:{issue_id}"
+            existing = self.repository.get_idempotency_key(scope, request_id)
+            if existing is not None and self._idempotent(scope, request_id, operation, existing["object_id"]):
+                if existing["object_type"] == "run":
+                    return {"ok": True, "run_id": existing["object_id"], "reused": True, "reuse_reason": "active_run"}
+                attempt = next(item for item in self.repository.list_recovery_attempts(issue_id) if item.attempt_id == existing["object_id"])
+                return {"ok": True, **self.recovery_attempt_dto(attempt)}
             issue = self._issue(issue_id)
             if issue.issue_revision != expected:
-                raise ResultAPIError("revision_conflict", "问题已更新", current=self.issue_dto(issue))
+                raise ResultAPIError("revision_conflict", "问题状态已更新，请重新检查。", current=self.issue_dto(issue))
             try:
-                if action == "continue":
-                    attempt = continue_run(self.repository, issue_id, expected_issue_revision=expected, request_id=request_id, requested_by="web")
-                elif action == "retry-output":
-                    attempt = retry_output(self.repository, issue_id, expected_issue_revision=expected, request_id=request_id, requested_by="web")
-                else:
-                    attempt = retry_material(self.repository, issue_id, expected_issue_revision=expected, request_id=request_id, requested_by="web")
+                with self.repository.transaction():
+                    if action == "continue":
+                        attempt = continue_run(self.repository, issue_id, expected_issue_revision=expected, request_id=request_id, requested_by="web")
+                    elif action == "retry-output":
+                        attempt = retry_output(self.repository, issue_id, expected_issue_revision=expected, request_id=request_id, requested_by="web")
+                    else:
+                        attempt = retry_material(self.repository, issue_id, expected_issue_revision=expected, request_id=request_id, requested_by="web")
+                    self._save_idempotency(scope, request_id, operation, "run" if isinstance(attempt, Run) else "recovery_attempt", attempt.run_id if isinstance(attempt, Run) else attempt.attempt_id)
             except ValueError as exc:
                 code = str(exc)
                 if "not_ready" in code:
-                    raise ResultAPIError("issue_not_ready", "问题尚未通过检查") from exc
+                    raise ResultAPIError("issue_not_ready", "问题尚未通过检查，暂时不能继续处理。") from exc
                 if action == "retry-output":
-                    raise ResultAPIError("output_not_retryable", "当前问题不能重试成片") from exc
+                    raise ResultAPIError("output_not_retryable", "当前问题不支持重新生成成片。") from exc
                 if action == "retry-material":
-                    raise ResultAPIError("material_not_retryable", "当前问题不能重试物料") from exc
-                raise ResultAPIError("issue_not_ready", "当前问题不支持此恢复操作") from exc
+                    raise ResultAPIError("material_not_retryable", "当前问题不支持重新生成发布文案。") from exc
+                raise ResultAPIError("issue_not_ready", "当前问题不支持此处理方式。") from exc
             if isinstance(attempt, Run):
                 return {
                     "ok": True,
@@ -801,31 +819,32 @@ class ProjectResultAPI:
         revisions = payload["issue_revisions"]
         if not isinstance(revisions, dict) or not revisions:
             raise ResultAPIError("validation_failed", "issue_revisions 必须是非空对象", status=422)
-        issues = [item for item in self.repository.list_issues(active_only=True) if item.issue_group_key == group_key]
-        if not issues:
-            raise ResultAPIError("issue_group_not_found", "问题组不存在", status=404)
-        expected_ids = {item.issue_id for item in issues}
-        if set(revisions) != expected_ids or any(not isinstance(value, int) or isinstance(value, bool) for value in revisions.values()):
-            raise ResultAPIError("validation_failed", "issue_revisions 必须覆盖当前问题组", status=422)
-        operation = {"group_key": group_key, "issue_revisions": revisions}
-        scope = f"issue-group.recheck:{group_key}"
-        if self._idempotent(scope, request_id, operation, group_key):
-            current = [item for item in self.repository.list_issues(active_only=True) if item.issue_group_key == group_key]
-            return {"ok": True, "group_key": group_key, "issues": [self.issue_dto(item) for item in current], "reused": True}
-        for issue in issues:
-            if issue.issue_revision != revisions[issue.issue_id]:
-                raise ResultAPIError("revision_conflict", "问题组已更新")
-        updated = [
-            recheck_issue(
-                self.repository,
-                issue.issue_id,
-                expected_issue_revision=issue.issue_revision,
-                settings=self.settings,
-            )
-            for issue in issues
-        ]
-        self._save_idempotency(scope, request_id, operation, "issue_group", group_key)
-        return {"ok": True, "group_key": group_key, "issues": [self.issue_dto(item) for item in updated], "reused": False}
+        with self.repository.transaction():
+            operation = {"group_key": group_key, "issue_revisions": revisions}
+            scope = f"issue-group.recheck:{group_key}"
+            if self._idempotent(scope, request_id, operation, group_key):
+                current = [item for item in self.repository.list_issues(active_only=True) if item.issue_group_key == group_key]
+                return {"ok": True, "group_key": group_key, "issues": [self.issue_dto(item) for item in current], "reused": True}
+            issues = [item for item in self.repository.list_issues(active_only=True) if item.issue_group_key == group_key]
+            if not issues:
+                raise ResultAPIError("issue_group_not_found", "找不到这组问题。", status=404)
+            expected_ids = {item.issue_id for item in issues}
+            if set(revisions) != expected_ids or any(not isinstance(value, int) or isinstance(value, bool) for value in revisions.values()):
+                raise ResultAPIError("validation_failed", "issue_revisions 必须覆盖当前问题组", status=422)
+            for issue in issues:
+                if issue.issue_revision != revisions[issue.issue_id]:
+                    raise ResultAPIError("revision_conflict", "这组问题已更新，请重新读取。")
+            updated = [
+                recheck_issue(
+                    self.repository,
+                    issue.issue_id,
+                    expected_issue_revision=issue.issue_revision,
+                    settings=self.settings,
+                )
+                for issue in issues
+            ]
+            self._save_idempotency(scope, request_id, operation, "issue_group", group_key)
+            return {"ok": True, "group_key": group_key, "issues": [self.issue_dto(item) for item in updated], "reused": False}
 
     @staticmethod
     def recovery_attempt_dto(attempt: Any) -> dict[str, Any]:
@@ -846,7 +865,7 @@ class ProjectResultAPI:
         kind = _clean_string(payload["kind"], "kind", maximum=32)
         required_action = "select_source" if kind == "source" else "select_recovery_output"
         if required_action not in self.issue_actions(issue):
-            raise ResultAPIError("issue_not_ready", "当前问题不接受此类文件选择")
+            raise ResultAPIError("issue_not_ready", "当前问题不支持选择此类文件或文件夹。")
         selected_path = _clean_string(payload["selected_path"], "selected_path", maximum=4096)
         token = self.grants.issue(issue_id=issue_id, kind=kind, selected_path=selected_path)
         return {"ok": True, "selection_token": token, "expires_in_seconds": self.grants.ttl_seconds}
@@ -865,7 +884,7 @@ class ProjectResultAPI:
             frozen = run.parameter_snapshot['resources'][purpose]
             context = resource_repair_context(self.repository, resource_id, issue_id=issue_id, revision=frozen['revision'])
         except (KeyError, ResourceError) as exc:
-            raise ResultAPIError("resource_not_repairable", "资源不支持修复", status=404) from exc
+            raise ResultAPIError("resource_not_repairable", "无法修复这条记录所用的模型连接。", status=404) from exc
         return {"ok": True, "repair_context": context}
 
     def update_connection(self, resource_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -876,12 +895,12 @@ class ProjectResultAPI:
 
     def _require_issue_resource(self, issue: Any, resource_id: str) -> None:
         if issue.issue_code not in {"ai_resource_unavailable", "asr_resource_unavailable"}:
-            raise ResultAPIError("resource_not_repairable", "当前问题不是资源连接问题")
+            raise ResultAPIError("resource_not_repairable", "当前问题不是模型连接问题。")
         run = self.repository.get_run(str(issue.run_id)) if issue.run_id else None
         references = run.parameter_snapshot.get("resources", {}) if run else {}
         expected = references.get("analysis_ref" if "analyze" in issue.redo_stages else "review_ref") if issue.issue_code == "ai_resource_unavailable" else references.get("asr_ref")
         if str(expected or issue.root_cause_ref or "") != resource_id:
-            raise ResultAPIError("resource_not_repairable", "资源与当前问题不匹配")
+            raise ResultAPIError("resource_not_repairable", "所选模型与这条记录的问题不对应。")
 
     def desktop_output_path(self, output_id: str) -> dict[str, Any]:
         self._require_desktop()
@@ -889,7 +908,7 @@ class ProjectResultAPI:
 
     def _require_desktop(self) -> None:
         if self.auth_context != "bearer":
-            raise ResultAPIError("desktop_auth_required", "该接口仅供桌面主进程访问", status=403)
+            raise ResultAPIError("desktop_auth_required", "请在 Venus 桌面应用中执行此操作。", status=403)
 
     def legacy_awaiting_review(self) -> dict[str, Any]:
         items = []
