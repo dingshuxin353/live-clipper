@@ -53,7 +53,7 @@ def test_deprecated_onboarding_routes_are_tombstoned_without_side_effects(tmp_pa
 
 def test_onboarding_react_exposes_five_steps_and_real_k_endpoints():
     source = _react()
-    expected_steps = ['label: "开始"', 'label: "语音识别"', 'label: "AI 服务"', 'label: "第一个项目"', 'label: "完成"']
+    expected_steps = ['label: "开始"', 'label: "语音识别"', 'label: "AI 服务"', 'label: "第一个项目"', 'label: "确认设置"']
     assert [source.index(label) for label in expected_steps] == sorted(source.index(label) for label in expected_steps)
     api = Path("frontend/src/project-api.ts").read_text(encoding="utf-8")
     for endpoint in [
@@ -78,13 +78,13 @@ def test_startup_gate_pause_completion_and_trial_are_explicit():
     app = Path("frontend/src/App.tsx").read_text(encoding="utf-8")
     onboarding = _react()
     studio = Path("frontend/src/StudioProjects.tsx").read_text(encoding="utf-8")
-    for token in ["migration_required", "diagnostic_required", "正在准备 Venus", "暂时无法确认数据状态"]:
+    for token in ["migration_required", "diagnostic_required", "正在启动 Venus…", "暂时无法确认数据状态"]:
         assert token in app
     assert "MigrationFlow" in app
     assert "Venus 没有初始化或修改这些数据。请等待迁移工具准备完成后再继续。" not in app
-    for token in ["首次设置尚未完成", "继续首次设置"]:
+    for token in ["首次设置尚未完成", "继续设置"]:
         assert token in studio
-    for token in ["项目已保存，本机服务尚未启动", "重新启动服务", "选择一条录像试运行", '"selected"', "selected_relative_paths"]:
+    for token in ["项目已保存，设置尚未完成", 'retryService', "选择录像开始处理", '"selected"', "selected_relative_paths"]:
         assert token in onboarding or token in Path("frontend/src/project-api.ts").read_text(encoding="utf-8")
 
 
@@ -113,8 +113,17 @@ def test_migration_react_uses_real_o_contract_and_keeps_state_private():
         'status={fields.project_name ? { type: "error", message: fields.project_name } : undefined}',
     ]:
         assert token in migration
-    for forbidden in ["localStorage", "sessionStorage", "indexedDB", "console."]:
+    for forbidden in ["localStorage", "indexedDB", "console."]:
         assert forbidden not in migration
+    storage_writer = migration.split("function savePending(", 1)[1].split("function discoveryLabel(", 1)[0]
+    assert "{ kind: operation.kind, id: operation.id }" in storage_writer
+    assert "migrationId: operation.migrationId, revision: operation.revision" in storage_writer
+    assert "JSON.stringify(identity)" in storage_writer
+    for forbidden in ["operation.plan", "operation.choices", "...operation", "JSON.stringify(pending.current)"]:
+        assert forbidden not in storage_writer
+    assert migration.count("sessionStorage.setItem(") == 1
+    assert "keys === 'id,kind'" in migration
+    assert "keys === 'id,kind,migrationId,revision'" in migration
     assert "showBackup(id)" in migration
     assert "showBackup?(migrationId: string)" in shell
     assert "quitApp?()" in shell

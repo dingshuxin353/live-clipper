@@ -179,7 +179,7 @@ def test_legacy_scan_blocks_before_scan_stage_or_process_even_with_global_key(tm
     )
     service_dir = tmp_path / "service"
 
-    with pytest.raises(service.PipelineConfigurationError, match="原处理资源身份不明"):
+    with pytest.raises(service.PipelineConfigurationError, match="无法确定这条记录使用的模型"):
         service.run_service_once(settings, service_dir=service_dir)
 
     assert calls == []
@@ -212,7 +212,7 @@ def test_legacy_retry_requires_original_identity_and_preserves_failed_run(tmp_pa
     write_json(service_dir / "runs.json", {"runs": [run]})
     monkeypatch.setattr(service, "_start_pipeline_process", lambda *args, **kwargs: pytest.fail("must not start"))
 
-    with pytest.raises(service.PipelineConfigurationError, match="原处理资源身份不明"):
+    with pytest.raises(service.PipelineConfigurationError, match="无法确定这条记录使用的模型"):
         service.retry_failed_run("run-failed", settings=Settings(), service_dir=service_dir)
 
     assert read_json(service_dir / "runs.json")["runs"] == [run]

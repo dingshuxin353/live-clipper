@@ -23,7 +23,7 @@ def test_media_supports_full_open_suffix_and_head_ranges(tmp_path):
     assert api.media("output-1", "bytes=-4").body == media[-4:]
     assert api.media("output-1", "bytes=0-3", head_only=True).body == b""
 
-    with pytest.raises(ResultAPIError, match="Range") as exc:
+    with pytest.raises(ResultAPIError, match="视频读取请求不符合要求。") as exc:
         api.media("output-1", "bytes=0-1,3-4")
     assert exc.value.status == 416 and exc.value.code == "range_not_satisfiable"
 

@@ -45,6 +45,6 @@ def test_desktop_migration_bridge_remains_id_only_and_renderer_never_receives_pa
     expected = 'showBackup: (migrationId) => ipcRenderer.invoke("lc:show-migration-backup", migrationId)'
     assert expected in preload
     assert "migrationActions.showBackup(migrationId)" in main
-    assert "showBackup?(migrationId: string): Promise<{ ok: true }>" in types
+    assert "showBackup?(migrationId: string): Promise<{ ok: boolean; message?: string; code?: string }>" in types
     for forbidden in ("backupPath", "backup_path", "showMigrationBackup"):
         assert forbidden not in preload

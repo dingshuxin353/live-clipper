@@ -129,8 +129,8 @@ def test_production_build_is_flat_nonempty_and_secret_free():
         assert forbidden not in combined
 
     for required in [
-        "检查现有内容，准备升级".encode(),
-        "确认升级内容".encode(),
+        "检查旧版数据".encode(),
+        "确认升级".encode(),
         "请保持 Venus 运行".encode(),
         "在 Finder 中显示备份".encode(),
         b"/api/migration/inspect",

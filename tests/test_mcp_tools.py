@@ -294,7 +294,7 @@ def test_scan_and_retry_return_actionable_configuration_error(tmp_path):
     for result in (scan, retry):
         assert result["ok"] is False
         assert result["error_code"] == "pipeline_configuration_required"
-        assert result["message"] == "原处理资源身份不明，请在项目中明确选择资源后新建处理记录。"
+        assert result["message"] == "无法确定这条记录使用的模型。请在项目设置中选择模型后重新处理。"
 
 
 def test_retry_rejects_missing_run_wrong_phase_and_missing_sources(tmp_path):

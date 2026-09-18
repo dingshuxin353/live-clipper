@@ -54,7 +54,7 @@ def test_output_and_selection_operations_use_ids_and_private_bearer_routes():
 def test_desktop_file_actions_are_blocked_while_quitting_and_dialogs_are_narrow():
     runtime = (ROOT / "desktop" / "runtime-state.js").read_text(encoding="utf-8")
 
-    assert 'if (!runtime.canStart()) throw new Error("应用正在退出' in runtime
+    assert 'if (!runtime.canStart()) throw new Error("Venus 正在退出' in runtime
     assert 'properties: ["openFile"]' in runtime
     assert 'properties: ["openDirectory", "createDirectory"]' in runtime
     assert '["m4v", "mkv", "mov", "mp4", "webm"]' in runtime

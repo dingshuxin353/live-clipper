@@ -115,6 +115,8 @@ describe("M2 migration flow", () => {
       await waitFor(() => expect(migrationLoads).toBeGreaterThanOrEqual(2));
       expect(window.location.pathname).toBe("/studio");
       expect(calls.filter(([path]) => path === "/api/migration/acknowledge")).toHaveLength(1);
+      const acknowledgeBody = JSON.parse(String(calls.find(([path]) => path === "/api/migration/acknowledge")?.[1]?.body));
+      expect(JSON.parse(sessionStorage.getItem('venus.migration.pending')!)).toEqual({ kind: 'acknowledge', id: acknowledgeBody.request_id, migrationId: 'migration-1', revision: 8 });
 
       acknowledged = true;
       await waitFor(() => { fireEvent(document, new Event("visibilitychange")); expect(migrationLoads).toBeGreaterThanOrEqual(3); });
@@ -202,5 +204,113 @@ it('does not show a successful report when its required backup is inconsistent',
   installFetchMock({ '/api/onboarding': { ...MIGRATION_STARTUP, migration: { entry: 'completed', session, report } }, '/api/migration': { ...MIGRATION_SNAPSHOT, entry: 'completed', session, report } });
   render(<App />);
   expect(await screen.findByRole('heading', { name: '暂时无法确认数据状态' })).toBeVisible();
+  expect(screen.queryByRole('button', { name: '进入项目' })).not.toBeInTheDocument();
+});
+
+describe('migration request storage boundary', () => {
+  beforeEach(() => { sessionStorage.clear(); route(); });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('persists only execute identity and keeps the complete original request in memory', async () => {
+    const calls = installFetchMock({ '/api/onboarding': MIGRATION_STARTUP, '/api/migration/execute': () => Promise.reject(new Error('offline')) });
+    render(<App />); await reachConfirmation(); fireEvent.click(screen.getByRole('button', { name: '开始升级' }));
+    await screen.findByText(/暂时无法确认升级是否已开始/);
+    const body = JSON.parse(String(calls.find(([path]) => path === '/api/migration/execute')?.[1]?.body));
+    expect(body.choices).toEqual(MIGRATION_PLAN.choices);
+    expect(JSON.parse(sessionStorage.getItem('venus.migration.pending')!)).toEqual({ kind: 'execute', id: body.request_id });
+    fireEvent.click(screen.getByRole('button', { name: '继续本次操作' }));
+    await waitFor(() => expect(calls.filter(([path]) => path === '/api/migration/execute')).toHaveLength(2));
+    expect(JSON.parse(String(calls.filter(([path]) => path === '/api/migration/execute')[1][1]?.body))).toEqual(body);
+  });
+
+  it.each([false, true])('restores a reloaded execute from backend facts only (accepted=%s)', async accepted => {
+    sessionStorage.setItem('venus.migration.pending', JSON.stringify({ kind: 'execute', id: 'original-execute' }));
+    const calls = installFetchMock({ '/api/onboarding': MIGRATION_STARTUP, '/api/migration': accepted ? { ...MIGRATION_SNAPSHOT, entry: 'executing', session: SESSION, plan: null } : MIGRATION_SNAPSHOT });
+    render(<App />);
+    if (accepted) {
+      await screen.findByRole('heading', { name: '正在升级' });
+      expect(sessionStorage.getItem('venus.migration.pending')).toBeNull();
+    } else {
+      await screen.findByRole('heading', { name: '正在核对升级结果' });
+      fireEvent.click(screen.getByRole('button', { name: '重新读取状态' }));
+      await waitFor(() => expect(calls.filter(([path]) => path === '/api/migration').length).toBeGreaterThan(1));
+      expect(sessionStorage.getItem('venus.migration.pending')).not.toBeNull();
+      expect(screen.queryByRole('button', { name: /开始检查|开始升级|继续本次操作/ })).not.toBeInTheDocument();
+    }
+    expect(calls.some(([path, options]) => path.startsWith('/api/migration/') && options?.method === 'POST')).toBe(false);
+  });
+
+  it.each([
+    '{broken', 'null', '{}', JSON.stringify({ kind: 'execute', id: 'invalid/id' }),
+    JSON.stringify({ kind: 'execute', id: 'old-execute', plan: MIGRATION_PLAN }),
+    JSON.stringify({ kind: 'retry', id: 'retry', migrationId: 'migration-1', revision: -1 }),
+  ])('does not create an operation from an invalid stored identity: %s', async raw => {
+    sessionStorage.setItem('venus.migration.pending', raw);
+    const calls = installFetchMock({ '/api/onboarding': MIGRATION_STARTUP });
+    render(<App />); await screen.findByText(/无法读取原操作标识/);
+    fireEvent.click(screen.getByRole('button', { name: '重新读取状态' }));
+    await waitFor(() => expect(calls.filter(([path]) => path === '/api/migration').length).toBeGreaterThan(1));
+    expect(screen.queryByRole('button', { name: /开始检查|开始升级/ })).not.toBeInTheDocument();
+    expect(calls.some(([path, options]) => path.startsWith('/api/migration/') && options?.method === 'POST')).toBe(false);
+  });
+
+  it('keeps a failed storage read distinct from no pending operation', async () => {
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new DOMException('blocked', 'SecurityError'); });
+    const calls = installFetchMock({ '/api/onboarding': MIGRATION_STARTUP });
+    render(<App />); await screen.findByText(/无法读取原操作标识/);
+    expect(screen.queryByRole('button', { name: '开始检查' })).not.toBeInTheDocument();
+    expect(calls.some(([path, options]) => path.startsWith('/api/migration/') && options?.method === 'POST')).toBe(false);
+  });
+
+  it('does not send execute if saving identity fails before submission', async () => {
+    const calls = installFetchMock({ '/api/onboarding': MIGRATION_STARTUP });
+    render(<App />); await reachConfirmation();
+    const save = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new DOMException('full', 'QuotaExceededError'); });
+    fireEvent.click(screen.getByRole('button', { name: '开始升级' }));
+    await screen.findByText('本次请求未发送：无法保存操作标识，请重试。');
+    expect(calls.some(([path]) => path === '/api/migration/execute')).toBe(false);
+    save.mockRestore();
+  });
+
+  it('does not treat a cleanup failure as execution failure or resend an accepted request', async () => {
+    let accepted = false;
+    const calls = installFetchMock({
+      '/api/onboarding': MIGRATION_STARTUP,
+      '/api/migration': () => jsonResponse(accepted ? { ...MIGRATION_SNAPSHOT, entry: 'executing', session: SESSION, plan: null } : MIGRATION_SNAPSHOT),
+      '/api/migration/execute': () => { accepted = true; return jsonResponse({ ok: true, session: SESSION }, 202); },
+    });
+    render(<App />); await reachConfirmation();
+    const remove = vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(() => { throw new DOMException('blocked', 'SecurityError'); });
+    fireEvent.click(screen.getByRole('button', { name: '开始升级' }));
+    await screen.findByText(/已收到操作结果，但无法清除本地操作标识/);
+    expect(screen.queryByRole('heading', { name: '升级未完成' })).not.toBeInTheDocument();
+    remove.mockRestore(); fireEvent.click(screen.getByRole('button', { name: '重新读取状态' }));
+    await screen.findByRole('heading', { name: '正在升级' });
+    expect(sessionStorage.getItem('venus.migration.pending')).toBeNull();
+    expect(calls.filter(([path]) => path === '/api/migration/execute')).toHaveLength(1);
+  });
+
+  it('does not replay a stored retry against a different backend session', async () => {
+    sessionStorage.setItem('venus.migration.pending', JSON.stringify({ kind: 'retry', id: 'original-retry', migrationId: 'other-session', revision: 5 }));
+    const calls = installFetchMock({ '/api/onboarding': MIGRATION_STARTUP, '/api/migration': { ...MIGRATION_SNAPSHOT, entry: 'failed', session: { ...SESSION, state: 'failed_rolled_back', revision: 5 } } });
+    render(<App />); await screen.findByRole('heading', { name: '正在核对升级结果' });
+    expect(screen.queryByRole('button', { name: '继续本次操作' })).not.toBeInTheDocument();
+    expect(calls.some(([path]) => path === '/api/migration/retry')).toBe(false);
+  });
+});
+
+it('can clear a rejected request marker without treating the rejection as accepted', async () => {
+  sessionStorage.clear(); route();
+  const calls = installFetchMock({ '/api/onboarding': MIGRATION_STARTUP, '/api/migration/execute': () => jsonResponse({ ok: false, error: { code: 'migration_plan_changed', message: '计划已变化', fields: {} } }, 409) });
+  render(<App />); await reachConfirmation();
+  const remove = vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(() => { throw new DOMException('blocked', 'SecurityError'); });
+  try {
+    fireEvent.click(screen.getByRole('button', { name: '开始升级' }));
+    await screen.findByText(/已收到操作结果，但无法清除本地操作标识/);
+  } finally { remove.mockRestore(); }
+  fireEvent.click(screen.getByRole('button', { name: '重新读取状态' }));
+  await screen.findByRole('button', { name: '开始检查' });
+  expect(sessionStorage.getItem('venus.migration.pending')).toBeNull();
+  expect(calls.filter(([path]) => path === '/api/migration/execute')).toHaveLength(1);
   expect(screen.queryByRole('button', { name: '进入项目' })).not.toBeInTheDocument();
 });

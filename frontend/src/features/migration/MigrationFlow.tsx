@@ -29,9 +29,28 @@ function entryFor(session: MigrationSession): MigrationStartupSummary["entry"] {
 function bytes(value: number) { if (!Number.isFinite(value) || value <= 0) return "0 B"; const units = ["B", "KB", "MB", "GB", "TB"]; const rank = Math.min(units.length - 1, Math.floor(Math.log(value) / Math.log(1024))); return `${(value / 1024 ** rank).toFixed(rank ? 1 : 0)} ${units[rank]}`; }
 function diagnosticId(error: unknown) { return error instanceof ApiError && error.code !== "unknown_error" ? error.code.replaceAll("_", "-").toUpperCase() : null; }
 function message(error: unknown, fallback = "操作未完成，请重试。") { return error instanceof ApiError && error.code !== "unknown_error" ? error.message : fallback; }
-type MigrationRequest = { kind: 'execute'; id: string; plan: MigrationPlan } | { kind: 'retry' | 'acknowledge'; id: string; migrationId: string; revision: number };
+type MigrationRequest = { kind: 'execute'; id: string; plan?: MigrationPlan } | { kind: 'retry' | 'acknowledge'; id: string; migrationId: string; revision: number };
 const PENDING_KEY = 'venus.migration.pending';
-function readPending(): MigrationRequest | null { try { return JSON.parse(sessionStorage.getItem(PENDING_KEY) || 'null'); } catch { return null; } }
+function readPending(): { request: MigrationRequest | null; issue: string } {
+  try {
+    const raw = sessionStorage.getItem(PENDING_KEY);
+    if (raw === null) return { request: null, issue: '' };
+    const value = JSON.parse(raw);
+    const identifier = (item: unknown): item is string => typeof item === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(item);
+    if (!value || typeof value !== 'object' || Array.isArray(value) || !identifier(value.id)) throw new Error();
+    const keys = Object.keys(value).sort().join(',');
+    if (value.kind === 'execute' && keys === 'id,kind') return { request: { kind: 'execute', id: value.id }, issue: '' };
+    if ((value.kind === 'retry' || value.kind === 'acknowledge') && keys === 'id,kind,migrationId,revision' && identifier(value.migrationId) && Number.isSafeInteger(value.revision) && value.revision >= 0) {
+      return { request: { kind: value.kind, id: value.id, migrationId: value.migrationId, revision: value.revision }, issue: '' };
+    }
+    throw new Error();
+  } catch { return { request: null, issue: '无法读取原操作标识，暂时无法确认升级结果。请重新读取状态；仍无法确认时，请联系开发者排查。' }; }
+}
+function savePending(operation: MigrationRequest) {
+  const identity = operation.kind === 'execute' ? { kind: operation.kind, id: operation.id }
+    : { kind: operation.kind, id: operation.id, migrationId: operation.migrationId, revision: operation.revision };
+  sessionStorage.setItem(PENDING_KEY, JSON.stringify(identity));
+}
 function discoveryLabel(source: Pick<MigrationChoices, "trigger_mode" | "schedule_mode" | "daily_time" | "interval_minutes">) {
   if (source.trigger_mode === "manual") return "手动扫描";
   if (source.schedule_mode === "interval") return source.interval_minutes ? `每 ${source.interval_minutes} 分钟自动扫描` : '扫描间隔未记录';
@@ -44,14 +63,19 @@ function normalizedChoices(value: MigrationChoices): MigrationChoices {
 }
 
 export function MigrationFlow({ startup, onEnter }: Props) {
+  const [stored] = useState(readPending); const [storageIssue, setStorageIssue] = useState<{ phase: 'read' | 'clear'; message: string } | null>(stored.issue ? { phase: 'read', message: stored.issue } : null);
   const [summary, setSummary] = useState(startup); const [source, setSource] = useState<MigrationSnapshot["source"] | null>(null);
-  const [inspectionPlan, setInspectionPlan] = useState<MigrationPlan | null>(null); const [validatedPlan, setValidatedPlan] = useState<MigrationPlan | null>(() => { const pending = readPending(); return pending?.kind === "execute" ? pending.plan : null; });
-  const [choices, setChoices] = useState<MigrationChoices | null>(null); const [localScreen, setLocalScreen] = useState<Screen>(readPending()?.kind === "execute" ? "confirm" : "check");
+  const [inspectionPlan, setInspectionPlan] = useState<MigrationPlan | null>(null); const [validatedPlan, setValidatedPlan] = useState<MigrationPlan | null>(null);
+  const [choices, setChoices] = useState<MigrationChoices | null>(null); const [localScreen, setLocalScreen] = useState<Screen>("check");
   const [loading, setLoading] = useState(startup.entry !== "completed"); const [busy, setBusy] = useState(""); const [error, setError] = useState("");
   const [errorId, setErrorId] = useState<string | null>(null); const [fields, setFields] = useState<Record<string, string>>({}); const [connection, setConnection] = useState("");
   const [historyLimit, setHistoryLimit] = useState(20); const dialogRef = useRef<HTMLElement>(null); const titleRef = useRef<HTMLHeadingElement>(null);
-  const pending = useRef(readPending()); const [uncertain, setUncertain] = useState(Boolean(pending.current)); const [enterFailed, setEnterFailed] = useState(false);
-  const clearOperation = useCallback(() => { pending.current = null; sessionStorage.removeItem(PENDING_KEY); setUncertain(false); }, []); const loadRevision = useRef(0); const entered = useRef(false);
+  const pending = useRef(stored.request); const [uncertain, setUncertain] = useState(Boolean(pending.current)); const [enterFailed, setEnterFailed] = useState(false);
+  const clearOperation = useCallback(() => {
+    pending.current = null; setUncertain(false);
+    try { sessionStorage.removeItem(PENDING_KEY); setStorageIssue(null); }
+    catch { setStorageIssue({ phase: 'clear', message: '已收到操作结果，但无法清除本地操作标识。请重新读取状态后继续，不要重新提交升级。' }); }
+  }, []); const loadRevision = useRef(0); const entered = useRef(false);
 
   const adopt = useCallback((next: MigrationSnapshot | MigrationStartupSummary) => {
     const operation = pending.current;
@@ -141,16 +165,21 @@ export function MigrationFlow({ startup, onEnter }: Props) {
   }
   async function submit(operation: MigrationRequest) {
     if (busy) return;
-    const recovering = Boolean(pending.current); pending.current ??= operation;
-    sessionStorage.setItem(PENDING_KEY, JSON.stringify(pending.current)); setBusy(operation.kind); clearError();
-    const original = pending.current; let writing = false;
+    if (storageIssue) return;
+    const recovering = Boolean(pending.current); const original = pending.current ?? operation;
+    if (original.kind === 'execute' && !original.plan) return;
+    try { savePending(original); }
+    catch { setError('本次请求未发送：无法保存操作标识，请重试。'); return; }
+    pending.current = original; setBusy(original.kind); clearError();
+    let writing = false;
     try {
       if (recovering) {
         const current = await refresh();
         if (!pending.current) { if (original.kind === 'acknowledge' && current.report?.acknowledged_at) enterProject(current.report.project.project_id); return; }
+        if (original.kind !== 'execute' && current.session?.migration_id !== original.migrationId) { setUncertain(true); setError('无法核对原升级会话，请重新读取状态。'); return; }
       }
       writing = true;
-      const result = original.kind === 'execute' ? await projectApi.migrationExecute(original.id, original.plan)
+      const result = original.kind === 'execute' ? await projectApi.migrationExecute(original.id, original.plan!)
         : original.kind === 'retry' ? await projectApi.migrationRetry(original.id, original.migrationId, original.revision)
         : await projectApi.migrationAcknowledge(original.id, original.migrationId, original.revision);
       if (original.kind === 'acknowledge') {
@@ -182,13 +211,21 @@ export function MigrationFlow({ startup, onEnter }: Props) {
   function execute() { if (pending.current) return submit(pending.current); if (validatedPlan) return submit({ kind: 'execute', id: requestId('migration-execute'), plan: validatedPlan }); }
   function retry() { if (pending.current) return submit(pending.current); if (summary.session) return submit({ kind: 'retry', id: requestId('migration-retry'), migrationId: summary.session.migration_id, revision: summary.session.revision }); }
   function acknowledge() { if (pending.current) return submit(pending.current); if (summary.session) return submit({ kind: 'acknowledge', id: requestId('migration-acknowledge'), migrationId: summary.session.migration_id, revision: summary.session.revision }); }
+  const unresolved = Boolean(pending.current && (pending.current.kind === 'execute' ? !pending.current.plan : summary.session?.migration_id !== pending.current.migrationId));
+  async function reread() {
+    if (busy) return; setBusy('read'); clearError();
+    try { const next = await refresh(); if (storageIssue && (storageIssue.phase === 'clear' || next.session)) clearOperation(); }
+    catch (caught) { setError(message(caught, '无法读取升级状态，请重试。')); }
+    finally { setBusy(''); }
+  }
   async function showBackup() { const id = summary.session?.migration_id; if (!id || !window.liveClipperShell?.showBackup) return; setBusy('backup'); clearError(); try { const result = await window.liveClipperShell.showBackup(id); if (!result.ok) { setError(result.message || '无法显示升级备份，请稍后重试。'); setErrorId(result.code?.replaceAll('_', '-').toUpperCase() || null); } } catch (caught) { setError(message(caught, '无法在 Finder 中显示备份，请稍后重试。')); } finally { setBusy(''); } }
 
   return <div className="migration-layer"><section className="migration-shell" role="dialog" aria-modal="true" aria-labelledby="migration-title" ref={dialogRef}>
     <header className="migration-header"><div className="migration-brand"><img src="/static/venus-mark.png" alt="" /><strong>Venus</strong></div><div><span>旧版数据升级</span>{active && <small>正在升级，请保持 Venus 运行。</small>}</div></header>
     <div className="migration-layout"><aside className="migration-steps" aria-label="升级步骤">{STEPS.map(([label, note], index) => <div className={index === step ? "active" : index < step ? "done" : ""} key={label}><span>{index < step ? <RemixIcon name="check" /> : index + 1}</span><div><strong>{label}</strong><small>{note}</small></div></div>)}<p>升级不会移动或删除原始录像。</p></aside>
       <main className="migration-content">{error && <div className="migration-error" role="alert"><span>{error}</span>{errorId && <small>问题编号：{errorId}</small>}</div>}{connection && <div className="migration-connection" role="status">{connection}</div>}
-        {loading && !source && screen === "check" ? <Loading /> : screen === "check" ? <CheckStep source={source} busy={busy} inspect={inspect} quit={() => void window.liveClipperShell?.quitApp?.()} quitAvailable={Boolean(window.liveClipperShell?.quitApp)} error={error} titleRef={titleRef} />
+        {storageIssue || unresolved ? <div className="migration-step"><div className="migration-scroll"><h1 id="migration-title" ref={titleRef} tabIndex={-1}>正在核对升级结果</h1><p>{storageIssue?.message || '原请求内容已不在当前页面，暂时无法确认升级结果。请重新读取状态；仍无法确认时，请联系开发者排查。'}</p></div><footer className="migration-footer"><button className="button primary" disabled={Boolean(busy)} onClick={() => void reread()}>重新读取状态</button></footer></div>
+          : loading && !source && screen === "check" ? <Loading /> : screen === "check" ? <CheckStep source={source} busy={busy} inspect={inspect} quit={() => void window.liveClipperShell?.quitApp?.()} quitAvailable={Boolean(window.liveClipperShell?.quitApp)} error={error} titleRef={titleRef} />
           : screen === "differences" && inspectionPlan && choices ? <DifferenceStep plan={inspectionPlan} choices={choices} fields={fields} busy={busy} historyLimit={historyLimit} update={updateChoice} select={selectDirectory} more={() => setHistoryLimit((value) => value + 20)} back={backToCheck} next={validate} titleRef={titleRef} />
           : screen === "confirm" && validatedPlan ? <ConfirmStep plan={validatedPlan} uncertain={uncertain} busy={busy} back={() => { if (!pending.current) setLocalScreen("differences"); }} execute={execute} titleRef={titleRef} />
           : screen === "executing" && summary.session ? <ExecutingStep session={summary.session} titleRef={titleRef} />

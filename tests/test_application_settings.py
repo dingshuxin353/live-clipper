@@ -42,5 +42,5 @@ def test_invalid_config_fails_without_leaking_contents_or_creating_files(tmp_pat
     path = tmp_path / 'bad.toml'
     path.write_text('secret = "unfinished')
     before = path.read_bytes()
-    assert application_config(path) == {'ok': False, 'message': '数据位置未获取，请检查服务后重试'}
+    assert application_config(path) == {'ok': False, 'message': '无法读取数据位置，请重试。'}
     assert path.read_bytes() == before
