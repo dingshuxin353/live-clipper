@@ -93,12 +93,13 @@ def test_resource_creation_failure_rolls_back_whole_migration_and_owned_credenti
     assert list((service_dir / 'resource-credentials').glob('*.env')) == []
 
 
-def released_half_complete(tmp_path, *, acknowledged=False):
+def released_half_complete(tmp_path, *, acknowledged=False, asr_backend='mlx_whisper'):
     """Execute the released storage transaction, without its later resource conversion."""
     from live_clipper.project_domain import legacy_id
     from live_clipper.project_migration import build_migration_plan, create_migration_backup
 
     coordinator, service_dir = _legacy_home(tmp_path)
+    coordinator.config_path.write_text(coordinator.config_path.read_text().replace('[asr]\n', f'[asr]\nbackend = "{asr_backend}"\n'))
     choices = _validated(coordinator)['choices']
     inspection = coordinator._inspection()
     plan = build_migration_plan(inspection, choices=choices, backup_root=coordinator.backup_root)
@@ -312,10 +313,12 @@ def test_process_kill_and_restart_preserve_exactly_one_migration_result(tmp_path
 def test_half_complete_http_and_background_guards_then_wal_completion(tmp_path):
 
     from live_clipper import service
+    from live_clipper.cli import ENV_TEMPLATE
     from live_clipper.project_runtime import tick_project_runtime
     from live_clipper.project_scheduler import tick_project_schedules
 
     coordinator, session = released_half_complete(tmp_path, acknowledged=True)
+    coordinator.env_path.write_text(ENV_TEMPLATE)
     settings = coordinator.settings_loader()
     with ProjectRepository(coordinator.service_dir) as observer:
         before = observer.list_runs(), observer.list_projects()
@@ -425,3 +428,59 @@ def test_prior_empty_resource_conversion_does_not_skip_newly_imported_assignment
         refs = repository.get_config_revision(project.project_id).config['resources']
         assert refs['asr_ref'] and refs['asr_ref'] != 'legacy.asr.default'
         assert refs['analysis_ref'] and refs['analysis_ref'] != 'legacy.analysis.default'
+
+
+@pytest.mark.parametrize('environment', ['empty', 'template', 'comments', 'unrelated'])
+def test_old_half_complete_without_effective_credentials_can_resume(tmp_path, environment):
+    from live_clipper.cli import ENV_TEMPLATE
+
+    coordinator, original = released_half_complete(tmp_path, acknowledged=True)
+    contents = {'empty': '', 'template': ENV_TEMPLATE, 'comments': '# no credentials\n\n',
+                'unrelated': 'EDITOR=vim\nUNUSED_SETTING=value\n'}[environment]
+    coordinator.env_path.write_text(contents)
+    settings = coordinator.settings_loader()
+    assert not any((settings.asr_api_key, settings.cheap_model_api_key, settings.hf_token))
+    with ProjectRepository(coordinator.service_dir) as repository:
+        history = repository.list_runs()
+        project = repository.get_project(original.project_id)
+    accepted = coordinator.retry({'request_id': 'continue-without-credentials', 'migration_id': original.migration_id,
+                                  'expected_revision': original.revision})[1]['session']
+    completed = finish(coordinator, accepted)
+    assert completed['entry'] == 'completed'
+    assert completed['session']['state'] == 'completed_attention'
+    assert completed['session']['project_id'] == original.project_id
+    assert coordinator.env_path.read_text() == contents
+    with ProjectRepository(coordinator.service_dir) as repository:
+        assert repository.list_runs() == history
+        assert len(repository.list_projects()) == 1
+        assert repository.get_project(original.project_id).activation_state == project.activation_state
+        assert not repository.connection.execute('SELECT 1 FROM resource_revisions WHERE binding_ref IS NOT NULL').fetchone()
+    assert not list((coordinator.service_dir/'resource-credentials').glob('*.env'))
+
+
+@pytest.mark.parametrize('key,backend', [('ASR_API_KEY', 'openai'), ('CHEAP_MODEL_API_KEY', 'mlx_whisper'), ('HF_TOKEN', 'mlx_whisper')])
+def test_unregistered_effective_credential_still_blocks_old_resume(tmp_path, key, backend):
+    coordinator, original = released_half_complete(tmp_path, acknowledged=True, asr_backend=backend)
+    contents = f'{key}=isolated-unregistered-key\n'
+    coordinator.env_path.write_text(contents)
+    with ProjectRepository(coordinator.service_dir) as repository:
+        history, projects = repository.list_runs(), repository.list_projects()
+    with pytest.raises(MigrationError, match='migration_credential_source_unknown'):
+        coordinator.retry({'request_id': 'unknown-credential', 'migration_id': original.migration_id,
+                           'expected_revision': original.revision})
+    assert coordinator.env_path.read_text() == contents
+    assert coordinator.snapshot()['entry'] == 'incomplete'
+    with ProjectRepository(coordinator.service_dir) as repository:
+        assert (repository.list_runs(), repository.list_projects()) == (history, projects)
+        assert not ResourceStore(repository).list()
+
+
+@pytest.mark.parametrize('key,backend', [('ASR_API_KEY', 'mlx_whisper'), ('HF_TOKEN', 'openai')])
+def test_credential_unused_by_this_conversion_is_not_bound(tmp_path, key, backend):
+    coordinator, original = released_half_complete(tmp_path, acknowledged=True, asr_backend=backend)
+    coordinator.env_path.write_text(f'{key}=unused-isolated-key\n')
+    accepted = coordinator.retry({'request_id': 'unused-credential', 'migration_id': original.migration_id,
+                                  'expected_revision': original.revision})[1]['session']
+    assert finish(coordinator, accepted)['session']['state'] == 'completed_attention'
+    with ProjectRepository(coordinator.service_dir) as repository:
+        assert not repository.connection.execute('SELECT 1 FROM resource_revisions WHERE binding_ref IS NOT NULL').fetchone()

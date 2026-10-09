@@ -525,9 +525,15 @@ class MigrationCoordinator:
                     'SELECT 1 FROM resources WHERE resource_id=? AND deleted_at IS NULL', (value,),
                 ).fetchone():
                     raise MigrationError('migration_resource_conflict', '项目使用的模型配置无法核验，请保留现有设置并联系开发者排查。')
-        if self.env_path.exists() and not (self.service_dir / 'resource-migration-owned.jsonl').exists():
+        from .resource_migration import migration_credentials
+
+        settings = self.settings_loader()
+        refs = repository.get_config_revision(session.project_id).config['resources']
+        credentials = migration_credentials(settings, needs_asr=refs['asr_ref'] == 'legacy.asr.default',
+                                            needs_analysis='legacy.analysis.default' in refs.values())
+        if any(credentials) and not (self.service_dir / 'resource-migration-owned.jsonl').exists():
             raise MigrationError('migration_credential_source_unknown', '原升级没有记录这份凭据的来源，暂时不能自动绑定当前凭据。请保留数据并联系开发者排查。')
-        return self.settings_loader()
+        return settings
 
     def _resume_resources(self, migration_id: str) -> None:
         from .resource_migration import prepare_resource_migration
