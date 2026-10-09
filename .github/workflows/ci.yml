@@ -151,7 +151,7 @@ jobs:
         run: bash scripts/ci/check-generated.sh
 
   ci-required:
-    if: ${{ always() }}
+    if: ${{ !cancelled() }}
     needs: [backend-desktop, frontend]
     runs-on: ubuntu-latest
     timeout-minutes: 5
