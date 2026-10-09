@@ -21,7 +21,6 @@ concurrency:
 
 jobs:
   backend-desktop:
-    if: ${{ false }}
     runs-on: macos-14
     timeout-minutes: 15
     outputs:
