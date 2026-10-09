@@ -20,6 +20,11 @@ from .resource_store import ResourceStore, encoded, fingerprint
 STATE_KEY = 'named_resources_migration'
 
 
+def migration_credentials(settings: Settings, *, needs_asr: bool, needs_analysis: bool) -> tuple[str | None, str | None]:
+    asr = settings.asr_api_key if settings.asr.backend == 'openai' else settings.hf_token if settings.asr.backend == 'mlx_whisper' else None
+    return asr if needs_asr else None, settings.cheap_model_api_key if needs_analysis else None
+
+
 def migrate_resources(repository: ProjectRepository, settings: Settings, *, fault: Callable[[str], None] | None = None) -> None:
     with prepare_resource_migration(repository, settings, fault=fault) as convert:
         with repository.transaction():
@@ -108,6 +113,7 @@ def _convert_resources(repository, settings, store, write_credential, *, fault):
             legacy_refs = [repository.get_config_revision(p.project_id).config['resources'] for p in legacy_projects]
             needs_asr = draft_asr_matches or any(r['asr_ref'] == 'legacy.asr.default' for r in legacy_refs)
             needs_analysis = draft_ai_matches or any('legacy.analysis.default' in r.values() for r in legacy_refs)
+            asr_credential, analysis_credential = migration_credentials(settings, needs_asr=needs_asr, needs_analysis=needs_analysis)
             llm = settings.llm
             review = settings.review_automation
             analysis_config = {'endpoint': llm.api_base, 'model': llm.model, 'provider': 'custom',
@@ -118,11 +124,9 @@ def _convert_resources(repository, settings, store, write_credential, *, fault):
             if settings.asr.backend == 'openai':
                 asr_kind = 'cloud_asr'
                 asr_config['endpoint'] = settings.asr.api_base
-                asr_credential = settings.asr_api_key
             elif settings.asr.backend == 'mlx_whisper':
                 asr_kind = 'local_asr'
                 asr_config['model_source'] = settings.asr.model_source
-                asr_credential = settings.hf_token
             elif needs_asr:
                 raise ValueError('legacy_asr_backend_unknown')
 
@@ -136,7 +140,7 @@ def _convert_resources(repository, settings, store, write_credential, *, fault):
                 return identifier
 
             asr_id = add(asr_kind, '旧版语音识别模型', asr_config, asr_credential) if needs_asr else ''
-            analysis_id = add('ai', '旧版内容分析模型', analysis_config, settings.cheap_model_api_key) if needs_analysis else ''
+            analysis_id = add('ai', '旧版内容分析模型', analysis_config, analysis_credential) if needs_analysis else ''
             review_id = 'reuse_analysis'
             if settings.legacy_review_removed:
                 review_id = ''
@@ -146,7 +150,7 @@ def _convert_resources(repository, settings, store, write_credential, *, fault):
                 else:
                     review_id = ''
             elif any(r.get('review_ref', r['analysis_ref']) == 'legacy.analysis.default' for r in legacy_refs) and review.model.model and review.model.model != llm.model:
-                review_id = add('ai', '旧版片段筛选模型', {**analysis_config, 'model': review.model.model}, settings.cheap_model_api_key)
+                review_id = add('ai', '旧版片段筛选模型', {**analysis_config, 'model': review.model.model}, analysis_credential)
             if fault:
                 fault('after_resources')
             for project in legacy_projects:
