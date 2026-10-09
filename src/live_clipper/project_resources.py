@@ -55,8 +55,7 @@ def resource_repair_context(repository: ProjectRepository, resource_id: str, *, 
 
 
 def resolve_parameter_snapshot(config: dict[str, Any], settings: Settings, *, repository: ProjectRepository) -> dict[str, Any]:
-    state = repository.connection.execute("SELECT value FROM system_state WHERE key='named_resources_migration'").fetchone()
-    if state and state[0] != 'completed':
+    if repository.resource_migration_pending():
         raise ResourceUnavailableError('migration_pending')
     store = ResourceStore(repository)
     refs = effective_references(config)

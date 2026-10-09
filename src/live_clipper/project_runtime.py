@@ -36,6 +36,8 @@ def dispatch_queued(
     processor: Callable[[Run, Path], Any],
     capacity: int = 1,
 ) -> RuntimeReport:
+    if repository.resource_migration_pending():
+        return RuntimeReport()
     processing = sum(
         run.status == "processing" and run.current_stage not in {"review", "render"}
         for run in repository.list_runs()
@@ -302,6 +304,8 @@ def tick_project_runtime(settings: Settings, *, service_dir: Path) -> dict[str, 
     with ProjectRepository(service_dir) as repository:
         if repository.get_data_mode() != "projects":
             return {"ok": True, "mode": "legacy"}
+        if repository.resource_migration_pending():
+            return {"ok": False, "error_code": "migration_pending"}
         from .project_service import ProjectManager
 
         manager = ProjectManager(repository, settings)

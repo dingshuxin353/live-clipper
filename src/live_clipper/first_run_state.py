@@ -83,6 +83,7 @@ class StartupDetection:
     project_count: int = 0
     has_first_run_session: bool = False
     migration_session_count: int = 0
+    resource_migration_incomplete: bool = False
 
 
 @dataclass(frozen=True)
@@ -233,6 +234,11 @@ def decide_startup(
         migration = migrations[0]
         if migration.revision < 1 or not migration.migration_id:
             return StartupDecision("diagnostic_required", reason_code="invalid_migration_session")
+        if detection.resource_migration_incomplete and detection.data_mode == "projects":
+            if (migration.project_id not in project_ids or not migration.has_report
+                    or migration.backup_status != "completed"):
+                return StartupDecision("diagnostic_required", reason_code="migration_completion_conflict")
+            return StartupDecision("migration_required", reason_code="migration_resources_pending")
         if migration.state in {"backing_up", "migrating", "validating", "failed_rolled_back"}:
             backup_shape_matches = (
                 migration.state == "backing_up"

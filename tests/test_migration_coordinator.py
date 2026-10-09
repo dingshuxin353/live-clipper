@@ -407,7 +407,8 @@ def test_trigger_choices_become_real_project_config(tmp_path, choices, expected)
         ) == expected
 
 
-def test_restart_recovery_marks_unowned_execution_failed_without_resuming(tmp_path):
+@pytest.mark.parametrize('known_owner', [False, True])
+def test_restart_recovery_requires_proven_executor_exit_without_resuming(tmp_path, known_owner):
     coordinator, service = _legacy_home(tmp_path)
     plan = _validated(coordinator)
     with ProjectRepository(service) as repository:
@@ -422,9 +423,12 @@ def test_restart_recovery_marks_unowned_execution_failed_without_resuming(tmp_pa
             request_hash="a" * 64,
             backup_path=str(tmp_path / "missing-backup"),
         )
+    if known_owner:
+        with coordinator._execution_lease():
+            pass
     recovered = coordinator.recover_interrupted()
-    assert recovered is not None and recovered.state == "failed_rolled_back"
-    assert recovered.revision == session.revision + 1
+    assert recovered is not None and recovered.state == ("failed_rolled_back" if known_owner else "backing_up")
+    assert recovered.revision == session.revision + (1 if known_owner else 0)
     with ProjectRepository(service) as repository:
         assert repository.get_data_mode() == "legacy"
         assert repository.list_projects() == []

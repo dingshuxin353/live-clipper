@@ -1225,6 +1225,8 @@ def tick_project_result_workers(
     *,
     work_dir: str | Path,
 ) -> WorkerTickReport:
+    if repository.resource_migration_pending():
+        return WorkerTickReport()
     key = repository.service_dir.resolve()
     with _WORKER_POOLS_LOCK:
         pool = _WORKER_POOLS.setdefault(key, ProjectWorkerPool())

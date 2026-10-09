@@ -1,5 +1,5 @@
 import { api, patch, post } from "./api";
-import type { ClipsPayload, FormOptionsPayload, IssueDetail, MigrationAcknowledgePayload, MigrationChoices, MigrationInspectPayload, MigrationPlan, MigrationPlanPayload, MigrationSessionPayload, MigrationSnapshot, ModelJob, OnboardingFinishPayload, OnboardingSessionPayload, OnboardingSnapshot, OnboardingStep, OnboardingValidationPayload, OutputMaterial, ProjectConfig, ProjectSummary, RecoveryAttempt, RepairContext, ReprocessPreflight, ReprocessVersion, ReprocessVersionsPayload, Run, RunFilter, RunOutput, RunResultPayload, ScanEvent, ScanPreviewPayload, SourceFile, StageEvent, StudioPayload, ValidationPayload } from "./project-dto";
+import type { ClipsPayload, FormOptionsPayload, IssueDetail, MigrationAcknowledgePayload, MigrationChoices, MigrationInspectPayload, MigrationPlan, MigrationPlanPayload, MigrationSessionPayload, MigrationSavedHistory, MigrationSnapshot, ModelJob, OnboardingFinishPayload, OnboardingSessionPayload, OnboardingSnapshot, OnboardingStep, OnboardingValidationPayload, OutputMaterial, ProjectConfig, ProjectSummary, RecoveryAttempt, RepairContext, ReprocessPreflight, ReprocessVersion, ReprocessVersionsPayload, Run, RunFilter, RunOutput, RunResultPayload, ScanEvent, ScanPreviewPayload, SourceFile, StageEvent, StudioPayload, ValidationPayload } from "./project-dto";
 
 export const projectApi = {
   studio: (signal?: AbortSignal) => api<StudioPayload>("/api/studio", {}, signal),
@@ -37,6 +37,7 @@ export const projectApi = {
   legacyAwaitingReview: (signal?: AbortSignal) => api<{ ok: true; runs: Array<{ run: Run; project: { project_id: string; name: string }; detail_url: string }>; count: number }>("/api/legacy/awaiting-review", {}, signal),
   onboarding: (signal?: AbortSignal) => api<OnboardingSnapshot>("/api/onboarding", {}, signal),
   migration: (signal?: AbortSignal) => api<MigrationSnapshot>("/api/migration", {}, signal),
+  migrationHistory: (migrationId: string) => api<MigrationSavedHistory>(`/api/migration/${encodeURIComponent(migrationId)}/history`),
   migrationInspect: (signal?: AbortSignal) => post<MigrationInspectPayload>("/api/migration/inspect", { request_id: requestId("migration-inspect") }, signal),
   migrationValidate: (sourceFingerprint: string, planHash: string, choices: MigrationChoices) => post<MigrationPlanPayload>("/api/migration/validate", { source_fingerprint: sourceFingerprint, plan_hash: planHash, choices }),
   migrationExecute: (id: string, plan: MigrationPlan) => post<MigrationSessionPayload>("/api/migration/execute", { request_id: id, source_fingerprint: plan.source_fingerprint, plan_hash: plan.plan_hash, choices: plan.choices }),

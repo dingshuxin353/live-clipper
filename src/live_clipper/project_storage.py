@@ -909,6 +909,14 @@ class ProjectRepository:
                 self.connection.rollback()
             raise
 
+    def resource_migration_pending(self) -> bool:
+        if self.connection.execute("SELECT 1 FROM migration_sessions WHERE state NOT IN ('completed_ready', 'completed_attention') LIMIT 1").fetchone():
+            return True
+        state = self.connection.execute("SELECT value FROM system_state WHERE key='named_resources_migration'").fetchone()
+        if state:
+            return state[0] != 'completed'
+        return self.connection.execute('SELECT 1 FROM migration_sessions LIMIT 1').fetchone() is not None
+
     def get_data_mode(self) -> str:
         row = self.connection.execute("SELECT value FROM system_state WHERE key = 'data_mode'").fetchone()
         if row is None:
@@ -3576,7 +3584,7 @@ class ProjectRepository:
             if current is None:
                 raise MigrationStateError("migration session does not exist")
             self._require_migration_revision(current, expected_revision)
-            if current.state != "validating" or current.stage not in {"database", "runtime"}:
+            if current.state != "validating" or current.stage not in {"database", "runtime", "resources"}:
                 raise MigrationStateError("migration apply requires the validating database stage")
             if current.source_fingerprint != fingerprint or current.plan_hash != normalized_plan_hash:
                 raise MigrationStateError("migration apply no longer matches its durable plan")

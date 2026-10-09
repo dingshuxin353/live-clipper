@@ -22,6 +22,14 @@ export type ApiErrorCode =
   | "review_reprocess_required"
   | "migration_inspection_failed"
   | "migration_apply_failed"
+  | "migration_running"
+  | "migration_completion_conflict"
+  | "migration_backup_invalid"
+  | "migration_resource_conflict"
+  | "migration_credential_source_unknown"
+  | "migration_resources_failed"
+  | "migration_evidence_conflict"
+  | "migration_result_unknown"
   | "backup_not_available"
   | "validation_result_unknown"
   | "timeout_error"
@@ -95,6 +103,7 @@ export type ApiErrorCode =
 const API_ERROR_CODES: ReadonlySet<ApiErrorCode> = new Set([
   "model_directory_unwritable", "model_integrity_failed", "job_not_found", "unauthorized",
   "migration_inspection_failed", "migration_apply_failed", "backup_not_available",
+  "migration_running", "migration_completion_conflict", "migration_backup_invalid", "migration_resource_conflict", "migration_credential_source_unknown", "migration_resources_failed", "migration_evidence_conflict", "migration_result_unknown",
   "selection_token_invalid", "selection_token_expired", "selection_token_already_used", "source_identity_mismatch", "issue_not_found", "issue_not_ready", "issue_group_not_found", "resource_not_repairable", "output_not_retryable", "material_not_retryable", "preflight_changed", "reprocess_blocked", "output_not_found", "material_not_found", "review_reprocess_required",
   "resource_not_found", "resource_deleted", "request_conflict", "validation_changed", "validation_required", "referenced_capability_required", "required_connection_fields", "resource_in_use", "failed_runs_confirmation_required", "original_configuration_unknown", "same_identity_confirmation_required", "workspace_required", "region_required", "custom_endpoint_requires_custom_provider", "invalid_resource", "invalid_fields", "migration_pending", "migration_source_unknown", "incompatible_resource", "request_id_required",
   "timeout_error", "validation_result_unknown", "network_error", "invalid_response", "unknown_error", "validation_failed", "migration_required",

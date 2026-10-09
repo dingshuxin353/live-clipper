@@ -6,8 +6,11 @@ import json
 import os
 import sqlite3
 import tempfile
+import uuid
 from collections.abc import Callable
-from contextlib import closing
+from contextlib import closing, contextmanager
+from dataclasses import asdict
+from pathlib import Path
 
 from .config import Settings
 from .project_domain import normalize_utc, project_config_v2, stable_json
@@ -18,25 +21,46 @@ STATE_KEY = 'named_resources_migration'
 
 
 def migrate_resources(repository: ProjectRepository, settings: Settings, *, fault: Callable[[str], None] | None = None) -> None:
+    with prepare_resource_migration(repository, settings, fault=fault) as convert:
+        with repository.transaction():
+            convert()
+
+
+@contextmanager
+def prepare_resource_migration(repository: ProjectRepository, settings: Settings, *, fault: Callable[[str], None] | None = None):
     repository.service_dir.mkdir(parents=True, exist_ok=True)
     with (repository.service_dir / '.resource-migration.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        _migrate_locked(repository, settings, fault=fault)
+        db = repository.connection
+        state = db.execute('SELECT value FROM system_state WHERE key=?', (STATE_KEY,)).fetchone()
+        if state and state[0] == 'completed' and repository.get_data_mode() != 'legacy':
+            if (repository.service_dir / 'resource-migration-owned.jsonl').exists():
+                with _owned_credentials(ResourceStore(repository), None):
+                    pass
+            yield lambda: None
+            return
+        now = normalize_utc()
+        if state is None:
+            with repository.transaction():
+                db.execute('INSERT OR IGNORE INTO system_state VALUES(?,?,?)', (STATE_KEY, 'backing_up', now))
+        _backup_resources(repository)
+        if fault:
+            fault('after_backup')
+        store = ResourceStore(repository)
+        with _owned_credentials(store, settings) as credential:
+            yield lambda: _convert_resources(repository, settings, store, credential, fault=fault)
 
 
-def _migrate_locked(repository: ProjectRepository, settings: Settings, *, fault: Callable[[str], None] | None) -> None:
+def _backup_resources(repository: ProjectRepository) -> None:
     db = repository.connection
-    state = db.execute('SELECT value FROM system_state WHERE key=?', (STATE_KEY,)).fetchone()
-    if state and state[0] == 'completed':
-        return
-    now = normalize_utc()
-    if state is None:
-        with repository.transaction():
-            db.execute('INSERT OR IGNORE INTO system_state VALUES(?,?,?)', (STATE_KEY, 'backing_up', now))
     backup_path = repository.service_dir / 'resource-migration-backup.sqlite3'
-    if not backup_path.exists():
-        from pathlib import Path
-
+    if backup_path.is_symlink():
+        raise ValueError('resource_backup_invalid')
+    if backup_path.exists():
+        with closing(sqlite3.connect(backup_path.as_uri() + '?mode=ro', uri=True)) as backup:
+            if backup.execute('PRAGMA quick_check').fetchone()[0] != 'ok':
+                raise ValueError('resource_backup_invalid')
+    else:
         descriptor, name = tempfile.mkstemp(dir=repository.service_dir, prefix='.resource-backup-')
         os.close(descriptor)
         temporary = Path(name)
@@ -56,13 +80,12 @@ def _migrate_locked(repository: ProjectRepository, settings: Settings, *, fault:
                 os.close(directory)
         finally:
             temporary.unlink(missing_ok=True)
-    if fault:
-        fault('after_backup')
-    store = ResourceStore(repository)
+
+
+def _convert_resources(repository, settings, store, write_credential, *, fault):
+    db = repository.connection
+    now = normalize_utc()
     with repository.transaction():
-        current = db.execute('SELECT value FROM system_state WHERE key=?', (STATE_KEY,)).fetchone()
-        if current[0] == 'completed':
-            return
         db.execute('UPDATE system_state SET value=? WHERE key=?', ('migrating', STATE_KEY))
         projects = repository.list_projects()
         session = repository.get_first_run_session()
@@ -107,7 +130,7 @@ def _migrate_locked(repository: ProjectRepository, settings: Settings, *, fault:
                 # Stable migration identity uses actual settings and credential identity, never display name.
                 identifier = fingerprint(['settings-migration-v1', kind, config, credential])[:32]
                 if not db.execute('SELECT 1 FROM resources WHERE resource_id=?', (identifier,)).fetchone():
-                    binding = store._write_credential(credential) if credential else None
+                    binding = write_credential(credential) if credential else None
                     db.execute('INSERT INTO resources VALUES(?,?,?,?,?,NULL)', (identifier, name, kind, 1, now))
                     db.execute('INSERT INTO resource_revisions VALUES(?,?,?,?,?,?)', (identifier, 1, encoded(config), binding, '{}', now))
                 return identifier
@@ -148,3 +171,61 @@ def _migrate_locked(repository: ProjectRepository, settings: Settings, *, fault:
             if fault:
                 fault('after_projects')
         db.execute('UPDATE system_state SET value=?,updated_at=? WHERE key=?', ('completed', now, STATE_KEY))
+
+
+@contextmanager
+def _owned_credentials(store: ResourceStore, settings: Settings | None):
+    owner = store.repository.service_dir / 'resource-migration-owned.jsonl'
+    source = fingerprint([asdict(settings.asr), asdict(settings.llm), asdict(settings.review_automation),
+                          settings.legacy_review_removed, settings.asr_api_key,
+                          settings.cheap_model_api_key, settings.hf_token]) if settings is not None else None
+    if owner.is_symlink():
+        raise ValueError('resource_migration_owner_unsafe')
+    if not owner.exists():
+        descriptor = os.open(owner, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, 'w') as stream:
+            stream.write(json.dumps({'source': source}) + '\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+        directory = os.open(owner.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    lines = owner.read_text().splitlines()
+    if not lines or (source is not None and json.loads(lines[0]) != {'source': source}):
+        raise ValueError('resource_migration_source_changed')
+    bindings = [json.loads(line)['binding'] for line in lines[1:]]
+    for binding in bindings:
+        store._secret_path(binding)
+
+    def cleanup():
+        if store.db.in_transaction:
+            raise RuntimeError('resource_migration_transaction_unfinished')
+        for binding in bindings:
+            referenced = store.db.execute(
+                'SELECT 1 FROM resource_revisions WHERE binding_ref=? UNION ALL '
+                'SELECT 1 FROM resource_repairs WHERE binding_ref=? LIMIT 1', (binding, binding),
+            ).fetchone()
+            if not referenced:
+                path = store._secret_path(binding)
+                if path.parent.is_symlink() or path.is_symlink():
+                    raise ValueError('resource_migration_credential_unsafe')
+                path.unlink(missing_ok=True)
+
+    cleanup()
+
+    def credential(value):
+        binding = uuid.uuid4().hex
+        with owner.open('a') as stream:
+            stream.write(json.dumps({'binding': binding}) + '\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+        bindings.append(binding)
+        return store._write_credential(value, binding=binding)
+
+    try:
+        yield credential
+    finally:
+        cleanup()
+    owner.unlink()
