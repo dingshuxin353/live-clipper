@@ -58,6 +58,17 @@ def project_mode_active(service_dir: Path = DEFAULT_SERVICE_DIR) -> bool:
         return repository.get_data_mode() == "projects"
 
 
+def _migration_pending(service_dir: Path) -> bool:
+    from .first_run_detection import _read_database_facts
+    from .project_storage import database_path
+
+    facts = _read_database_facts(database_path(service_dir))
+    return facts.unreadable or bool(facts.migration_sessions) and (
+        facts.resource_migration_state != 'completed'
+        or any(not session.state.startswith('completed_') for session in facts.migration_sessions)
+    )
+
+
 def require_pipeline_configuration(settings: Settings) -> None:
     if not settings.resource_execution_policy:
         raise PipelineConfigurationError("无法确定这条记录使用的模型。请在项目设置中选择模型后重新处理。")
@@ -1436,6 +1447,8 @@ def _reconcile_runs(
 
 def _run_service_once_locked(settings: Settings, *, service_dir: Path) -> dict[str, Any]:
     validate_service_settings(settings)
+    if _migration_pending(service_dir):
+        return {"ok": False, "error_code": "migration_pending"}
     ensure_dir(service_dir)
     runs = load_runs(service_dir)
     _changed_runs, reconcile_failures = _reconcile_runs(runs, settings, service_dir=service_dir)
@@ -1577,6 +1590,8 @@ def run_service_tick(settings: Settings, *, service_dir: Path = DEFAULT_SERVICE_
 
 def _run_service_tick_locked(settings: Settings, *, service_dir: Path) -> dict[str, Any]:
     validate_service_settings(settings)
+    if _migration_pending(service_dir):
+        return {"ok": False, "error_code": "migration_pending"}
     ensure_dir(service_dir)
     if project_mode_active(service_dir):
         from .project_runtime import tick_project_runtime
@@ -1627,6 +1642,8 @@ def _run_service_tick_locked(settings: Settings, *, service_dir: Path) -> dict[s
 
 def service_loop(settings: Settings, *, service_dir: Path = DEFAULT_SERVICE_DIR) -> None:
     validate_service_settings(settings)
+    if _migration_pending(service_dir):
+        return
     ensure_dir(service_dir)
     pid = os.getpid()
     _pid_path(service_dir).write_text(f"{pid}\n", encoding="utf-8")
@@ -1658,6 +1675,8 @@ def start_service(
     once: bool = False,
 ) -> dict[str, Any]:
     validate_service_settings(settings)
+    if _migration_pending(service_dir):
+        return {"ok": False, "error_code": "migration_pending"}
     ensure_dir(service_dir)
     existing_pid = _read_pid(service_dir)
     if existing_pid is not None and pid_is_running(existing_pid) and not foreground and not once:

@@ -2,29 +2,182 @@ name: CI
 
 on:
   pull_request:
+    branches: [master]
   push:
     branches: [master]
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: Optional commit, tag or branch to check
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name == 'pull_request' && 'latest' || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  test:
+  backend-desktop:
     runs-on: macos-14
+    timeout-minutes: 15
+    outputs:
+      commit: ${{ steps.source.outputs.commit }}
+      tree: ${{ steps.source.outputs.tree }}
+      environment: ${{ steps.environment.outputs.versions }}
+      cache: ${{ steps.cache.outputs.cache-hit }}
+      ruff: ${{ steps.ruff.outcome }}
+      python: ${{ steps.python-tests.outcome }}
+      desktop: ${{ steps.desktop-tests.outcome }}
+      syntax: ${{ steps.syntax.outcome }}
+      package: ${{ steps.build.outcome }}
+      dependencies: ${{ steps.dependencies.outcome }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.revision || github.sha }}
+      - name: Record tested source
+        id: source
+        run: |
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "tree=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
-      - name: Install ffmpeg
-        run: brew install ffmpeg
-      - name: Install package
+          package-manager-cache: false
+      - name: Record runtime versions
+        id: environment
+        run: |
+          [[ $(npm --version) == 11.* ]]
+          echo "versions=$(sw_vers -productVersion) / $(uname -m) / $(python --version) / Node $(node --version) / npm $(npm --version)" >> "$GITHUB_OUTPUT"
+          echo "cache-key=${{ runner.os }}-${{ runner.arch }}-$(python --version)-$(node --version)-npm$(npm --version)" >> "$GITHUB_OUTPUT"
+          echo "pip-cache=$(python -m pip cache dir)" >> "$GITHUB_OUTPUT"
+          echo "npm-cache=$(npm config get cache)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: cache
+        with:
+          path: |
+            ${{ steps.environment.outputs.pip-cache }}
+            ${{ steps.environment.outputs.npm-cache }}
+          key: backend-desktop-${{ steps.environment.outputs.cache-key }}-${{ hashFiles('pyproject.toml', 'desktop/package-lock.json') }}
+      - name: Install ffmpeg and verify media tools
+        run: |
+          brew install ffmpeg
+          ffmpeg -version
+          ffprobe -version
+      - name: Install desktop dependencies
+        run: |
+          npm --prefix desktop ci
+          git diff --exit-code -- desktop/package-lock.json
+          node -e "require('./desktop/node_modules/app-builder-lib')"
+      - name: Install Python development dependencies
         run: python -m pip install -e '.[dev]'
-      - name: Run tests
-        run: python -m pytest
+      - name: Check Python dependency compatibility
+        id: dependencies
+        run: |
+          python -m pip freeze
+          python -m pip check
+      - name: Check Python code
+        id: ruff
+        run: |
+          ruff --version
+          ruff check src tests scripts/release.py
+      - name: Run Python tests (including blockmap integration)
+        id: python-tests
+        run: python -m pytest -ra
+      - name: Run desktop tests
+        id: desktop-tests
+        run: npm --prefix desktop test
       - name: Check desktop JavaScript syntax
+        id: syntax
         run: |
           node --check desktop/main.js
           node --check desktop/preload.js
-      - name: Build package
+      - name: Build Python package
+        id: build
         run: python -m build
+
+  frontend:
+    runs-on: macos-14
+    timeout-minutes: 10
+    outputs:
+      commit: ${{ steps.source.outputs.commit }}
+      tree: ${{ steps.source.outputs.tree }}
+      environment: ${{ steps.environment.outputs.versions }}
+      cache: ${{ steps.cache.outputs.cache-hit }}
+      checks: ${{ steps.checks.outcome }}
+      resources: ${{ steps.resources.outcome }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.revision || github.sha }}
+      - name: Record tested source
+        id: source
+        run: |
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "tree=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - name: Record runtime versions
+        id: environment
+        run: |
+          [[ $(npm --version) == 11.* ]]
+          echo "versions=$(sw_vers -productVersion) / $(uname -m) / Node $(node --version) / npm $(npm --version)" >> "$GITHUB_OUTPUT"
+          echo "cache-key=${{ runner.os }}-${{ runner.arch }}-$(node --version)-npm$(npm --version)" >> "$GITHUB_OUTPUT"
+          echo "npm-cache=$(npm config get cache)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: cache
+        with:
+          path: ${{ steps.environment.outputs.npm-cache }}
+          key: frontend-${{ steps.environment.outputs.cache-key }}-${{ hashFiles('frontend/package-lock.json') }}
+      - name: Install frontend dependencies
+        run: |
+          npm --prefix frontend ci
+          git diff --exit-code -- frontend/package-lock.json
+      - name: Check types, run tests and build frontend
+        id: checks
+        run: npm --prefix frontend run check
+      - name: Verify committed generated resources
+        id: resources
+        run: bash scripts/ci/check-generated.sh
+
+  ci-required:
+    if: ${{ !cancelled() }}
+    needs: [backend-desktop, frontend]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Summarize results and require both jobs to succeed
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+          EVENT: ${{ github.event_name }}
+          SOURCE: ${{ github.event.pull_request.head.sha || needs.frontend.outputs.commit || needs.backend-desktop.outputs.commit || github.sha }}
+          REQUESTED_REVISION: ${{ inputs.revision }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
+        run: |
+          {
+            printf 'Event: `%s`\n\nSource: `%s`\n\nPR base: `%s`\n\n[Logs and timing](%s)\n\n' "$EVENT" "$SOURCE" "$BASE" "$RUN_URL"
+            printf 'Manual revision request: `%s`\n\n' "$REQUESTED_REVISION"
+            printf '| Job | Result |\n| --- | --- |\n'
+            jq -r 'to_entries[] | "| \(.key) | \(.value.result) |"' <<< "$RESULTS"
+            printf '\n| Job | Check or evidence | Value |\n| --- | --- | --- |\n'
+            jq -r 'to_entries[] | .key as $job | .value.outputs | to_entries[] | "| \($job) | \(.key) | \(.value) |"' <<< "$RESULTS"
+            printf '\nTest counts and skip reasons are in the Python, frontend and desktop logs. An empty cache value means no exact hit was reported; inspect the cache step. Cancelled runs are not acceptance evidence.\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+          jq -e '
+            .["backend-desktop"].result == "success" and .frontend.result == "success"
+            and (.["backend-desktop"].outputs.commit | length) > 0
+            and .["backend-desktop"].outputs.commit == .frontend.outputs.commit
+            and (.["backend-desktop"].outputs.tree | length) > 0
+            and .["backend-desktop"].outputs.tree == .frontend.outputs.tree
+          ' <<< "$RESULTS"

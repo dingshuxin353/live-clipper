@@ -229,10 +229,10 @@ class ResourceStore:
             raise ResourceError('invalid_binding')
         return self.repository.service_dir / 'resource-credentials' / f'{binding}.env'
 
-    def _write_credential(self, value: str) -> str:
+    def _write_credential(self, value: str, *, binding: str | None = None) -> str:
         if not isinstance(value, str) or not value or len(value) > 8192 or any(ord(c) < 32 for c in value):
             raise ResourceError('invalid_credential')
-        binding = uuid.uuid4().hex
+        binding = binding or uuid.uuid4().hex
         path = self._secret_path(binding)
         if path.parent.is_symlink():
             raise ResourceError('invalid_credential_directory')

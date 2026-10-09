@@ -15,6 +15,8 @@ from .resource_store import ResourceError, ResourceStore, normalize_proposal
 from .resource_validation import validate_resource
 
 MESSAGES = {
+    'migration_required': '请返回旧版数据升级页面继续原来的升级。',
+    'migration_pending': '模型配置升级尚未完成，请先继续升级。',
     'model_directory_unwritable': '无法写入模型文件夹，请检查访问权限。',
     'insufficient_disk_space': '模型保存位置的可用空间不足。',
     'model_integrity_failed': '模型文件检查未通过，暂时无法使用。',
@@ -54,14 +56,15 @@ class ResourceAPI:
 
     def _dispatch(self, method: str, parts: list[str], body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         tail = parts[2:]
-        state = self.repository.connection.execute("SELECT value FROM system_state WHERE key='named_resources_migration'").fetchone()
-        if method != 'GET' and tail != ['migration', 'retry'] and state and state[0] != 'completed':
+        if method != 'GET' and tail != ['migration', 'retry'] and self.repository.resource_migration_pending():
             raise ResourceError('migration_pending')
         if not tail and method == 'GET':
             state = self.repository.connection.execute("SELECT value FROM system_state WHERE key='named_resources_migration'").fetchone()
             cleanups = [{'request_id': row[0], 'resource_id': row[1]} for row in self.store.db.execute("SELECT request_id,json_extract(result_json,'$.resource_id') FROM resource_operations WHERE json_extract(result_json,'$.deleted')=1 AND json_extract(result_json,'$.cleanup_state') <> 'completed'")]
             return 200, {'ok': True, 'cleanups': cleanups, 'resources': [self.detail(r['resource_id']) for r in self.store.list()], 'migration': state[0] if state else 'pending'}
         if tail == ['migration', 'retry'] and method == 'POST':
+            if self.repository.list_migration_sessions():
+                raise ResourceError('migration_required')
             from .config import load_settings
             from .resource_migration import migrate_resources
 

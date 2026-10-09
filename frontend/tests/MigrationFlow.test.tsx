@@ -95,7 +95,7 @@ describe("M2 migration flow", () => {
       installFetchMock({ "/api/onboarding": { ...MIGRATION_STARTUP, migration: { entry: "executing", session: executing, report: null } }, "/api/migration": () => { loads += 1; return loads < 3 ? jsonResponse({ ...MIGRATION_SNAPSHOT, entry: "executing", plan: null, session: executing }) : Promise.reject(new Error("offline")); } });
       render(<App />); expect(await screen.findByRole("heading", { name: "正在升级" })).toBeVisible(); expect(screen.queryByText("2 / 4 条")).not.toBeInTheDocument(); expect(document.querySelectorAll(".migration-stage-list .done")).toHaveLength(0);
       Object.defineProperty(document, "hidden", { configurable: true, value: false }); document.dispatchEvent(new Event("visibilitychange"));
-      await waitFor(() => expect(loads).toBeGreaterThanOrEqual(2)); expect(screen.getByText("导入旧版数据")).toBeVisible();
+      await waitFor(() => expect(loads).toBeGreaterThanOrEqual(2)); expect(screen.getByText("导入旧版数据与模型配置")).toBeVisible();
       expect(screen.queryByRole("progressbar")).not.toBeInTheDocument(); expect(screen.queryByText(/完成 50%|还需 \d+ 分钟/)).not.toBeInTheDocument();
     } finally { Object.defineProperty(document, "hidden", { configurable: true, value: originalHidden }); }
   });
@@ -144,7 +144,7 @@ describe("M2 migration flow", () => {
       "/api/migration/acknowledge": () => { acknowledged = true; return jsonResponse({ ok: true, session, project_id: "project-1" }); },
     });
     render(<App />); const dialog = await screen.findByRole("dialog"); expect(screen.queryByRole("navigation", { name: "主导航" })).not.toBeInTheDocument();
-    if (blockerCount) expect(within(dialog).getByText("未启用，2 个问题待处理。")).toBeVisible();
+    if (blockerCount) expect(within(dialog).getByText("2 个问题待处理。")).toBeVisible();
     fireEvent.click(within(dialog).getByRole("button", { name: "在 Finder 中显示备份" })); await waitFor(() => expect(showBackup).toHaveBeenCalledWith("migration-1"));
     await waitFor(() => expect(within(dialog).getByRole("button", { name: action })).toBeEnabled()); fireEvent.click(within(dialog).getByRole("button", { name: action }));
     await waitFor(() => expect(calls.filter(([path]) => path === "/api/migration/acknowledge")).toHaveLength(1));
@@ -312,5 +312,44 @@ it('can clear a rejected request marker without treating the rejection as accept
   await screen.findByRole('button', { name: '开始检查' });
   expect(sessionStorage.getItem('venus.migration.pending')).toBeNull();
   expect(calls.filter(([path]) => path === '/api/migration/execute')).toHaveLength(1);
+  expect(screen.queryByRole('button', { name: '进入项目' })).not.toBeInTheDocument();
+});
+
+it('shows retained history and resumes an acknowledged but incomplete resource migration', async () => {
+  sessionStorage.clear(); route();
+  const session = { ...SESSION, state: 'completed_attention', stage: 'complete', revision: 8, backup_status: 'completed', project_id: 'project-1' };
+  let current = { ...MIGRATION_SNAPSHOT, entry: 'incomplete', session, report: null };
+  const calls = installFetchMock({
+    '/api/onboarding': { ...MIGRATION_STARTUP, migration: current },
+    '/api/migration': () => jsonResponse(current),
+    '/api/migration/migration-1/history': { ok: true, history: [{ run_id: 'retained', status: 'completed', created_at: '2026-09-01' }] },
+    '/api/migration/retry': () => {
+      current = { ...current, entry: 'executing', session: { ...session, state: 'validating', stage: 'resources', revision: 9 } };
+      return jsonResponse({ ok: true, session: current.session });
+    },
+  });
+  render(<App />);
+  expect(await screen.findByRole('heading', { name: '升级尚未完成' })).toBeVisible();
+  expect(screen.queryByRole('button', { name: '进入项目' })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: '查看已保存的历史记录' }));
+  expect(await screen.findByText('已保存 1 条记录。')).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: '继续升级' }));
+  expect(await screen.findByText('转换模型配置')).toBeVisible();
+  const request = calls.find(([path]) => path === '/api/migration/retry');
+  expect(JSON.parse(String(request?.[1]?.body))).toMatchObject({ migration_id: 'migration-1', expected_revision: 8 });
+  expect(calls.some(([path]) => path === '/api/migration/execute')).toBe(false);
+});
+
+
+it.each(['migration_backup_invalid', 'migration_credential_source_unknown'])('shows the specific recovery error %s without reporting rollback', async (code) => {
+  sessionStorage.clear(); route();
+  const current = { ...MIGRATION_SNAPSHOT, entry: 'incomplete', session: { ...SESSION, state: 'completed_attention', revision: 8, project_id: 'project-1', backup_status: 'completed' }, report: null };
+  installFetchMock({
+    '/api/onboarding': { ...MIGRATION_STARTUP, migration: current }, '/api/migration': current,
+    '/api/migration/retry': () => jsonResponse({ ok: false, error: { code, message: '原升级条件无法核验，请保留项目并联系开发者。' } }, 409),
+  });
+  render(<App />); fireEvent.click(await screen.findByRole('button', { name: '继续升级' }));
+  expect(await screen.findByText('原升级条件无法核验，请保留项目并联系开发者。')).toBeVisible();
+  expect(screen.queryByText('未创建')).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: '进入项目' })).not.toBeInTheDocument();
 });

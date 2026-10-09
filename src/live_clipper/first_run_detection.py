@@ -5,6 +5,8 @@ import os
 import sqlite3
 import stat
 import tomllib
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -17,7 +19,7 @@ from .first_run_state import (
     decide_startup,
     normalize_first_run_draft,
 )
-from .project_storage import database_path
+from .project_storage import MigrationSession, _migration_session, database_path
 
 LEGACY_METADATA_FILES = ("runs.json", "service.json", "scheduler.json", "scheduler_runs.json", "events.jsonl")
 LEGACY_ONBOARDING_MARKER = "onboarding.json"
@@ -31,6 +33,9 @@ class _DatabaseFacts:
     migration_sessions: tuple[MigrationStartupSession, ...] = ()
     has_blocked_legacy_import: bool = False
     unreadable: bool = False
+    migration_record: MigrationSession | None = None
+    first_project: dict[str, Any] | None = None
+    resource_migration_state: str | None = None
 
 
 def _configured_global_source(config_path: Path) -> tuple[bool, bool]:
@@ -85,52 +90,96 @@ def _migration_from_row(row: sqlite3.Row) -> MigrationStartupSession:
     )
 
 
-def _read_database_facts(path: Path) -> _DatabaseFacts:
-    if not path.is_file():
-        return _DatabaseFacts()
-    uri = f"{path.resolve().as_uri()}?mode=ro&immutable=1"
+@contextmanager
+def readonly_database(path: Path) -> Iterator[sqlite3.Connection]:
+    # SQLite owns its WAL/SHM; never repair or remove them during a read.
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode):
+        raise OSError("unsafe database path")
+    for suffix in ("-wal", "-shm", "-journal"):
+        auxiliary = path.with_name(path.name + suffix)
+        try:
+            info = auxiliary.lstat()
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISREG(info.st_mode):
+            raise OSError("unsafe database auxiliary path")
+    connection = sqlite3.connect(
+        path.absolute().as_uri() + "?mode=ro", uri=True, isolation_level=None, timeout=1.0,
+    )
     try:
-        connection = sqlite3.connect(uri, uri=True, isolation_level=None)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA query_only = ON")
-        tables = {
-            str(row[0])
-            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
-        }
-        data_mode = "absent"
-        if "system_state" in tables:
-            row = connection.execute("SELECT value FROM system_state WHERE key = 'data_mode'").fetchone()
-            if row is not None:
-                data_mode = str(row[0])
-        project_ids: tuple[str, ...] = ()
-        if "projects" in tables:
-            project_ids = tuple(
-                str(row[0]) for row in connection.execute("SELECT project_id FROM projects ORDER BY project_id")
-            )
-        session = None
-        if "first_run_sessions" in tables:
-            row = connection.execute(
-                "SELECT * FROM first_run_sessions WHERE session_id = 'primary'"
-            ).fetchone()
-            if row is not None:
-                session = _session_from_row(row)
-        migration_sessions: tuple[MigrationStartupSession, ...] = ()
-        if "migration_sessions" in tables:
-            rows = connection.execute(
-                "SELECT * FROM migration_sessions ORDER BY created_at, migration_id"
-            ).fetchall()
-            migration_sessions = tuple(_migration_from_row(row) for row in rows)
-        has_blocked_legacy_import = False
-        if "migration_sessions" not in tables and "legacy_imports" in tables:
-            has_blocked_legacy_import = (
-                connection.execute("SELECT 1 FROM legacy_imports LIMIT 1").fetchone() is not None
-            )
-        return _DatabaseFacts(data_mode, project_ids, session, migration_sessions, has_blocked_legacy_import)
-    except (OSError, sqlite3.DatabaseError, TypeError, ValueError, json.JSONDecodeError):
-        return _DatabaseFacts(unreadable=True)
+        connection.execute("BEGIN")
+        yield connection
+        after = path.lstat()
+        if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+            raise OSError("database identity changed")
     finally:
-        if "connection" in locals():
-            connection.close()
+        connection.close()
+
+
+def _read_database_facts(path: Path) -> _DatabaseFacts:
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return _DatabaseFacts()
+    except OSError:
+        return _DatabaseFacts(unreadable=True)
+    try:
+        with readonly_database(path) as connection:
+            tables = {
+                str(row[0])
+                for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+            }
+            resource_state = None
+            data_mode = "absent"
+            if "system_state" in tables:
+                row = connection.execute("SELECT value FROM system_state WHERE key = 'data_mode'").fetchone()
+                if row is not None:
+                    data_mode = str(row[0])
+                resource_row = connection.execute("SELECT value FROM system_state WHERE key='named_resources_migration'").fetchone()
+                resource_state = str(resource_row[0]) if resource_row else None
+            project_ids: tuple[str, ...] = ()
+            if "projects" in tables:
+                project_ids = tuple(
+                    str(row[0]) for row in connection.execute("SELECT project_id FROM projects ORDER BY project_id")
+                )
+            session = None
+            if "first_run_sessions" in tables:
+                row = connection.execute(
+                    "SELECT * FROM first_run_sessions WHERE session_id = 'primary'"
+                ).fetchone()
+                if row is not None:
+                    session = _session_from_row(row)
+            migration_sessions: tuple[MigrationStartupSession, ...] = ()
+            if "migration_sessions" in tables:
+                rows = connection.execute(
+                    "SELECT * FROM migration_sessions ORDER BY created_at, migration_id"
+                ).fetchall()
+                migration_sessions = tuple(_migration_from_row(row) for row in rows)
+            has_blocked_legacy_import = False
+            if "migration_sessions" not in tables and "legacy_imports" in tables:
+                has_blocked_legacy_import = (
+                    connection.execute("SELECT 1 FROM legacy_imports LIMIT 1").fetchone() is not None
+                )
+            first_project = None
+            if session and session.first_project_id and "project_runtime" in tables:
+                row = connection.execute(
+                    "SELECT p.project_id,p.name,p.activation_state,r.readiness_state FROM projects p "
+                    "LEFT JOIN project_runtime r ON r.project_id=p.project_id WHERE p.project_id=?",
+                    (session.first_project_id,),
+                ).fetchone()
+                if row:
+                    first_project = dict(row)
+                    first_project["readiness_state"] = row["readiness_state"] or "blocked"
+            return _DatabaseFacts(
+                data_mode, project_ids, session, migration_sessions, has_blocked_legacy_import,
+                migration_record=_migration_session(dict(rows[0])) if migration_sessions else None,
+                first_project=first_project, resource_migration_state=resource_state,
+            )
+    except (OSError, sqlite3.DatabaseError, TypeError, ValueError, RuntimeError, KeyError):
+        return _DatabaseFacts(unreadable=True)
 
 
 def _is_current_project_runtime(service: Path, facts: _DatabaseFacts) -> bool:
@@ -222,24 +271,38 @@ def _inspect(
         project_count=len(facts.project_ids),
         has_first_run_session=facts.session is not None,
         migration_session_count=len(facts.migration_sessions),
+        resource_migration_incomplete=bool(facts.migration_sessions) and facts.resource_migration_state != "completed",
     )
     return detection, facts
 
 
-def detect_first_run_environment(
-    *, config_path: str | Path, env_path: str | Path, service_dir: str | Path
-) -> StartupDetection:
-    detection, _facts = _inspect(config_path=config_path, env_path=env_path, service_dir=service_dir)
-    return detection
+@dataclass(frozen=True)
+class StartupInspection:
+    decision: StartupDecision
+    detection: StartupDetection
+    facts: _DatabaseFacts
 
 
-def inspect_startup(
+def inspect_startup_state(
     *, config_path: str | Path, env_path: str | Path, service_dir: str | Path
-) -> StartupDecision:
+) -> StartupInspection:
     detection, facts = _inspect(config_path=config_path, env_path=env_path, service_dir=service_dir)
-    return decide_startup(
+    decision = decide_startup(
         detection,
         session=facts.session,
         existing_project_ids=facts.project_ids,
         migration_sessions=facts.migration_sessions,
     )
+    return StartupInspection(decision, detection, facts)
+
+
+def detect_first_run_environment(
+    *, config_path: str | Path, env_path: str | Path, service_dir: str | Path
+) -> StartupDetection:
+    return inspect_startup_state(config_path=config_path, env_path=env_path, service_dir=service_dir).detection
+
+
+def inspect_startup(
+    *, config_path: str | Path, env_path: str | Path, service_dir: str | Path
+) -> StartupDecision:
+    return inspect_startup_state(config_path=config_path, env_path=env_path, service_dir=service_dir).decision

@@ -14,7 +14,7 @@ from typing import Any
 
 from . import asr_models, onboarding, onboarding_resources, service
 from .config import Settings
-from .first_run_detection import detect_first_run_environment, inspect_startup
+from .first_run_detection import StartupInspection, inspect_startup_state, readonly_database
 from .first_run_state import FirstRunSession, FirstRunStateError, StartupDecision
 from .project_domain import default_project_config, project_config_v2
 from .project_result_domain import RequestConflictError, RevisionConflictError
@@ -143,18 +143,14 @@ class OnboardingCoordinator:
             return self._settings_loader()
         return onboarding_resources.load_settings_explicit(self.config_path, self.env_path)
 
+    def inspect(self) -> StartupInspection:
+        return inspect_startup_state(
+            config_path=self.config_path, env_path=self.env_path, service_dir=self.service_dir,
+        )
+
     def decision(self) -> tuple[StartupDecision, Any]:
-        decision = inspect_startup(
-            config_path=self.config_path,
-            env_path=self.env_path,
-            service_dir=self.service_dir,
-        )
-        detection = detect_first_run_environment(
-            config_path=self.config_path,
-            env_path=self.env_path,
-            service_dir=self.service_dir,
-        )
-        return decision, detection
+        inspection = self.inspect()
+        return inspection.decision, inspection.detection
 
     def _repo(self) -> ProjectRepository:
         try:
@@ -165,14 +161,6 @@ class OnboardingCoordinator:
             )
         except ProjectError as exc:
             raise OnboardingError(exc.code, exc.message, status=exc.status, fields=exc.fields) from exc
-
-    def _read_session(self, decision: StartupDecision) -> tuple[ProjectRepository | None, FirstRunSession | None]:
-        if decision.entry in {"migration_required", "diagnostic_required"}:
-            return None, None
-        if decision.onboarding == "new" and not database_path(self.service_dir).exists():
-            return None, None
-        repo = self._repo()
-        return repo, repo.get_first_run_session()
 
     def _environment_summary(self, *, run_probes: bool = False, settings: Settings | None = None) -> dict[str, Any]:
         checks: list[dict[str, Any]] = []
@@ -224,7 +212,7 @@ class OnboardingCoordinator:
             try:
                 import sqlite3
 
-                with sqlite3.connect(db) as connection:
+                with readonly_database(db) as connection:
                     quick = connection.execute("PRAGMA quick_check").fetchone()
                 check("sqlite", bool(quick and quick[0] == "ok"), "本地数据库检查未通过")
             except (OSError, sqlite3.DatabaseError):
@@ -262,31 +250,31 @@ class OnboardingCoordinator:
         return {"status": "ready" if all(item["status"] == "ready" for item in checks) else "blocked", "checks": checks}
 
     def snapshot(self) -> dict[str, Any]:
-        decision, detection = self.decision()
+        inspection = self.inspect()
+        decision, detection = inspection.decision, inspection.detection
         try:
             initial_local_model = asr_models.recommended_model()["id"]
         except ValueError as exc:
             raise OnboardingError("diagnostic_required", "无法确定推荐的语音识别模型", status=409) from exc
-        repo, session = self._read_session(decision)
-        if repo is not None and session is not None and session.state == "in_progress" and session.project_request_id and session.project_request_hash and session.first_project_id is None:
-            durable = repo.get_idempotency_key("project.create", session.project_request_id)
-            if durable is not None:
-                project = repo.get_project(str(durable.get("object_id") or ""))
-                if (
-                    durable.get("request_hash") != session.project_request_hash
-                    or durable.get("object_type") != "project"
-                    or project is None
-                ):
-                    repo.close()
-                    raise OnboardingError("diagnostic_required", "无法恢复上次创建的项目，请提供问题编号以便排查。", status=409)
-                try:
-                    session = repo.bind_first_project(session.revision, session.project_request_id, project.project_id)
-                except (FirstRunStateError, ValueError) as exc:
-                    repo.close()
-                    raise OnboardingError("diagnostic_required", "无法恢复上次创建的项目，请提供问题编号以便排查。", status=409) from exc
-        session_payload = _safe_session_from_repository(repo, session) if repo is not None else _safe_session(session)
-        if repo is not None:
-            repo.close()
+        session = inspection.facts.session
+        if decision.entry not in {"migration_required", "diagnostic_required"} and session is not None and session.state == "in_progress" and session.project_request_id and session.project_request_hash and session.first_project_id is None:
+            with self._repo() as repo:
+                durable = repo.get_idempotency_key("project.create", session.project_request_id)
+                if durable is not None:
+                    project = repo.get_project(str(durable.get("object_id") or ""))
+                    if (durable.get("request_hash") != session.project_request_hash
+                            or durable.get("object_type") != "project" or project is None):
+                        raise OnboardingError("diagnostic_required", "无法恢复上次创建的项目，请提供问题编号以便排查。", status=409)
+                    try:
+                        repo.bind_first_project(session.revision, session.project_request_id, project.project_id)
+                    except (FirstRunStateError, ValueError) as exc:
+                        raise OnboardingError("diagnostic_required", "无法恢复上次创建的项目，请提供问题编号以便排查。", status=409) from exc
+            inspection = self.inspect()
+            decision, detection = inspection.decision, inspection.detection
+            session = inspection.facts.session
+        session_payload = _safe_session(session)
+        if session_payload:
+            session_payload["first_project"] = inspection.facts.first_project
         try:
             settings = self.settings()
         except Exception:  # noqa: BLE001 - diagnostic startup must still return a safe DTO.
@@ -297,6 +285,7 @@ class OnboardingCoordinator:
             from .migration_coordinator import migration_summary_for_startup
 
             migration = migration_summary_for_startup(
+                startup=inspection,
                 service_dir=self.service_dir,
                 config_path=self.config_path,
                 input_dir=self.input_dir,

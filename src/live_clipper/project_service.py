@@ -150,7 +150,7 @@ class ProjectManager:
         self.settings = settings
 
     def _require_projects_mode(self) -> None:
-        if self.repository.get_data_mode() != "projects":
+        if self.repository.get_data_mode() != "projects" or self.repository.resource_migration_pending():
             raise ProjectError("migration_required", "旧版数据尚未完成迁移确认", status=409)
 
     def form_options(self) -> dict[str, Any]:
@@ -236,8 +236,7 @@ class ProjectManager:
         elif source == output:
             blockers.append(ValidationIssue("output.directory", "output_inside_source", "成片保存位置不能与录像文件夹相同"))
 
-        migration = self.repository.connection.execute("SELECT value FROM system_state WHERE key='named_resources_migration'").fetchone()
-        if migration and migration[0] != 'completed':
+        if self.repository.resource_migration_pending():
             blockers.append(ValidationIssue('resources', 'migration_pending', '模型配置升级尚未完成，请到模型与工具页面处理'))
         resources = resource_map(self.repository)
         refs = effective_references(normalized)
