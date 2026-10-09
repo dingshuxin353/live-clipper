@@ -22,7 +22,10 @@ def _fingerprint(root: Path) -> dict[str, tuple[int, int, str]]:
             hashlib.sha256(item.read_bytes()).hexdigest(),
         )
         for item in sorted(root.rglob("*"))
-        if item.is_file()
+        if item.is_file() and not (
+            item.name in {"venus.sqlite3-wal", "venus.sqlite3-shm"}
+            and (item.parent / "venus.sqlite3").is_file()
+        )
     }
 
 

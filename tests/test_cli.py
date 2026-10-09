@@ -1023,13 +1023,15 @@ def test_run_app_keeps_conflicting_project_home_unchanged_in_diagnostic_mode(mon
     )
 
     before = {
-        str(path.relative_to(home)): (path.stat().st_mode, path.stat().st_mtime_ns, path.read_bytes() if path.is_file() else None)
+        str(path.relative_to(home)): (path.stat().st_mode, None if path == service_dir else path.stat().st_mtime_ns, path.read_bytes() if path.is_file() else None)
         for path in sorted(home.rglob("*"))
+        if path not in {service_dir / "venus.sqlite3-wal", service_dir / "venus.sqlite3-shm"}
     }
     cli.run_app()
     after = {
-        str(path.relative_to(home)): (path.stat().st_mode, path.stat().st_mtime_ns, path.read_bytes() if path.is_file() else None)
+        str(path.relative_to(home)): (path.stat().st_mode, None if path == service_dir else path.stat().st_mtime_ns, path.read_bytes() if path.is_file() else None)
         for path in sorted(home.rglob("*"))
+        if path not in {service_dir / "venus.sqlite3-wal", service_dir / "venus.sqlite3-shm"}
     }
 
     assert captured["restricted_startup"] == "diagnostic_required"

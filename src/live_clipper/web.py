@@ -26,6 +26,7 @@ from . import (
 )
 from .automation import DEFAULT_LOG_DIR, DEFAULT_STATE_DIR, _pid_is_running, check_automation_runs
 from .config import RecordingSourceDefaultConfig, ServiceConfig, Settings, load_settings
+from .first_run_detection import StartupInspection
 from .pipeline import cleanup_local_artifacts, cleanup_plan
 from .project_api import ProjectAPI
 from .project_result_api import ProjectResultAPI, ResultAPIError
@@ -138,15 +139,19 @@ def _project_mode_active(paths: WebPaths) -> bool:
         return repository.get_data_mode() == "projects"
 
 
-def _startup_restricted(paths: WebPaths) -> str | None:
-    """Return the read-only startup gate for mutating legacy/service routes."""
-    decision, _detection = onboarding_coordinator.OnboardingCoordinator(
+def _startup_inspection(paths: WebPaths) -> StartupInspection:
+    return onboarding_coordinator.OnboardingCoordinator(
         service_dir=paths.service_dir,
         config_path=paths.config_path,
         env_path=paths.config_path.parent / ".env",
         input_dir=paths.input_dir,
         output_root=paths.output_root,
-    ).decision()
+    ).inspect()
+
+
+def _startup_restricted(paths: WebPaths) -> str | None:
+    """Return the read-only startup gate for mutating legacy/service routes."""
+    decision = _startup_inspection(paths).decision
     if decision.entry in {"migration_required", "diagnostic_required"}:
         return decision.entry
     return None
@@ -175,18 +180,12 @@ def _structured_error(error_code: str, message: str) -> dict[str, Any]:
     return {"ok": False, "error_code": error_code, "message": message, "error": message}
 
 
-def _restricted_onboarding_snapshot(paths: WebPaths, expected_mode: str) -> dict[str, Any]:
-    coordinator = onboarding_coordinator.OnboardingCoordinator(
-        service_dir=paths.service_dir,
-        config_path=paths.config_path,
-        env_path=paths.config_path.parent / ".env",
-        input_dir=paths.input_dir,
-        output_root=paths.output_root,
-    )
-    decision, detection = coordinator.decision()
-    mode = decision.entry if decision.entry in {"migration_required", "diagnostic_required"} else expected_mode
+def _restricted_onboarding_snapshot(paths: WebPaths, inspection: StartupInspection) -> dict[str, Any]:
+    decision, detection = inspection.decision, inspection.detection
+    mode = decision.entry
     recommended = asr_models.recommended_model()["id"]
     migration = migration_coordinator.migration_summary_for_startup(
+        startup=inspection,
         service_dir=paths.service_dir,
         config_path=paths.config_path,
         input_dir=paths.input_dir,
@@ -1237,12 +1236,13 @@ class LiveClipperRequestHandler(BaseHTTPRequestHandler):
             return
         parsed_path = urlparse(self.path).path
         if self.restricted_startup:
-            current_restriction = _startup_restricted(self.paths)
+            inspection = _startup_inspection(self.paths)
+            current_restriction = inspection.decision.entry if inspection.decision.entry in {"migration_required", "diagnostic_required"} else None
             if current_restriction is None:
                 self.restricted_startup = None
             elif method == "GET" and parsed_path == "/api/onboarding":
                 status, headers, payload = _json_response(
-                    _restricted_onboarding_snapshot(self.paths, current_restriction)
+                    _restricted_onboarding_snapshot(self.paths, inspection)
                 )
             elif parsed_path == "/api/migration" or parsed_path.startswith("/api/migration/"):
                 body_payload: dict[str, Any] | None = None
