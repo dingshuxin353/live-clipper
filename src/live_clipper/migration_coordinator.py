@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import Settings, load_settings
+from .first_run_detection import StartupInspection, _read_database_facts
 from .project_domain import default_project_config, legacy_id, normalize_utc, project_config_v2, stable_json
 from .project_migration import (
     PLAN_VERSION,
@@ -193,18 +194,16 @@ class MigrationCoordinator:
         }
 
     def _read_session(self) -> MigrationSession | None:
-        if not database_path(self.service_dir).is_file():
-            return None
-        with ProjectRepository(self.service_dir) as repository:
-            sessions = repository.list_migration_sessions()
-            return sessions[0] if sessions else None
+        facts = _read_database_facts(database_path(self.service_dir))
+        if facts.unreadable:
+            raise MigrationError("diagnostic_required", "无法读取升级状态，请记录问题编号以便排查。")
+        return facts.migration_record
 
     @staticmethod
-    def _completion_consistent(repository: ProjectRepository, session: MigrationSession) -> bool:
+    def _completion_consistent(data_mode: str, project_ids: tuple[str, ...], session: MigrationSession) -> bool:
         return bool(
-            repository.get_data_mode() == "projects"
-            and session.project_id
-            and repository.get_project(session.project_id)
+            data_mode == "projects"
+            and session.project_id in project_ids
             and session.report
             and session.report.get("project", {}).get("project_id") == session.project_id
             and session.report.get("backup_created") is True
@@ -212,8 +211,11 @@ class MigrationCoordinator:
             and session.backup_path
         )
 
-    def snapshot(self) -> dict[str, Any]:
-        session = self._read_session()
+    def snapshot(self, *, startup: StartupInspection | None = None) -> dict[str, Any]:
+        facts = startup.facts if startup else _read_database_facts(database_path(self.service_dir))
+        if facts.unreadable:
+            raise MigrationError("diagnostic_required", "无法读取升级状态，请记录问题编号以便排查。")
+        session = facts.migration_record
         report = ({**session.report, "acknowledged_at": session.acknowledged_at} if session and session.report else None)
         if session is not None:
             if session.state.startswith("completed_"):
@@ -231,8 +233,7 @@ class MigrationCoordinator:
             }
             plan = None
             if session.state.startswith("completed_"):
-                with ProjectRepository(self.service_dir) as repository:
-                    consistent = self._completion_consistent(repository, session)
+                consistent = self._completion_consistent(facts.data_mode, facts.project_ids, session)
                 if not consistent:
                     entry = "diagnostic"
         else:
@@ -440,7 +441,7 @@ class MigrationCoordinator:
         _require_fields(body, {"request_id", "migration_id", "expected_revision"}, {"request_id", "migration_id", "expected_revision"})
         with ProjectRepository(self.service_dir) as repository:
             current = repository.get_migration_session(str(body["migration_id"]))
-            if current is not None and current.state.startswith("completed_") and not self._completion_consistent(repository, current):
+            if current is not None and current.state.startswith("completed_") and not self._completion_consistent(repository.get_data_mode(), tuple(p.project_id for p in repository.list_projects()), current):
                 raise MigrationError("diagnostic_required", "暂时无法确认升级结果，请记录问题编号并联系开发者排查。")
             if current is not None and current.acknowledged_at is not None:
                 return 200, {
@@ -791,6 +792,7 @@ class MigrationCoordinator:
 
 def migration_summary_for_startup(
     *,
+    startup: StartupInspection,
     service_dir: str | Path,
     config_path: str | Path,
     input_dir: str | Path,
@@ -805,8 +807,10 @@ def migration_summary_for_startup(
         input_dir=input_dir,
         output_root=output_root,
     )
+    if startup.facts.unreadable:
+        return {"entry": "diagnostic", "session": None, "report": None}
     if not include_inspection:
-        session = coordinator._read_session()
+        session = startup.facts.migration_record
         if (
             session is None
             or not session.state.startswith("completed_")
@@ -814,7 +818,7 @@ def migration_summary_for_startup(
         ):
             return None
     try:
-        snapshot = coordinator.snapshot()
+        snapshot = coordinator.snapshot(startup=startup)
     except MigrationError:
         return {"entry": "diagnostic", "session": None, "report": None}
     return {"entry": snapshot["entry"], "session": snapshot["session"], "report": snapshot["report"]}
