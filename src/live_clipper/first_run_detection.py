@@ -35,6 +35,7 @@ class _DatabaseFacts:
     unreadable: bool = False
     migration_record: MigrationSession | None = None
     first_project: dict[str, Any] | None = None
+    resource_migration_state: str | None = None
 
 
 def _configured_global_source(config_path: Path) -> tuple[bool, bool]:
@@ -131,11 +132,14 @@ def _read_database_facts(path: Path) -> _DatabaseFacts:
                 str(row[0])
                 for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
             }
+            resource_state = None
             data_mode = "absent"
             if "system_state" in tables:
                 row = connection.execute("SELECT value FROM system_state WHERE key = 'data_mode'").fetchone()
                 if row is not None:
                     data_mode = str(row[0])
+                resource_row = connection.execute("SELECT value FROM system_state WHERE key='named_resources_migration'").fetchone()
+                resource_state = str(resource_row[0]) if resource_row else None
             project_ids: tuple[str, ...] = ()
             if "projects" in tables:
                 project_ids = tuple(
@@ -172,7 +176,7 @@ def _read_database_facts(path: Path) -> _DatabaseFacts:
             return _DatabaseFacts(
                 data_mode, project_ids, session, migration_sessions, has_blocked_legacy_import,
                 migration_record=_migration_session(dict(rows[0])) if migration_sessions else None,
-                first_project=first_project,
+                first_project=first_project, resource_migration_state=resource_state,
             )
     except (OSError, sqlite3.DatabaseError, TypeError, ValueError, RuntimeError, KeyError):
         return _DatabaseFacts(unreadable=True)
@@ -267,6 +271,7 @@ def _inspect(
         project_count=len(facts.project_ids),
         has_first_run_session=facts.session is not None,
         migration_session_count=len(facts.migration_sessions),
+        resource_migration_incomplete=bool(facts.migration_sessions) and facts.resource_migration_state != "completed",
     )
     return detection, facts
 

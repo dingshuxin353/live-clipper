@@ -1,19 +1,20 @@
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
 import re
-import shutil
 import stat
 import threading
 from collections.abc import Callable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any
 
 from .config import Settings, load_settings
-from .first_run_detection import StartupInspection, _read_database_facts
+from .first_run_detection import StartupInspection, _read_database_facts, readonly_database
 from .project_domain import default_project_config, legacy_id, normalize_utc, project_config_v2, stable_json
 from .project_migration import (
     PLAN_VERSION,
@@ -103,11 +104,32 @@ class MigrationCoordinator:
         with self._registry_lock:
             self._lock = self._locks.setdefault(key, threading.Lock())
 
-    def _load_settings(self) -> Settings:
+    @contextmanager
+    def _execution_lease(self):
+        path = self.service_dir / '.migration-execution.lock'
+        self.service_dir.mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+        with os.fdopen(descriptor, 'r+') as lease:
+            try:
+                fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise MigrationError('migration_running', '原来的升级仍在执行，请先查看升级状态。') from exc
+            yield lease
+
+    @staticmethod
+    def _run_owned(owner, function, *args):
+        with owner:
+            function(*args)
+
+    def _submit_owned(self, owner, function, *args):
         try:
-            return load_settings(self.config_path)
-        except Exception:
-            return Settings()
+            return self._executor.submit(self._run_owned, owner, function, *args)
+        except BaseException:
+            owner.close()
+            raise
+
+    def _load_settings(self) -> Settings:
+        return load_settings(self.config_path, env_path=self.env_path)
 
     def _inspection(self) -> LegacyInspection:
         try:
@@ -218,7 +240,11 @@ class MigrationCoordinator:
         session = facts.migration_record
         report = ({**session.report, "acknowledged_at": session.acknowledged_at} if session and session.report else None)
         if session is not None:
-            if session.state.startswith("completed_"):
+            incomplete = facts.data_mode == "projects" and facts.resource_migration_state != "completed"
+            if incomplete:
+                entry = "executing" if session.state == "validating" and session.stage == "resources" else "incomplete"
+                report = None
+            elif session.state.startswith("completed_"):
                 entry = "completed"
             elif session.state == "failed_rolled_back":
                 entry = "failed"
@@ -357,7 +383,8 @@ class MigrationCoordinator:
         }
         request_hash = _request_hash(canonical)
         migration_id = legacy_id(plan.source_fingerprint, "migration")
-        with self._lock:
+        with self._lock, ExitStack() as execution:
+            execution.enter_context(self._execution_lease())
             repository = ProjectRepository(self.service_dir)
             try:
                 existing_request = repository.get_migration_session_by_request(request_id)
@@ -384,7 +411,7 @@ class MigrationCoordinator:
             key = (str(self.service_dir), session.migration_id)
             future = self._futures.get(key)
             if session.state == "backing_up" and (future is None or future.done()):
-                self._futures[key] = self._executor.submit(self._run, inspection, plan, session.migration_id)
+                self._futures[key] = self._submit_owned(execution.pop_all(), self._run, inspection, plan, session.migration_id)
         return 202, {"ok": True, "session": self._session_payload(session)}
 
     def retry(self, body: Mapping[str, Any]) -> tuple[int, dict[str, Any]]:
@@ -396,7 +423,7 @@ class MigrationCoordinator:
         expected_revision = body["expected_revision"]
         if not isinstance(expected_revision, int) or isinstance(expected_revision, bool):
             raise MigrationError("validation_failed", "无法确认升级状态，请重新读取后重试。", status=422)
-        with self._lock, ProjectRepository(self.service_dir) as repository:
+        with self._lock, ProjectRepository(self.service_dir) as repository, ExitStack() as execution:
             current = repository.get_migration_session(migration_id)
             if current is None:
                 raise MigrationError("migration_not_found", "找不到这条升级记录，请重新读取升级状态。", status=404)
@@ -407,10 +434,44 @@ class MigrationCoordinator:
                 if existing["request_hash"] != digest or existing["object_id"] != migration_id:
                     raise MigrationError("request_id_conflict", "当前设置与上次提交的不一致，请先确认上次升级的状态。")
                 return 202, {"ok": True, "session": self._session_payload(current)}
+            resource_state = repository.connection.execute("SELECT value FROM system_state WHERE key='named_resources_migration'").fetchone()
+            if current.project_id and (not resource_state or resource_state[0] != 'completed'):
+                if current.revision != expected_revision:
+                    raise MigrationError("revision_conflict", "升级状态已变化，请重新读取后重试。")
+                key = (str(self.service_dir), migration_id)
+                future = self._futures.get(key)
+                if future is not None and not future.done():
+                    return 202, {"ok": True, "session": self._session_payload(current)}
+                execution.enter_context(self._execution_lease())
+                latest = repository.get_migration_session(migration_id)
+                if latest.revision != expected_revision:
+                    raise MigrationError('revision_conflict', '升级状态已变化，请重新读取后重试。')
+                try:
+                    self._validate_resource_resume(repository, current)
+                except MigrationError as exc:
+                    self._record_unknown(repository, current, exc.code, exc.message)
+                    raise
+                with repository.transaction():
+                    repository.connection.execute(
+                        "UPDATE migration_sessions SET state='validating',stage='resources',acknowledged_at=NULL,"
+                        "completed_at=NULL,failure_code=NULL,failure_summary=NULL,revision=revision+1,updated_at=? "
+                        "WHERE migration_id=? AND revision=?", (normalize_utc(), migration_id, expected_revision),
+                    )
+                    repository.save_idempotency_key(scope, request_id, request_hash=digest, object_type='migration', object_id=migration_id)
+                retrying = repository.get_migration_session(migration_id)
+                try:
+                    self._futures[key] = self._submit_owned(execution.pop_all(), self._resume_resources, migration_id)
+                except Exception as exc:
+                    self._record_unknown(repository, retrying, 'migration_resources_failed', '无法开始配置转换，已保存的数据已保留。请继续升级。')
+                    raise MigrationError('migration_resources_failed', '无法开始配置转换，请重新读取状态。') from exc
+                return 202, {"ok": True, "session": self._session_payload(retrying)}
             if current.state != "failed_rolled_back":
                 return 202, {"ok": True, "session": self._session_payload(current)}
             if current.revision != expected_revision:
                 raise MigrationError("revision_conflict", "升级状态已变化，请重新读取后重试。")
+            execution.enter_context(self._execution_lease())
+            if repository.get_migration_session(migration_id).revision != expected_revision:
+                raise MigrationError('revision_conflict', '升级状态已变化，请重新读取后重试。')
             try:
                 inspection = self._inspection()
                 if inspection.source_fingerprint != current.source_fingerprint:
@@ -431,15 +492,81 @@ class MigrationCoordinator:
                 repository.save_idempotency_key(scope, request_id, request_hash=digest, object_type="migration", object_id=migration_id)
             key = (str(self.service_dir), migration_id)
             try:
-                self._futures[key] = self._executor.submit(self._run, inspection, plan, migration_id)
+                self._futures[key] = self._submit_owned(execution.pop_all(), self._run, inspection, plan, migration_id)
             except Exception as exc:
                 repository.record_migration_failure(migration_id, retrying.revision, failure_code="migration_apply_failed", failure_summary=_safe_failure_summary(exc), backup_status=current.backup_status)
                 raise MigrationError("migration_apply_failed", "无法开始升级，请重新读取升级状态。") from exc
         return 202, {"ok": True, "session": self._session_payload(retrying)}
 
+    def _validate_resource_resume(self, repository: ProjectRepository, session: MigrationSession) -> Settings:
+        if (repository.get_data_mode() != 'projects' or not session.project_id
+                or not repository.get_project(session.project_id) or not session.report
+                or session.report.get('project', {}).get('project_id') != session.project_id
+                or session.backup_status != 'completed' or not session.backup_path):
+            raise MigrationError('migration_completion_conflict', '无法确认已保存的升级结果，请保留数据并联系开发者排查。')
+        inspection = self._inspection()
+        if inspection.source_fingerprint != session.source_fingerprint:
+            raise MigrationError('migration_source_changed', '旧版设置或记录已变化，无法安全继续原来的升级。')
+        plan = build_migration_plan(inspection, choices=session.choices, backup_root=self.backup_root)
+        if plan.plan_hash != session.plan_hash:
+            raise MigrationError('migration_plan_changed', '升级设置已变化，无法安全继续原来的升级。')
+        try:
+            backup = self._authorized_backup_path(session.migration_id, session.backup_path)
+            verify_migration_backup(backup, migration_id=session.migration_id,
+                                    source_fingerprint=session.source_fingerprint,
+                                    source_manifest=inspection.source_manifest)
+        except (MigrationError, LegacySourceError, OSError, ValueError, TypeError) as exc:
+            raise MigrationError('migration_backup_invalid', '无法核验原升级备份，请保留数据并联系开发者排查。') from exc
+        for project in repository.list_projects():
+            refs = repository.get_config_revision(project.project_id).config['resources']
+            for value in refs.values():
+                legacy = project.project_id == session.project_id and value in {'legacy.asr.default', 'legacy.analysis.default'}
+                if value and value != 'reuse_analysis' and not legacy and not repository.connection.execute(
+                    'SELECT 1 FROM resources WHERE resource_id=? AND deleted_at IS NULL', (value,),
+                ).fetchone():
+                    raise MigrationError('migration_resource_conflict', '项目使用的模型配置无法核验，请保留现有设置并联系开发者排查。')
+        if self.env_path.exists() and not (self.service_dir / 'resource-migration-owned.jsonl').exists():
+            raise MigrationError('migration_credential_source_unknown', '原升级没有记录这份凭据的来源，暂时不能自动绑定当前凭据。请保留数据并联系开发者排查。')
+        return self.settings_loader()
+
+    def _resume_resources(self, migration_id: str) -> None:
+        from .resource_migration import prepare_resource_migration
+
+        with ProjectRepository(self.service_dir) as repository:
+            try:
+                current = repository.get_migration_session(migration_id)
+                if current is None or current.stage != 'resources':
+                    raise MigrationStateError('resource recovery state changed')
+                settings = self._validate_resource_resume(repository, current)
+                with prepare_resource_migration(repository, settings, fault=self.fault_injection) as convert:
+                    with repository.transaction():
+                        convert()
+                        now = normalize_utc()
+                        blockers = sorted(set(current.report.get('blocker_codes', [])) | {'resource_validation_required'})
+                        report = {**current.report, 'completed_at': now, 'acknowledged_at': None,
+                                  'readiness': 'attention', 'blocker_codes': blockers, 'blocker_count': len(blockers)}
+                        repository.connection.execute(
+                            "UPDATE migration_sessions SET state='completed_attention',stage='complete',report_json=?,"
+                            "completed_at=?,updated_at=?,failure_code=NULL,failure_summary=NULL,revision=revision+1 "
+                            "WHERE migration_id=?", (stable_json(report), now, now, migration_id),
+                        )
+            except Exception as exc:
+                with repository.transaction():
+                    state = repository.connection.execute("SELECT value FROM system_state WHERE key='named_resources_migration'").fetchone()
+                    if not state or state[0] != 'completed':
+                        repository.connection.execute(
+                            "UPDATE migration_sessions SET state='diagnostic_required',stage='resources',"
+                            "failure_code=?,failure_summary=?,updated_at=?,revision=revision+1 "
+                            "WHERE migration_id=?", (exc.code if isinstance(exc, MigrationError) else 'migration_resources_failed',
+                            exc.message if isinstance(exc, MigrationError) else '模型配置转换尚未完成，已导入的项目和历史记录已保留。请检查原升级条件后继续。', normalize_utc(), migration_id),
+                        )
+
     def acknowledge(self, body: Mapping[str, Any]) -> tuple[int, dict[str, Any]]:
         _require_fields(body, {"request_id", "migration_id", "expected_revision"}, {"request_id", "migration_id", "expected_revision"})
         with ProjectRepository(self.service_dir) as repository:
+            resource_state = repository.connection.execute("SELECT value FROM system_state WHERE key='named_resources_migration'").fetchone()
+            if not resource_state or resource_state[0] != 'completed':
+                raise MigrationError("migration_pending", "模型配置升级尚未完成，请先继续升级。")
             current = repository.get_migration_session(str(body["migration_id"]))
             if current is not None and current.state.startswith("completed_") and not self._completion_consistent(repository.get_data_mode(), tuple(p.project_id for p in repository.list_projects()), current):
                 raise MigrationError("diagnostic_required", "暂时无法确认升级结果，请记录问题编号并联系开发者排查。")
@@ -456,6 +583,17 @@ class MigrationCoordinator:
             except (MigrationStateError, RevisionConflictError, ValueError) as exc:
                 raise MigrationError("revision_conflict", "升级状态已变化，暂时无法进入项目。请重新读取状态后重试。", status=409) from exc
         return 200, {"ok": True, "session": self._session_payload(session), "project_id": session.project_id}
+
+    def history(self, migration_id: str) -> tuple[int, dict[str, Any]]:
+        with readonly_database(database_path(self.service_dir)) as connection:
+            repository = ProjectRepository(self.service_dir, connection=connection)
+            session = repository.get_migration_session(migration_id)
+            if session is None or not session.project_id or not repository.get_project(session.project_id):
+                raise MigrationError('migration_not_found', '找不到已保存的升级项目。', status=404)
+            return 200, {'ok': True, 'history': [
+                {'run_id': run.run_id, 'status': run.status, 'created_at': run.queued_at}
+                for run in repository.list_runs(session.project_id)
+            ]}
 
     @staticmethod
     def _directory_identity(path: Path) -> tuple[int, int]:
@@ -503,7 +641,6 @@ class MigrationCoordinator:
             session = repository.get_migration_session(migration_id)
         if (
             session is None
-            or session.state not in {"completed_ready", "completed_attention"}
             or session.backup_status != "completed"
             or not session.backup_path
         ):
@@ -534,67 +671,111 @@ class MigrationCoordinator:
             schedule["interval_minutes"] = plan.project_preview["interval_minutes"]
         return project_config_v2(config)
 
-    def _safe_results(self, plan: MigrationPlan, project_id: str) -> tuple[list[dict[str, Any]], list[Path]]:
-        safe: list[dict[str, Any]] = []
-        created_roots: list[Path] = []
-        work_root = self.service_dir.parent
-        for entry in plan.history_summary["entries"]:
-            registered = entry.get("safe_result")
+    def _evidence_owner(self, migration_id: str) -> Path:
+        return self.service_dir / f'{migration_id}.evidence.json'
+
+    def _safe_results(self, plan: MigrationPlan, project_id: str) -> list[dict[str, Any]]:
+        safe = []
+        for entry in plan.history_summary['entries']:
+            registered = entry.get('safe_result')
             if not isinstance(registered, Mapping):
                 continue
-            fact = inspect_safe_migration_result(
-                str(registered["path_identity"]),
-                output_root=str(plan.project_preview["output_directory"]),
-                expected_sha256=str(registered["sha256"]),
-            )
-            if fact is None:
-                continue
-            legacy_run_id = str(entry["legacy_run_id"])
-            run_id = legacy_id(plan.source_fingerprint, f"run:{legacy_run_id}")
-            output_id = legacy_id(plan.source_fingerprint, f"output:{legacy_run_id}")
-            evidence_root = work_root / "projects" / project_id / "runs" / run_id / "outputs" / output_id
-            evidence_root.mkdir(parents=True, exist_ok=True)
-            created_roots.append(evidence_root)
-            evidence = {
-                "format_version": 1,
-                "output_id": output_id,
-                "sha256": fact["sha256"],
-                "media_metadata": {
-                    key: fact[key]
-                    for key in ("duration_ms", "width", "height", "container", "video_codec", "byte_size")
-                },
-            }
-            path = evidence_root / "media_integrity.json"
-            temporary = path.with_suffix(".tmp")
-            with temporary.open("x", encoding="utf-8") as handle:
-                handle.write(stable_json(evidence))
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary, path)
-            directory_fd = os.open(evidence_root, os.O_RDONLY)
+            fact = inspect_safe_migration_result(str(registered['path_identity']),
+                output_root=str(plan.project_preview['output_directory']), expected_sha256=str(registered['sha256']))
+            if fact is not None:
+                safe.append({'legacy_run_id': str(entry['legacy_run_id']), **fact})
+        migration_id = legacy_id(plan.source_fingerprint, 'migration')
+        owner = self._evidence_owner(migration_id)
+        payload = {'source': plan.source_fingerprint, 'plan': plan.plan_hash,
+                   'runs': [item['legacy_run_id'] for item in safe]}
+        if owner.is_symlink():
+            raise MigrationError('migration_evidence_conflict', '无法核验升级证据的归属，请保留数据并联系开发者。')
+        if owner.exists():
+            if json.loads(owner.read_text()) != payload:
+                raise MigrationError('migration_evidence_conflict', '升级证据与原计划不一致，请保留数据并联系开发者。')
+        else:
+            for fact in safe:
+                run_id = legacy_id(plan.source_fingerprint, f"run:{fact['legacy_run_id']}")
+                output_id = legacy_id(plan.source_fingerprint, f"output:{fact['legacy_run_id']}")
+                root = self.service_dir.parent / 'projects' / project_id / 'runs' / run_id / 'outputs' / output_id
+                if root.exists() or root.is_symlink():
+                    raise MigrationError('migration_evidence_conflict', '升级证据位置已有内容，无法确认归属。请保留数据并联系开发者。')
+            descriptor = os.open(owner, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, 'w') as stream:
+                stream.write(stable_json(payload))
+                stream.flush()
+                os.fsync(stream.fileno())
+            directory = os.open(self.service_dir, os.O_RDONLY)
             try:
-                os.fsync(directory_fd)
+                os.fsync(directory)
             finally:
-                os.close(directory_fd)
-            safe.append({"legacy_run_id": legacy_run_id, **fact})
-        return safe, created_roots
+                os.close(directory)
+        for fact in safe:
+            run_id = legacy_id(plan.source_fingerprint, f"run:{fact['legacy_run_id']}")
+            output_id = legacy_id(plan.source_fingerprint, f"output:{fact['legacy_run_id']}")
+            root = self.service_dir.parent / 'projects' / project_id / 'runs' / run_id / 'outputs' / output_id
+            if any(path.is_symlink() for path in [root, *root.parents] if path != self.service_dir.parent):
+                raise MigrationError('migration_evidence_conflict', '升级证据位置无法核验，请保留数据并联系开发者。')
+            root.mkdir(parents=True, exist_ok=True)
+            evidence = {'format_version': 1, 'output_id': output_id, 'sha256': fact['sha256'],
+                        'media_metadata': {key: fact[key] for key in
+                            ('duration_ms', 'width', 'height', 'container', 'video_codec', 'byte_size')}}
+            path = root / 'media_integrity.json'
+            content = stable_json(evidence)
+            if path.exists():
+                if path.is_symlink() or path.read_text() != content:
+                    raise MigrationError('migration_evidence_conflict', '已保存的升级证据无法核验，请保留数据并联系开发者。')
+                continue
+            temporary = root / 'media_integrity.tmp'
+            if temporary.is_symlink():
+                raise MigrationError('migration_evidence_conflict', '升级证据位置无法核验，请保留数据并联系开发者。')
+            with temporary.open('w', encoding='utf-8') as stream:
+                stream.write(content)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+            directory = os.open(root, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        return safe
 
-    def _remove_evidence(self, roots: list[Path]) -> None:
-        boundary = self.service_dir.parent / "projects"
-        for root in roots:
-            shutil.rmtree(root, ignore_errors=True)
-            parent = root.parent
+    def _cleanup_evidence(self, repository: ProjectRepository, session: MigrationSession) -> None:
+        owner = self._evidence_owner(session.migration_id)
+        if not owner.exists():
+            return
+        if owner.is_symlink():
+            raise ValueError('migration_evidence_conflict')
+        payload = json.loads(owner.read_text())
+        if payload['source'] != session.source_fingerprint or payload['plan'] != session.plan_hash:
+            raise ValueError('migration_evidence_conflict')
+        project_id = legacy_id(session.source_fingerprint, 'project:default')
+        boundary = self.service_dir.parent / 'projects'
+        for legacy_run in payload['runs']:
+            run_id = legacy_id(session.source_fingerprint, f'run:{legacy_run}')
+            output_id = legacy_id(session.source_fingerprint, f'output:{legacy_run}')
+            if repository.connection.execute('SELECT 1 FROM run_outputs WHERE output_id=?', (output_id,)).fetchone():
+                continue
+            root = boundary / project_id / 'runs' / run_id / 'outputs' / output_id
+            if any(path.is_symlink() for path in [root, *root.parents] if path != self.service_dir.parent):
+                raise ValueError('migration_evidence_conflict')
+            for name in ('media_integrity.json', 'media_integrity.tmp'):
+                path = root / name
+                if path.is_symlink():
+                    raise ValueError('migration_evidence_conflict')
+                path.unlink(missing_ok=True)
+            parent = root
             while parent != boundary and parent != parent.parent:
                 try:
                     parent.rmdir()
                 except OSError:
                     break
                 parent = parent.parent
+        owner.unlink()
 
     def _run(self, inspection: LegacyInspection, plan: MigrationPlan, migration_id: str) -> None:
         repository: ProjectRepository | None = None
-        created_evidence: list[Path] = []
-        committed = False
         try:
             current_inspection = self._inspection()
             if current_inspection.source_fingerprint != inspection.source_fingerprint:
@@ -629,10 +810,10 @@ class MigrationCoordinator:
                 migration_id, migrating.revision, state="migrating", stage="history"
             )
             validating = repository.update_migration_stage(
-                migration_id, history.revision, state="validating", stage="database"
+                migration_id, history.revision, state="validating", stage="resources"
             )
             project_id = legacy_id(plan.source_fingerprint, "project:default")
-            safe_results, created_evidence = self._safe_results(plan, project_id)
+            safe_results = self._safe_results(plan, project_id)
             counts = dict(plan.history_summary["counts"])
             blockers = [
                 str(code)
@@ -672,39 +853,51 @@ class MigrationCoordinator:
                 "completed_at": normalize_utc(),
                 "acknowledged_at": None,
             }
-            repository.apply_migration_transaction(
-                migration_id,
-                validating.revision,
-                source_fingerprint=plan.source_fingerprint,
-                plan_hash=plan.plan_hash,
-                project_id=project_id,
-                project_name=str(plan.project_preview["name"]),
-                config=self._config(plan),
-                history_entries=plan.history_summary["entries"],
-                safe_results=safe_results,
-                blocker_codes=blockers,
-                report=report,
-                fault_injection=self.fault_injection,
-            )
-            committed = True
-            from .resource_migration import migrate_resources
+            from .resource_migration import prepare_resource_migration
 
-            migrate_resources(repository, self.settings_loader())
+            with prepare_resource_migration(repository, self.settings_loader(), fault=self.fault_injection) as convert:
+                with repository.transaction():
+                    repository.connection.execute("UPDATE system_state SET value='migrating' WHERE key='named_resources_migration'")
+                    repository.apply_migration_transaction(
+                        migration_id,
+                        validating.revision,
+                        source_fingerprint=plan.source_fingerprint,
+                        plan_hash=plan.plan_hash,
+                        project_id=project_id,
+                        project_name=str(plan.project_preview["name"]),
+                        config=self._config(plan),
+                        history_entries=plan.history_summary["entries"],
+                        safe_results=safe_results,
+                        blocker_codes=blockers,
+                        report=report,
+                        fault_injection=self.fault_injection,
+                    )
+                    convert()
+                    completed_at = normalize_utc()
+                    report["completed_at"] = completed_at
+                    repository.connection.execute(
+                        "UPDATE migration_sessions SET report_json=?,completed_at=?,updated_at=? WHERE migration_id=?",
+                        (stable_json(report), completed_at, completed_at, migration_id),
+                    )
+            self._cleanup_evidence(repository, repository.get_migration_session(migration_id))
         except Exception as exc:  # noqa: BLE001 - background ownership must become a durable outcome.
-            if not committed:
-                self._remove_evidence(created_evidence)
             try:
                 if repository is None:
                     repository = ProjectRepository(self.service_dir)
                 current = repository.get_migration_session(migration_id)
                 if current is not None and not current.state.startswith("completed_") and current.state != "failed_rolled_back":
+                    if repository.get_data_mode() != 'legacy' or repository.list_projects():
+                        self._record_unknown(repository, current, 'migration_result_unknown', '升级结果尚待核验，已保存的数据已保留。')
+                        return
+                    self._cleanup_evidence(repository, current)
                     backup_status = "completed" if current.backup_status == "completed" else "failed"
-                    code = exc.code if isinstance(exc, MigrationError) else "migration_apply_failed"
+                    code = exc.code if isinstance(exc, MigrationError) else ("migration_resources_failed" if current.stage == "resources" else "migration_apply_failed")
                     repository.record_migration_failure(
                         migration_id,
                         current.revision,
                         failure_code=code,
-                        failure_summary=_safe_failure_summary(exc),
+                        failure_summary=("项目与模型配置转换未完成，本次业务变更未提交。请查看问题提示后重试。"
+                                         if code == "migration_resources_failed" else _safe_failure_summary(exc)),
                         backup_status=backup_status,
                     )
             finally:
@@ -729,6 +922,8 @@ class MigrationCoordinator:
         payload = dict(body or {})
         if method == "GET" and parts == ["api", "migration"]:
             return 200, self.snapshot()
+        if method == "GET" and len(parts) == 4 and parts[3] == "history":
+            return self.history(parts[2])
         if method == "GET" and len(parts) == 4 and parts[3] == "backup-grant":
             return self.backup_grant(parts[2], auth_context=auth_context)
         routes = {
@@ -758,36 +953,51 @@ class MigrationCoordinator:
         future = self._futures.get(key)
         if future is not None and not future.done():
             return session
-        backup_status = "failed"
-        if session.backup_path:
-            try:
-                manifest = tuple(
-                    SourceManifestEntry(
-                        logical_type=str(item["logical_type"]),
-                        source_identity=str(item["source_identity"]),
-                        size=int(item["size"]),
-                        mtime_ns=int(item["mtime_ns"]),
-                        sha256=str(item["sha256"]),
-                    )
-                    for item in session.source_manifest
+        with self._lock, ExitStack() as leases:
+            for name in ('.migration-execution.lock', '.resource-migration.lock'):
+                path = self.service_dir / name
+                try:
+                    descriptor = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+                except FileNotFoundError:
+                    if name == '.migration-execution.lock':
+                        return session
+                    continue
+                lease = leases.enter_context(os.fdopen(descriptor, 'r'))
+                try:
+                    fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    return session
+            with ProjectRepository(self.service_dir) as repository:
+                current = repository.get_migration_session(session.migration_id)
+                if current.revision != session.revision:
+                    return current
+                if repository.get_data_mode() != 'legacy' or repository.list_projects():
+                    return self._record_unknown(repository, current, 'migration_interrupted',
+                                                '升级已中断，已保存的项目和历史记录已保留。请继续升级。')
+                backup_status = 'failed'
+                if session.backup_status == 'completed' and session.backup_path:
+                    try:
+                        manifest = tuple(SourceManifestEntry(**item) for item in session.source_manifest)
+                        backup = self._authorized_backup_path(session.migration_id, session.backup_path)
+                        verify_migration_backup(backup, migration_id=session.migration_id,
+                                                source_fingerprint=session.source_fingerprint, source_manifest=manifest)
+                        backup_status = 'completed'
+                    except (MigrationError, LegacySourceError, OSError, KeyError, TypeError, ValueError):
+                        pass
+                return repository.record_migration_failure(
+                    session.migration_id, session.revision, failure_code='migration_interrupted',
+                    failure_summary='升级已中断，本次业务变更未提交。请重试升级。', backup_status=backup_status,
                 )
-                verify_migration_backup(
-                    session.backup_path,
-                    migration_id=session.migration_id,
-                    source_fingerprint=session.source_fingerprint,
-                    source_manifest=manifest,
-                )
-                backup_status = "completed"
-            except (LegacySourceError, KeyError, TypeError, ValueError):
-                backup_status = "failed"
-        with ProjectRepository(self.service_dir) as repository:
-            return repository.record_migration_failure(
-                session.migration_id,
-                session.revision,
-                failure_code="migration_interrupted",
-                failure_summary="升级已中断，本次升级未修改旧版数据。请重试升级。",
-                backup_status=backup_status,
+
+    @staticmethod
+    def _record_unknown(repository: ProjectRepository, session: MigrationSession, code: str, summary: str):
+        with repository.transaction():
+            repository.connection.execute(
+                "UPDATE migration_sessions SET state='diagnostic_required',acknowledged_at=NULL,completed_at=NULL,failure_code=?,failure_summary=?,"
+                "revision=revision+1,updated_at=? WHERE migration_id=? AND revision=?",
+                (code, summary, normalize_utc(), session.migration_id, session.revision),
             )
+        return repository.get_migration_session(session.migration_id)
 
 
 def migration_summary_for_startup(
@@ -809,7 +1019,7 @@ def migration_summary_for_startup(
     )
     if startup.facts.unreadable:
         return {"entry": "diagnostic", "session": None, "report": None}
-    if not include_inspection:
+    if not include_inspection and not startup.detection.resource_migration_incomplete:
         session = startup.facts.migration_record
         if (
             session is None

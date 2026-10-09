@@ -177,9 +177,9 @@ export interface OnboardingModel {
   bytes_downloaded: number; bytes_total: number; download_source: string; current: boolean;
 }
 export interface OnboardingProviderPreset { id: string; label: string; api_base: string; model: string; signup_url?: string | null }
-export type MigrationEntry = "inspect" | "review" | "executing" | "completed" | "failed" | "diagnostic";
+export type MigrationEntry = "inspect" | "review" | "executing" | "completed" | "failed" | "incomplete" | "diagnostic";
 export type MigrationSessionState = "backing_up" | "migrating" | "validating" | "completed_ready" | "completed_attention" | "failed_rolled_back" | "diagnostic_required";
-export type MigrationStage = "copy" | "project" | "history" | "database" | "complete" | "rolled_back" | null;
+export type MigrationStage = "copy" | "project" | "history" | "database" | "resources" | "complete" | "rolled_back" | null;
 export interface MigrationChoices {
   project_name: string; source_directory: string; output_directory: string; trigger_mode: "manual" | "scheduled";
   schedule_mode: "daily" | "interval" | null; daily_time: string | null; interval_minutes: number | null;
@@ -230,3 +230,5 @@ export interface OnboardingValidationPayload extends ValidationPayload {
 }
 export interface OnboardingFinishPayload { ok: true; project?: ProjectSummary; session: OnboardingSession; reused?: boolean }
 export interface ModelJob { id: string; status: string; bytes_downloaded?: number; bytes_total?: number; error?: string; message?: string }
+
+export interface MigrationSavedHistory { ok: true; history: { run_id: string; status: string; created_at: string }[] }

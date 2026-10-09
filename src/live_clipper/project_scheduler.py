@@ -39,6 +39,8 @@ def tick_due_projects(
     now: datetime | None = None,
     scan_fn: Callable[..., Any],
 ) -> list[str]:
+    if repository.resource_migration_pending():
+        return []
     current = now or datetime.now(UTC)
     current_utc = current.astimezone(UTC) if current.tzinfo else current.replace(tzinfo=UTC)
     due_projects: list[str] = []
@@ -98,6 +100,8 @@ def tick_project_schedules(
     with ProjectRepository(service_dir) as repository:
         if repository.get_data_mode() != "projects":
             return {"ok": True, "mode": "legacy", "scanned_projects": []}
+        if repository.resource_migration_pending():
+            return {"ok": False, "error_code": "migration_pending", "scanned_projects": []}
         from .project_scan import scan_project
 
         scanned = tick_due_projects(
