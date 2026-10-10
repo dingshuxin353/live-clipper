@@ -15,7 +15,14 @@
     "electron-updater": "^6.3.0"
   },
   "devDependencies": {
-    "electron": "43.2.0",
+    "electron": "43.7.9",
     "electron-builder": "^26.0.0"
+  },
+  "overrides": {
+    "app-builder-lib@26.15.3": {
+      "@electron/get@3.1.0": {
+        "global-agent": "4.1.3"
+      }
+    }
   }
 }

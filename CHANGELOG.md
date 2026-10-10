@@ -2,6 +2,10 @@
 
 ## 1.0.6 - 2026-10-09
 
+### Security
+
+- Updated Electron to [43.7.9](https://github.com/electron/electron/releases/tag/v43.7.9) for runtime security fixes and updated vulnerable build dependencies.
+
 ### Fixed
 
 - Fixed startup checks missing saved database changes and incorrectly treating a completed upgrade as unfinished ([#4](https://github.com/dingshuxin353/live-clipper/pull/4)).

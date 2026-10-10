@@ -223,14 +223,19 @@ def test_electron_runtime_is_supported_secure_release():
     assert package["scripts"]["postinstall"] == "install-electron"
     assert package["dependencies"] == {"electron-updater": "^6.3.0"}
     assert package["devDependencies"] == {
-        "electron": "43.2.0",
+        "electron": "43.7.9",
         "electron-builder": "^26.0.0",
     }
     assert root["dependencies"] == package["dependencies"]
     assert root["devDependencies"] == package["devDependencies"]
-    assert lock["packages"]["node_modules/electron"]["version"] == "43.2.0"
+    assert lock["packages"]["node_modules/electron"]["version"] == "43.7.9"
     assert lock["packages"]["node_modules/electron-builder"]["version"] == "26.15.3"
     assert lock["packages"]["node_modules/electron-updater"]["version"] == "6.8.9"
+    assert package["overrides"] == {
+        "app-builder-lib@26.15.3": {
+            "@electron/get@3.1.0": {"global-agent": "4.1.3"},
+        },
+    }
     assert "node_modules/ffmpeg-static" not in lock["packages"]
     assert not any(
         marker in package["devDependencies"]["electron"].lower()
