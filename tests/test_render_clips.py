@@ -126,6 +126,9 @@ def test_render_selected_clips_applies_remove_ranges_with_concat(tmp_path, monke
     assert calls[1][calls[1].index("-to") + 1] == "20.000"
     assert "-f" in calls[2]
     assert "concat" in calls[2]
+    assert calls[2][-5:] == [
+        "-c", "copy", "-movflags", "+faststart", str(run_dir / "clips" / "clip-1.mp4"),
+    ]
 
 
 def test_render_selected_clips_reencodes_removed_range_segments_with_reset_timestamps(tmp_path, monkeypatch):

@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- Fixed MP4 clips joined after removing sections to place playback metadata before media data (faststart).
 - Fixed startup checks missing saved database changes and incorrectly treating a completed upgrade as unfinished ([#4](https://github.com/dingshuxin353/live-clipper/pull/4)).
 - Report migration as complete only after the project, history, and model configuration are saved together. Previously incomplete conversions can resume in the same project with its history preserved ([#4](https://github.com/dingshuxin353/live-clipper/pull/4)).
 - Allowed migration to continue with an empty default credentials template. Missing credentials remain visible as setup issues; credentials without a recorded source still require resolution before migration can continue ([#4](https://github.com/dingshuxin353/live-clipper/pull/4)).

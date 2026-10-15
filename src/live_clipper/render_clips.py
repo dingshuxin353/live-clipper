@@ -108,6 +108,8 @@ def concat_segments(segment_paths: list[Path], concat_list_path: Path, output_pa
             str(concat_list_path),
             "-c",
             "copy",
+            "-movflags",
+            "+faststart",
             str(output_path),
         ]
     )

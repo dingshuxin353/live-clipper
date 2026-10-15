@@ -17,7 +17,7 @@ GPL 正文及组件声明见 `GPL-2.0.txt`、`COMPONENTS.md`。
 ## 从源码包重建
 
 需要 macOS arm64、Python 3.11，以及提供 Apple Clang
-17.0.0（clang-1700.6.4.2）和 SDK 26.2 的 Command Line Tools。
+21.0.0（clang-2100.1.1.101）和 SDK 26.5 的 Command Line Tools。
 最低运行系统参数为 macOS 14.0。不使用 Homebrew 媒体库。
 
 解压 `Venus-<version>-media-sources.tar.gz`，在解压目录运行：

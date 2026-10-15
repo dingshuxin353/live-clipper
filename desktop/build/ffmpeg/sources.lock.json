@@ -2,8 +2,8 @@
   "format": 1,
   "target": "darwin-arm64",
   "minimum_macos": "14.0",
-  "compiler": "Apple clang version 17.0.0 (clang-1700.6.4.2)",
-  "sdk": "26.2",
+  "compiler": "Apple clang version 21.0.0 (clang-2100.1.1.101)",
+  "sdk": "26.5",
   "build_tools": {"meson": "1.9.0", "ninja": "1.13.0"},
   "sources": {
     "ffmpeg": {"version": "9.0.1", "file": "ffmpeg-9.0.1.tar.xz", "url": "https://ffmpeg.org/releases/ffmpeg-9.0.1.tar.xz", "size": 12036420, "sha256": "cf38e0e28c7e5605942c4a77755349b0145804a397af37eb1fb4c77cb237f635"},
