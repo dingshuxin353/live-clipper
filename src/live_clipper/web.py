@@ -1238,6 +1238,7 @@ class LiveClipperRequestHandler(BaseHTTPRequestHandler):
             self._reject_unauthorized()
             return
         parsed_path = urlparse(self.path).path
+        inspection: StartupInspection | None = None
         if self.restricted_startup:
             inspection = _startup_inspection(self.paths)
             current_restriction = inspection.decision.entry if inspection.decision.entry in {"migration_required", "diagnostic_required"} else None
@@ -1304,6 +1305,7 @@ class LiveClipperRequestHandler(BaseHTTPRequestHandler):
             auth_context=self._auth_context(),
             range_header=self.headers.get("Range"),
             head_only=head_only,
+            startup=inspection,
         )
         body = payload if isinstance(payload, bytes) else json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
         self._emit_response(status, headers, body, head_only=head_only)

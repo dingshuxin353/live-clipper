@@ -160,6 +160,15 @@ def test_restricted_real_http_executes_then_switches_to_project_api(tmp_path, mo
         else:
             raise AssertionError("HTTP migration did not complete")
         migration_id = accepted["session"]["migration_id"]
+        from test_startup_snapshot import _track_readers
+
+        with monkeypatch.context() as observation:
+            readers = _track_readers(observation)
+            completed_status, completed = request("GET", "/api/migration")
+            assert completed_status == 200 and completed["entry"] == "completed"
+            assert completed["session"]["migration_id"] == migration_id
+            assert len(readers) == 1
+            assert all(reader.cleared_before_close for reader in readers)
         _, startup = request("GET", "/api/onboarding")
         assert startup["entry"]["mode"] == "workbench"
         assert startup["migration"]["entry"] == "completed"
