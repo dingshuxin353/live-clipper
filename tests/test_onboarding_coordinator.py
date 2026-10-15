@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sqlite3
+import time
 from pathlib import Path
 
 import pytest
@@ -29,6 +31,30 @@ def _coordinator(tmp_path: Path, *, settings: Settings | None = None) -> tuple[O
         ),
         source,
     )
+
+
+def test_environment_sqlite_check_stays_blocked_when_read_budget_expires(tmp_path, monkeypatch):
+    from test_startup_snapshot import _assert_readers_closed, _track_readers
+
+    coordinator, _source = _coordinator(tmp_path)
+    coordinator.service_dir.mkdir(parents=True)
+    writer = sqlite3.connect(database_path(coordinator.service_dir), isolation_level=None)
+    try:
+        writer.execute('CREATE TABLE protected(value)')
+        writer.execute("INSERT INTO protected VALUES ('retained')")
+        writer.execute('BEGIN EXCLUSIVE')
+        readers = _track_readers(monkeypatch)
+        started = time.monotonic()
+        result = coordinator._environment_summary()
+        assert time.monotonic() - started < 2
+        sqlite_check = next(item for item in result['checks'] if item['name'] == 'sqlite')
+        assert sqlite_check['status'] == 'blocked'
+        assert sqlite_check['problem'] == '无法读取本地数据库'
+        assert writer.in_transaction
+        assert writer.execute('SELECT value FROM protected').fetchall() == [('retained',)]
+        _assert_readers_closed(readers)
+    finally:
+        writer.close()
 
 
 def _project_patch(source: Path, output: Path) -> dict[str, object]:

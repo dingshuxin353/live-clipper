@@ -4,6 +4,7 @@ import json
 import os
 import sqlite3
 import stat
+import time
 import tomllib
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -92,6 +93,12 @@ def _migration_from_row(row: sqlite3.Row) -> MigrationStartupSession:
 
 @contextmanager
 def readonly_database(path: Path) -> Iterator[sqlite3.Connection]:
+    deadline = time.monotonic() + 1.0
+
+    def check_budget() -> None:
+        if time.monotonic() >= deadline:
+            raise sqlite3.OperationalError("readonly database time budget exceeded")
+
     # SQLite owns its WAL/SHM; never repair or remove them during a read.
     before = path.lstat()
     if not stat.S_ISREG(before.st_mode):
@@ -104,19 +111,40 @@ def readonly_database(path: Path) -> Iterator[sqlite3.Connection]:
             continue
         if not stat.S_ISREG(info.st_mode):
             raise OSError("unsafe database auxiliary path")
+    check_budget()
     connection = sqlite3.connect(
-        path.absolute().as_uri() + "?mode=ro", uri=True, isolation_level=None, timeout=1.0,
+        path.absolute().as_uri() + "?mode=ro", uri=True, isolation_level=None, timeout=0,
     )
     try:
+        check_budget()
         connection.row_factory = sqlite3.Row
+        connection.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
         connection.execute("PRAGMA query_only = ON")
         connection.execute("BEGIN")
+        while True:
+            remaining_ms = int((deadline - time.monotonic()) * 1000)
+            if remaining_ms < 1:
+                raise sqlite3.OperationalError("readonly database time budget exceeded")
+            connection.execute(f"PRAGMA busy_timeout = {min(50, remaining_ms)}")
+            try:
+                # Establish one snapshot before any caller reads its related facts.
+                connection.execute("SELECT rootpage FROM sqlite_master LIMIT 1").fetchall()
+                break
+            except sqlite3.OperationalError as error:
+                if getattr(error, "sqlite_errorcode", 0) & 0xff != sqlite3.SQLITE_BUSY:
+                    raise
+        check_budget()
+        connection.execute("PRAGMA busy_timeout = 0")
         yield connection
+        check_budget()
         after = path.lstat()
         if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
             raise OSError("database identity changed")
     finally:
-        connection.close()
+        try:
+            connection.set_progress_handler(None, 0)
+        finally:
+            connection.close()
 
 
 def _read_database_facts(path: Path) -> _DatabaseFacts:

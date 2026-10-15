@@ -9,6 +9,7 @@
 ### Fixed
 
 - Fixed concurrent background service updates causing status queries to fail or losing saved status fields and error counts.
+- Applied a shared time budget to startup database lock waits and reads, with long queries interrupted when the budget expires.
 - Fixed MP4 clips joined after removing sections to place playback metadata before media data (faststart).
 - Fixed startup checks missing saved database changes and incorrectly treating a completed upgrade as unfinished ([#4](https://github.com/dingshuxin353/live-clipper/pull/4)).
 - Report migration as complete only after the project, history, and model configuration are saved together. Previously incomplete conversions can resume in the same project with its history preserved ([#4](https://github.com/dingshuxin353/live-clipper/pull/4)).
