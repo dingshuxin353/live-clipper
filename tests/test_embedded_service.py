@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import time
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from threading import Event
 
 import pytest
 
@@ -88,3 +91,48 @@ def test_stop_embedded_service_terminates_thread(tmp_path):
     assert result["stopped"] is True
     assert service.embedded_service_active() is False
     _wait_for_state(service_dir, lambda s: s.get("status") == "stopped")
+
+
+def test_embedded_start_preserves_existing_start_time(tmp_path):
+    started_at = "2026-10-15T00:00:00+00:00"
+    service._write_service_state(tmp_path, {"status": "stopped", "started_at": started_at})
+    service.start_embedded_service(lambda: Settings(), service_dir=tmp_path)
+    state = _wait_for_state(tmp_path, lambda s: s.get("waiting") == "recording_source_not_configured")
+    assert state["started_at"] == started_at
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_status_readers_see_only_complete_publications(tmp_path, monkeypatch, existing):
+    service_dir = tmp_path / "service"
+    if existing:
+        service._write_service_state(service_dir, {"status": "stopped", "generation": "old"})
+    writing, release = Event(), Event()
+    original_write = Path.write_text
+
+    def paused_write(path, data, *args, **kwargs):
+        if path.parent != service_dir or not data.startswith('{\n'):
+            return original_write(path, data, *args, **kwargs)
+        with path.open("w", encoding="utf-8") as stream:
+            stream.write(data[:1])
+            stream.flush()
+            writing.set()
+            assert release.wait(5), "reader did not release writer"
+            return 1 + stream.write(data[1:])
+
+    monkeypatch.setattr(Path, "write_text", paused_write)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(
+            service._write_service_state, service_dir, {"status": "stopped", "generation": "new"},
+        )
+        try:
+            assert writing.wait(5), "writer did not reach file write"
+            state = service.get_service_status(service_dir=service_dir)["service"]
+            assert state.get("generation") == ("old" if existing else None)
+            if existing:
+                assert _wait_for_state(service_dir, lambda s: s.get("generation") == "old")["generation"] == "old"
+            else:
+                assert not (service_dir / "service.json").exists()
+        finally:
+            release.set()
+        future.result(timeout=5)
+    assert _wait_for_state(service_dir, lambda s: s.get("generation") == "new")["generation"] == "new"

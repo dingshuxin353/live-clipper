@@ -1,7 +1,14 @@
 from __future__ import annotations
 
+import fcntl
+import json
+import multiprocessing
 import os
+import queue
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -15,6 +22,231 @@ from live_clipper.config import (
 )
 from live_clipper.project_service import open_project_repository
 from live_clipper.utils import read_json, write_json
+
+
+def _state_update_worker(service_dir, update, ready, release, results, pause_write=False):
+    owner = threading.get_ident()
+    original_write = Path.write_text
+
+    def gated_write(path, data, *args, **kwargs):
+        result = original_write(path, data, *args, **kwargs)
+        if threading.get_ident() == owner and path.parent == service_dir:
+            ready.set()
+            assert release.wait(10), "publication was not released"
+        return result
+
+    try:
+        with pytest.MonkeyPatch.context() as patch:
+            if pause_write:
+                patch.setattr(Path, "write_text", gated_write)
+            else:
+                ready.set()
+            service._write_service_state(service_dir, update)
+        results.put(None)
+    except BaseException as error:
+        results.put(repr(error))
+
+
+@pytest.mark.parametrize("processes", [False, True], ids=["threads", "processes"])
+def test_service_updates_coordinate_before_read_until_publication(tmp_path, processes):
+    service_dir = tmp_path / "service"
+    service._write_service_state(service_dir, {"status": "stopped", "retained": "initial"})
+    context = multiprocessing.get_context("spawn") if processes else threading
+    results = context.Queue() if processes else queue.Queue()
+    first_ready, second_ready, release = context.Event(), context.Event(), context.Event()
+    worker = context.Process if processes else context.Thread
+    first = worker(target=_state_update_worker, args=(
+        service_dir, {"first": 1, "order": "first"}, first_ready, release, results, True,
+    ))
+    second = worker(target=_state_update_worker, args=(
+        service_dir, {"second": 2, "order": "second"}, second_ready, release, results,
+    ))
+    started = []
+    try:
+        first.start()
+        started.append(first)
+        assert first_ready.wait(10)
+        second.start()
+        started.append(second)
+        assert second_ready.wait(10)
+        with (service_dir / ".service-state.lock").open("a+") as lock:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            identity = os.fstat(lock.fileno()).st_ino
+    finally:
+        release.set()
+        for task in started:
+            task.join(10)
+            if processes and task.is_alive():
+                task.terminate()
+                task.join(5)
+            assert not task.is_alive()
+        messages = [results.get(timeout=2) for _task in started]
+        if processes:
+            results.close()
+            results.join_thread()
+    assert messages == [None, None]
+    if processes:
+        assert first.exitcode == second.exitcode == 0
+    state = service.get_service_status(service_dir=service_dir)["service"]
+    assert state == {"status": "stopped", "retained": "initial", "first": 1, "second": 2, "order": "second"}
+    assert (service_dir / ".service-state.lock").stat().st_ino == identity
+    assert not list(service_dir.glob(".service-*.tmp"))
+
+
+def test_overlapping_failures_increment_latest_count(tmp_path):
+    service_dir = tmp_path / "service"
+    service._write_service_state(service_dir, {"status": "stopped", "consecutive_errors": 0})
+    formatting, release = threading.Event(), threading.Event()
+
+    class PausedError(RuntimeError):
+        def __str__(self):
+            formatting.set()
+            assert release.wait(5)
+            return "first failure"
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(service._record_tick_failure, service_dir, os.getpid(), None, PausedError())
+        try:
+            assert formatting.wait(5)
+            service._record_tick_failure(service_dir, os.getpid(), None, RuntimeError("second failure"))
+        finally:
+            release.set()
+        future.result(timeout=5)
+    state = service.get_service_status(service_dir=service_dir)["service"]
+    assert state["consecutive_errors"] == 2
+    assert state["last_error"] == "first failure"
+
+
+def test_prepared_running_update_preserves_latest_start_time(tmp_path):
+    service_dir = tmp_path / "service"
+    prepared = service._service_state("running", os.getpid(), Settings(), service_dir=service_dir)
+    service._write_service_state(service_dir, {"status": "running", "started_at": "2026-10-15T00:00:00+00:00"})
+    service._write_service_state(service_dir, prepared)
+    assert service.get_service_status(service_dir=service_dir)["service"]["started_at"] == "2026-10-15T00:00:00+00:00"
+
+
+def test_service_state_preserves_permissions_and_creates_private_lock(tmp_path):
+    service._write_service_state(tmp_path, {"status": "stopped"})
+    path = tmp_path / "service.json"
+    path.chmod(0o640)
+    service._write_service_state(tmp_path, {"new": 1})
+    assert path.stat().st_mode & 0o777 == 0o640
+    assert (tmp_path / ".service-state.lock").stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize("name", ["service.json", ".service-state.lock"])
+@pytest.mark.parametrize("kind", ["symlink", "dangling", "directory", "fifo", "readonly"])
+def test_service_update_rejects_unsafe_files(tmp_path, name, kind):
+    service_dir = tmp_path / "service"
+    service._write_service_state(service_dir, {"status": "stopped"})
+    sentinel = tmp_path / "external.json"
+    sentinel.write_text('{"sentinel": true}', encoding="utf-8")
+    path = service_dir / name
+    path.unlink()
+    if kind in {"symlink", "dangling"}:
+        path.symlink_to(sentinel if kind == "symlink" else tmp_path / "absent")
+    elif kind == "directory":
+        path.mkdir()
+    elif kind == "fifo":
+        os.mkfifo(path)
+    else:
+        path.write_text('{"old": true}', encoding="utf-8")
+        path.chmod(0o444)
+    before = path.lstat()
+    try:
+        with pytest.raises(OSError):
+            service._write_service_state(service_dir, {"new": 1})
+        after = path.lstat()
+        assert (after.st_ino, after.st_mode) == (before.st_ino, before.st_mode)
+        if kind == "readonly":
+            assert path.read_text(encoding="utf-8") == '{"old": true}'
+        if kind in {"symlink", "dangling"}:
+            assert path.is_symlink()
+        assert sentinel.read_text(encoding="utf-8") == '{"sentinel": true}'
+        assert not (tmp_path / "absent").exists()
+    finally:
+        if kind == "readonly":
+            path.chmod(0o600)
+
+
+def test_corrupt_service_state_is_preserved_and_reported(tmp_path):
+    path = tmp_path / "service.json"
+    path.write_text('{"unfinished":', encoding="utf-8")
+    with pytest.raises(json.JSONDecodeError):
+        service._write_service_state(tmp_path, {"new": 1})
+    assert path.read_text(encoding="utf-8") == '{"unfinished":'
+    with pytest.raises(json.JSONDecodeError):
+        service.get_service_status(service_dir=tmp_path)
+
+
+@pytest.mark.parametrize("failure", ["serialization", "write", "replace"])
+def test_failed_publication_preserves_state_and_releases_resources(tmp_path, monkeypatch, failure):
+    service._write_service_state(tmp_path, {"status": "stopped", "retained": "old"})
+    path = tmp_path / "service.json"
+    before = path.read_bytes(), path.stat().st_ino
+    original_write, original_replace = Path.write_text, Path.replace
+
+    def fail_write(target, data, *args, **kwargs):
+        if target.parent == tmp_path:
+            original_write(target, data[:1], *args, **kwargs)
+            raise OSError("injected write failure")
+        return original_write(target, data, *args, **kwargs)
+
+    def fail_replace(source, target):
+        if target == path:
+            raise OSError("injected replace failure")
+        return original_replace(source, target)
+
+    with monkeypatch.context() as patch:
+        if failure == "write":
+            patch.setattr(Path, "write_text", fail_write)
+        elif failure == "replace":
+            patch.setattr(Path, "replace", fail_replace)
+        update = {"new": object() if failure == "serialization" else 1}
+        with pytest.raises(TypeError if failure == "serialization" else OSError):
+            service._write_service_state(tmp_path, update)
+    assert (path.read_bytes(), path.stat().st_ino) == before
+    assert not list(tmp_path.glob(".service-*.tmp"))
+    with (tmp_path / ".service-state.lock").open("r+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    service._write_service_state(tmp_path, {"new": 2})
+    assert service.get_service_status(service_dir=tmp_path)["service"] == {
+        "status": "stopped", "retained": "old", "new": 2,
+    }
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_terminated_writer_leaves_complete_state_and_unlocks(tmp_path, existing):
+    if existing:
+        service._write_service_state(tmp_path, {"status": "stopped", "retained": "old"})
+    context = multiprocessing.get_context("spawn")
+    ready, release, results = context.Event(), context.Event(), context.Queue()
+    writer = context.Process(target=_state_update_worker, args=(
+        tmp_path, {"unpublished": True}, ready, release, results, True,
+    ))
+    writer.start()
+    try:
+        assert ready.wait(10)
+        writer.terminate()
+        writer.join(5)
+        assert not writer.is_alive()
+        state = service.get_service_status(service_dir=tmp_path)["service"]
+        assert "unpublished" not in state
+        assert state.get("retained") == ("old" if existing else None)
+        with (tmp_path / ".service-state.lock").open("r+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        service._write_service_state(tmp_path, {"recovered": True})
+        assert service.get_service_status(service_dir=tmp_path)["service"]["recovered"] is True
+    finally:
+        if writer.is_alive():
+            writer.terminate()
+        writer.join(5)
+        results.close()
+        results.join_thread()
+        # A killed process cannot remove its own unpublished temporary file.
+        for temporary in tmp_path.glob(".service-*.tmp"):
+            temporary.unlink()
 
 
 def _candidate() -> dict:

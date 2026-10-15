@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
 import signal
+import stat
 import subprocess
+import tempfile
 import threading
 import time
 from collections import Counter
 from collections.abc import Callable
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -277,13 +281,15 @@ def _embedded_service_loop(
     ensure_dir(service_dir)
     pid = os.getpid()
     _pid_path(service_dir).write_text(f"{pid}\n", encoding="utf-8")
+    started_at = now_utc()
+    runtime_mode = "projects" if project_mode_active(service_dir) else "legacy"
     _write_service_state(
         service_dir,
-        {
+        lambda previous: {
             "status": "running",
             "pid": pid,
-            "runtime_mode": "projects" if project_mode_active(service_dir) else "legacy",
-            "started_at": now_utc(),
+            "runtime_mode": runtime_mode,
+            "started_at": previous.get("started_at") or started_at,
             "last_heartbeat_at": now_utc(),
             "consecutive_errors": 0,
             "last_error": None,
@@ -892,11 +898,62 @@ def _read_pid(service_dir: Path) -> int | None:
         return None
 
 
-def _write_service_state(service_dir: Path, state: dict[str, Any]) -> None:
+@contextmanager
+def _service_state_file(path: Path, *, create: bool = False):
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        if not stat.S_ISREG(info.st_mode):
+            raise OSError(f"Service state requires a regular file: {path.name}")
+    flags = os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK
+    descriptor = os.open(path, flags | (os.O_CREAT if create else 0), 0o600)
+    try:
+        with os.fdopen(descriptor, "r+", encoding="utf-8", closefd=False) as stream:
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode):
+                raise OSError(f"Service state requires a regular file: {path.name}")
+            if not info.st_mode & 0o222:
+                raise PermissionError(f"Service state file is read-only: {path.name}")
+            yield stream
+    finally:
+        os.close(descriptor)
+
+
+def _write_service_state(
+    service_dir: Path,
+    state: dict[str, Any] | Callable[[dict[str, Any]], dict[str, Any]],
+) -> None:
     path = _service_path(ensure_dir(service_dir))
-    previous = read_json(path) if path.exists() else {}
-    merged = {**previous, **state}
-    write_json(path, merged)
+    # The stable lock file coordinates independent opens in threads and processes.
+    with _service_state_file(path.parent / ".service-state.lock", create=True) as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            with _service_state_file(path) as current:
+                info = os.fstat(current.fileno())
+                previous = json.load(current)
+        except FileNotFoundError:
+            info, previous = None, {}
+        merged = {**previous, **(state(previous) if callable(state) else state)}
+        descriptor, name = tempfile.mkstemp(dir=path.parent, prefix=".service-", suffix=".tmp")
+        temporary = Path(name)
+        try:
+            os.close(descriptor)
+            write_json(temporary, merged)
+            if info is not None:
+                temporary.chmod(stat.S_IMODE(info.st_mode))
+            try:
+                latest = path.lstat()
+            except FileNotFoundError:
+                latest = None
+            expected = (info.st_dev, info.st_ino, info.st_mode) if info else None
+            actual = (latest.st_dev, latest.st_ino, latest.st_mode) if latest else None
+            if actual != expected:
+                raise OSError("Service state file changed during update")
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
 
 def _next_scan_at(settings: Settings, service_dir: Path) -> str | None:
@@ -912,17 +969,16 @@ def _next_scan_at(settings: Settings, service_dir: Path) -> str | None:
     return min(due) if due else None
 
 
-def _service_state(status: str, pid: int | None, settings: Settings, *, service_dir: Path) -> dict[str, Any]:
+def _service_state(
+    status: str, pid: int | None, settings: Settings, *, service_dir: Path,
+) -> Callable[[dict[str, Any]], dict[str, Any]]:
     now = now_utc()
-    path = _service_path(service_dir)
-    previous = read_json(path) if path.exists() else {}
-    return {
+    state = {
         "status": status,
         "pid": pid,
         # Keep provenance for the first-run classifier: current project-mode
         # service files reuse historical names but are not legacy evidence.
         "runtime_mode": "projects" if project_mode_active(service_dir) else "legacy",
-        "started_at": previous.get("started_at") or (now if status == "running" else None),
         "last_heartbeat_at": now,
         "next_scan_at": _next_scan_at(settings, service_dir) if status in {"running", "degraded"} else None,
         "config_snapshot": {
@@ -933,26 +989,26 @@ def _service_state(status: str, pid: int | None, settings: Settings, *, service_
             "scheduler_enabled": settings.scheduler.enabled,
         },
     }
+    return lambda previous: {
+        **state,
+        "started_at": previous.get("started_at") or (now if status == "running" else None),
+    }
 
 
 def _record_tick_success(service_dir: Path, pid: int, settings: Settings, report: dict[str, Any]) -> None:
     state = _service_state("running", pid, settings, service_dir=service_dir)
-    state.update(
-        {
-            "last_successful_tick_at": now_utc(),
-            "consecutive_errors": 0,
-            "last_error": None,
-            "next_retry_at": None,
-            "last_report": report,
-            "waiting": report.get("waiting"),
-        }
-    )
-    _write_service_state(service_dir, state)
+    update = {
+        "last_successful_tick_at": now_utc(),
+        "consecutive_errors": 0,
+        "last_error": None,
+        "next_retry_at": None,
+        "last_report": report,
+        "waiting": report.get("waiting"),
+    }
+    _write_service_state(service_dir, lambda previous: {**state(previous), **update})
 
 
 def _record_tick_failure(service_dir: Path, pid: int, settings: Settings | None, error: BaseException) -> None:
-    path = _service_path(service_dir)
-    previous = read_json(path) if path.exists() else {}
     retry_seconds = min(settings.scheduler.tick_seconds, 60) if settings is not None else 60
     retry_at = (datetime.now(UTC) + timedelta(seconds=retry_seconds)).isoformat()
     state: dict[str, Any] = {
@@ -960,7 +1016,6 @@ def _record_tick_failure(service_dir: Path, pid: int, settings: Settings | None,
         "pid": pid,
         "last_heartbeat_at": now_utc(),
         "last_error_at": now_utc(),
-        "consecutive_errors": int(previous.get("consecutive_errors") or 0) + 1,
         "last_error": _error_summary(error, settings),
         "next_retry_at": retry_at,
     }
@@ -969,7 +1024,9 @@ def _record_tick_failure(service_dir: Path, pid: int, settings: Settings | None,
             state["next_scan_at"] = _next_scan_at(settings, service_dir)
         except Exception:  # noqa: BLE001 - never mask the original tick failure.
             pass
-    _write_service_state(service_dir, state)
+    _write_service_state(service_dir, lambda previous: {
+        **state, "consecutive_errors": int(previous.get("consecutive_errors") or 0) + 1,
+    })
 
 
 def _known_content_ids(runs: list[dict[str, Any]]) -> set[str]:
