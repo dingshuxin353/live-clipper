@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import posixpath
+import socket
 from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -1392,6 +1393,10 @@ def _media_clip_path(request_path: str, paths: WebPaths) -> Path | None:
     return clip_path
 
 
+class _LocalHTTPServer(ThreadingHTTPServer):
+    request_queue_size = socket.SOMAXCONN
+
+
 def run_web_server(
     *,
     host: str = "127.0.0.1",
@@ -1424,7 +1429,7 @@ def run_web_server(
             "restricted_startup": restricted_startup,
         },
     )
-    server = ThreadingHTTPServer((host, port), handler)
+    server = _LocalHTTPServer((host, port), handler)
     print(f"[Web] Venus 控制台已启动: http://{host}:{port}", flush=True)
     if host not in {"127.0.0.1", "localhost", "::1"}:
         print("[Web] 警告: 当前服务允许局域网访问。请勿暴露到公网。", flush=True)

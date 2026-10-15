@@ -1,9 +1,18 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import signal
+import socket
+import subprocess
+import sys
+import time
+import traceback
+from concurrent.futures import ThreadPoolExecutor
 from http.server import ThreadingHTTPServer
-from threading import Thread
+from pathlib import Path
+from threading import Barrier, Event, Thread
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -108,7 +117,7 @@ def test_run_web_server_skips_job_recovery_in_restricted_startup(tmp_path, monke
         def server_close(self):
             return None
 
-    monkeypatch.setattr(web, "ThreadingHTTPServer", FakeServer)
+    monkeypatch.setattr(web, "_LocalHTTPServer", FakeServer)
     monkeypatch.setattr(web.jobs, "sweep_interrupted", lambda service_dir: pytest.fail("restricted startup must not sweep jobs"))
     web.run_web_server(
         port=43210,
@@ -739,3 +748,98 @@ def test_http_output_media_range_head_auth_and_416(tmp_path):
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+def test_local_http_server_declares_platform_queue_before_listening():
+    assert web._LocalHTTPServer.__dict__['request_queue_size'] == socket.SOMAXCONN
+    assert 'request_queue_size' not in ThreadingHTTPServer.__dict__
+    with web._LocalHTTPServer(('127.0.0.1', 0), LiveClipperRequestHandler) as server:
+        assert server.request_queue_size == socket.SOMAXCONN
+        with socket.create_connection(server.server_address, timeout=1) as connection:
+            assert connection.getpeername() == server.server_address
+
+
+def test_app_accepts_three_bursts_of_twelve_new_connections(tmp_path):
+    source = Path(__file__).resolve().parents[1] / 'src'
+    env = {key: os.environ[key] for key in ('PATH', 'LANG', 'LC_ALL') if key in os.environ}
+    for key, name in [('HOME', 'home'), ('TMPDIR', 'tmp'), ('XDG_CACHE_HOME', 'cache'), ('LIVE_CLIPPER_HOME', 'app-home')]:
+        directory = tmp_path / name
+        directory.mkdir()
+        env[key] = str(directory)
+    env['LIVE_CLIPPER_WEB_TOKEN'] = 'http-test-token'
+    with socket.socket() as reservation:
+        reservation.bind(('127.0.0.1', 0))
+        port = reservation.getsockname()[1]
+    command = [sys.executable, '-I', '-B', '-u', '-c',
+               'import sys; sys.path.insert(0, sys.argv[1]); from live_clipper.cli import run_app; '
+               'run_app(host="127.0.0.1", port=int(sys.argv[2]))', str(source), str(port)]
+    process = subprocess.Popen(command, cwd=tmp_path, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    ready = Event()
+    lines = []
+
+    def collect_output():
+        for line in process.stdout:
+            lines.append(line)
+            if '[Web] Venus 控制台已启动:' in line:
+                ready.set()
+
+    reader = Thread(target=collect_output, daemon=True)
+    reader.start()
+    report = {'python': sys.version, 'command': command, 'pid': process.pid, 'port': port, 'rounds': []}
+    paths = ['/api/migration', '/api/onboarding', '/api/projects', '/api/project-form-options', '/api/service', '/api/resources'] * 2
+    try:
+        assert ready.wait(timeout=30), ''.join(lines)
+        for index in range(3):
+            barrier = Barrier(12)
+
+            def request(path, barrier=barrier):
+                item = {'path': path, 'method': 'GET', 'events': []}
+                with socket.socket() as connection:
+                    connection.settimeout(20)
+                    try:
+                        barrier.wait(timeout=5)
+                        item['start_ns'] = time.monotonic_ns()
+                        item['stage'] = 'connect'
+                        connection.connect(('127.0.0.1', port))
+                        item['events'].append(['connected', time.monotonic_ns()])
+                        item['stage'] = 'send'
+                        connection.sendall(f'GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer http-test-token\r\nConnection: close\r\n\r\n'.encode())
+                        item['events'].append(['sent', time.monotonic_ns()])
+                        item['stage'] = 'response'
+                        data = bytearray()
+                        while chunk := connection.recv(65536):
+                            data.extend(chunk)
+                        headers, body = bytes(data).split(b'\r\n\r\n', 1)
+                        item['status'] = int(headers.split(b'\r\n')[0].split()[1])
+                        item['json_valid'] = isinstance(json.loads(body), dict)
+                        item['events'].append(['response', time.monotonic_ns()])
+                    except Exception as error:
+                        item.update(error=type(error).__name__, message=str(error), traceback=traceback.format_exc())
+                    finally:
+                        item['end_ns'] = time.monotonic_ns()
+                return item
+
+            with ThreadPoolExecutor(max_workers=12) as pool:
+                results = list(pool.map(request, paths))
+            report['rounds'].append({'index': index, 'results': results, 'backend_poll': process.poll()})
+        assert all(row['backend_poll'] is None for row in report['rounds'])
+        failures = [item for row in report['rounds'] for item in row['results']
+                    if item.get('status') != 200 or not item.get('json_valid')]
+        assert not failures, json.dumps(failures, indent=2)
+    finally:
+        if process.poll() is None:
+            process.send_signal(signal.SIGINT)
+        try:
+            report['exit_code'] = process.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            report['exit_code'] = process.wait(timeout=5)
+        reader.join(timeout=5)
+        process.stdout.close()
+        with socket.socket() as probe:
+            probe.settimeout(1)
+            report['port_closed'] = probe.connect_ex(('127.0.0.1', port)) != 0
+        (tmp_path / 'http-bursts.json').write_text(json.dumps(report, indent=2) + '\n')
+        (tmp_path / 'backend.log').write_text(''.join(lines))
+        assert not reader.is_alive()
+        assert report['exit_code'] == 0 and report['port_closed']

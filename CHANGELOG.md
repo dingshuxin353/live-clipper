@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- Fixed local backend connection failures when several requests arrive at once.
 - Fixed concurrent background service updates causing status queries to fail or losing saved status fields and error counts.
 - Applied a shared time budget to startup database lock waits and reads, with long queries interrupted when the budget expires.
 - Fixed MP4 clips joined after removing sections to place playback metadata before media data (faststart).
