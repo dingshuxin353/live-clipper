@@ -6,6 +6,7 @@ import shutil
 import sqlite3
 import subprocess
 import time
+from contextlib import closing
 
 import pytest
 
@@ -69,6 +70,35 @@ api_key = "SENTINEL-AI-SECRET"
         input_dir=tmp_path / "input",
         output_root=output,
     ), service
+
+
+def _incomplete_migration(tmp_path):
+    from live_clipper.project_domain import default_project_config
+
+    coordinator, service_dir = _legacy_home(tmp_path)
+    with ProjectRepository(service_dir) as repository:
+        repository.create_migration_session(
+            migration_id='migration-1', source_fingerprint='a' * 64, plan_version=3,
+            plan_hash='b' * 64, source_manifest=[], choices={}, request_id='request-1',
+            request_hash='c' * 64,
+        )
+        project = repository.create_project('Retained project', default_project_config(tmp_path / 'recordings', tmp_path / 'output'))
+        repository.create_normal_run(
+            project_id=project.project_id, content_id='retained-content', trigger_source='manual',
+            first_seen_path='retained.mp4', latest_seen_path='retained.mp4', parameter_snapshot={},
+            run_id='retained-run',
+        )
+        repository.set_data_mode('projects')
+        with repository.transaction():
+            repository.connection.execute(
+                "UPDATE migration_sessions SET state='validating',stage='resources',project_id=?,"
+                "backup_status='completed',report_json=?",
+                (project.project_id, json.dumps({'project': {'project_id': project.project_id}, 'backup_created': True})),
+            )
+    with sqlite3.connect(database_path(service_dir), isolation_level=None) as connection:
+        connection.execute('PRAGMA journal_mode=DELETE')
+    connection.close()
+    return coordinator, service_dir
 
 
 def _validated(coordinator):
@@ -763,3 +793,67 @@ def test_completed_snapshot_and_acknowledgement_reject_inconsistent_backup(tmp_p
     assert coordinator.snapshot()["entry"] == "diagnostic"
     with pytest.raises(MigrationError, match="diagnostic_required"):
         coordinator.acknowledge({"request_id": "ack", "migration_id": session["migration_id"], "expected_revision": session["revision"]})
+
+
+@pytest.mark.parametrize('context', ['none', 'readable', 'other_diagnostic', 'unreadable'])
+def test_dispatch_uses_only_current_unreadable_facts_to_reject_history(tmp_path, monkeypatch, context):
+    from test_startup_snapshot import _assert_readers_closed, _track_readers
+
+    from live_clipper.first_run_detection import inspect_startup_state
+
+    coordinator, service_dir = _incomplete_migration(tmp_path)
+    if context == 'other_diagnostic':
+        with closing(sqlite3.connect(database_path(service_dir))) as connection:
+            connection.execute("UPDATE migration_sessions SET report_json=NULL")
+            connection.commit()
+    with closing(sqlite3.connect(database_path(service_dir), isolation_level=None)) as writer:
+        if context == 'unreadable':
+            writer.execute('BEGIN EXCLUSIVE')
+        startup = None if context == 'none' else inspect_startup_state(
+            config_path=coordinator.config_path, env_path=coordinator.env_path, service_dir=service_dir,
+        )
+        if context == 'other_diagnostic':
+            assert startup.decision.entry == 'diagnostic_required' and not startup.facts.unreadable
+        if context == 'unreadable':
+            assert startup.facts.unreadable
+            writer.execute('ROLLBACK')
+        readers = _track_readers(monkeypatch)
+        if context == 'unreadable':
+            for route in ('/api/migration', '/api/migration/migration-1/history'):
+                with pytest.raises(MigrationError) as error:
+                    coordinator.dispatch('GET', route, startup=startup)
+                assert error.value.code == 'diagnostic_required' and error.value.status == 409
+            assert not readers
+        else:
+            status, snapshot = coordinator.dispatch('GET', '/api/migration', startup=startup)
+            assert status == 200 and snapshot['session']['migration_id'] == 'migration-1'
+            assert len(readers) == (1 if context == 'none' else 0)
+            status, payload = coordinator.dispatch('GET', '/api/migration/migration-1/history', startup=startup)
+            assert status == 200 and payload['history'][0]['run_id'] == 'retained-run'
+            assert len(readers) == (2 if context == 'none' else 1)
+            _assert_readers_closed(readers)
+        with pytest.raises(MigrationError) as error:
+            coordinator.dispatch('GET', '/api/migration/migration-1/backup-grant', startup=startup)
+        assert error.value.status == 403 and error.value.code == 'bearer_required'
+        fresh_status, fresh = coordinator.dispatch('GET', '/api/migration/migration-1/history')
+        assert fresh_status == 200 and fresh['history'][0]['run_id'] == 'retained-run'
+        _assert_readers_closed(readers)
+
+
+def test_dispatch_migration_reuses_readable_facts_without_reopening_database(tmp_path, monkeypatch):
+    from test_startup_snapshot import _assert_readers_closed, _track_readers
+
+    from live_clipper.first_run_detection import inspect_startup_state
+
+    coordinator, service_dir = _incomplete_migration(tmp_path)
+    startup = inspect_startup_state(config_path=coordinator.config_path, env_path=coordinator.env_path, service_dir=service_dir)
+    with closing(sqlite3.connect(database_path(service_dir), isolation_level=None)) as writer:
+        writer.execute('BEGIN EXCLUSIVE')
+        readers = _track_readers(monkeypatch)
+        status, snapshot = coordinator.dispatch('GET', '/api/migration', startup=startup)
+        assert status == 200 and snapshot['session']['migration_id'] == 'migration-1'
+        assert not readers
+        with pytest.raises(sqlite3.DatabaseError):
+            coordinator.dispatch('GET', '/api/migration/migration-1/history', startup=startup)
+        assert writer.in_transaction
+        _assert_readers_closed(readers)

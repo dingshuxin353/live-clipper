@@ -1,14 +1,20 @@
 from __future__ import annotations
 
 import json
+import socket
+import sqlite3
 import time
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing, contextmanager
 from http.server import ThreadingHTTPServer
-from threading import Thread
+from threading import Event, Thread
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from live_clipper import service
-from live_clipper.project_storage import ProjectRepository
+import pytest
+
+from live_clipper import cli, service, web
+from live_clipper.project_storage import ProjectRepository, database_path
 from live_clipper.web import LiveClipperRequestHandler, WebPaths, handle_api_request
 
 
@@ -336,3 +342,180 @@ class HTTPErrorContext:
     def __exit__(self, error_type, error, _traceback):
         assert error_type is HTTPError and error.code == self.status
         return True
+
+
+@contextmanager
+def _incomplete_app(tmp_path, monkeypatch):
+    from test_migration_coordinator import _incomplete_migration
+
+    coordinator, service_dir = _incomplete_migration(tmp_path)
+    monkeypatch.setenv('LIVE_CLIPPER_HOME', str(tmp_path))
+    monkeypatch.setenv('LIVE_CLIPPER_WEB_TOKEN', 'migration-token')
+    runtime = tmp_path / 'runtime'
+    runtime.mkdir()
+    monkeypatch.setenv('HOME', str(runtime))
+    ready = Event()
+    servers, failures = [], []
+    original_init = web._LocalHTTPServer.__init__
+
+    def observed_init(server, *args, **kwargs):
+        original_init(server, *args, **kwargs)
+        servers.append(server)
+        ready.set()
+
+    monkeypatch.setattr(web._LocalHTTPServer, '__init__', observed_init)
+
+    def run():
+        try:
+            cli.run_app(host='127.0.0.1', port=0)
+        except BaseException as error:
+            failures.append(error)
+            ready.set()
+
+    thread = Thread(target=run)
+    thread.start()
+    try:
+        assert ready.wait(10) and servers, failures
+        server = servers[0]
+        base = f'http://127.0.0.1:{server.server_port}'
+
+        def request(route, *, authenticated=True):
+            headers = {'Authorization': 'Bearer migration-token'} if authenticated else {}
+            started = time.monotonic()
+            try:
+                response = urlopen(Request(base + route, headers=headers), timeout=5)
+            except HTTPError as error:
+                response = error
+            with response:
+                return response.code, json.load(response), time.monotonic() - started
+
+        yield coordinator, service_dir, request
+    finally:
+        if servers:
+            servers[0].shutdown()
+        thread.join(10)
+        assert not thread.is_alive() and not failures, failures
+        if servers:
+            with socket.socket() as probe:
+                probe.settimeout(1)
+                assert probe.connect_ex(servers[0].server_address) != 0
+
+
+def test_app_migration_reads_are_bounded_under_exclusive_lock_and_recover(tmp_path, monkeypatch):
+    from test_first_run_detection import _fingerprint
+    from test_startup_snapshot import _track_readers
+
+    observations = []
+    with _incomplete_app(tmp_path, monkeypatch) as (_coordinator, service_dir, request):
+        path = database_path(service_dir)
+        before = _fingerprint(tmp_path)
+        with closing(sqlite3.connect(path, isolation_level=None)) as writer:
+            contents = tuple(writer.iterdump())
+            readers = _track_readers(monkeypatch)
+            assert request('/api/migration', authenticated=False)[0] == 401
+            assert not readers
+            routes = ['/api/onboarding', '/api/migration', '/api/migration/migration-1/history']
+            for phase in ('normal', 'locked', 'recovered'):
+                if phase == 'locked':
+                    writer.execute('BEGIN EXCLUSIVE')
+                    with closing(sqlite3.connect(path, timeout=0)) as control:
+                        try:
+                            control.execute('SELECT rootpage FROM sqlite_master LIMIT 1')
+                        except sqlite3.OperationalError as error:
+                            assert error.sqlite_errorcode == sqlite3.SQLITE_BUSY
+                        else:
+                            raise AssertionError('Exclusive transaction did not block a real read')
+                elif phase == 'recovered':
+                    writer.execute('ROLLBACK')
+                for route in routes:
+                    count = len(readers)
+                    status, payload, elapsed = request(route)
+                    observations.append({'phase': phase, 'route': route, 'status': status,
+                                         'payload': payload, 'elapsed': elapsed, 'reads': len(readers) - count})
+                    if phase == 'locked':
+                        assert writer.in_transaction
+                assert tuple(writer.iterdump()) == contents
+            assert writer.execute('PRAGMA quick_check').fetchone()[0] == 'ok'
+            assert readers and all(reader.cleared_before_close for reader in readers)
+        assert _fingerprint(tmp_path) == before
+    (tmp_path / 'http-lock-results.json').write_text(json.dumps(observations, ensure_ascii=False, indent=2))
+    for item in observations:
+        assert item['elapsed'] < 2, item
+        locked = item['phase'] == 'locked'
+        history = item['route'].endswith('/history')
+        assert item['reads'] == (2 if history and not locked else 1), item
+        assert item['status'] == (409 if locked and item['route'] != '/api/onboarding' else 200), item
+        payload = item['payload']
+        if locked and item['route'] != '/api/onboarding':
+            assert payload['error_code'] == 'diagnostic_required' and 'history' not in payload
+        elif item['route'] == '/api/onboarding':
+            assert payload['entry']['mode'] == ('diagnostic_required' if locked else 'migration_required')
+        elif history:
+            assert [row['run_id'] for row in payload['history']] == ['retained-run']
+        else:
+            assert payload['session']['project_id'] and payload['session']['state'] == 'validating'
+
+
+@pytest.mark.parametrize('unreadable_first', [False, True])
+def test_app_history_preserves_inspection_then_lock_order(tmp_path, monkeypatch, unreadable_first):
+    from test_first_run_detection import _fingerprint
+    from test_startup_snapshot import _track_readers
+
+    with _incomplete_app(tmp_path, monkeypatch) as (_coordinator, service_dir, request):
+        before = _fingerprint(tmp_path)
+        inspected, resume = Event(), Event()
+        inspections, errors = [], []
+        original_inspection = web._startup_inspection
+        original_history = web.migration_coordinator.MigrationCoordinator.history
+
+        def inspect(paths):
+            value = original_inspection(paths)
+            inspections.append(value)
+            inspected.set()
+            assert resume.wait(5)
+            return value
+
+        def history(self, migration_id):
+            try:
+                return original_history(self, migration_id)
+            except sqlite3.DatabaseError as error:
+                errors.append(error)
+                raise
+
+        monkeypatch.setattr(web, '_startup_inspection', inspect)
+        monkeypatch.setattr(web.migration_coordinator.MigrationCoordinator, 'history', history)
+        with closing(sqlite3.connect(database_path(service_dir), isolation_level=None)) as writer:
+            contents = tuple(writer.iterdump())
+            if unreadable_first:
+                writer.execute('BEGIN EXCLUSIVE')
+            readers = _track_readers(monkeypatch)
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                pending = pool.submit(request, '/api/migration/migration-1/history')
+                try:
+                    assert inspected.wait(5)
+                    assert inspections[0].facts.unreadable is unreadable_first
+                    writer.execute('ROLLBACK' if unreadable_first else 'BEGIN EXCLUSIVE')
+                    resume.set()
+                    status, payload, elapsed = pending.result(timeout=5)
+                    assert status == (409 if unreadable_first else 500)
+                    assert payload['error_code'] == ('diagnostic_required' if unreadable_first else 'internal_error')
+                    assert 'history' not in payload
+                    assert len(readers) == (1 if unreadable_first else 2)
+                    assert bool(errors) is not unreadable_first
+                    assert writer.in_transaction is not unreadable_first
+                finally:
+                    resume.set()
+                    if writer.in_transaction:
+                        writer.execute('ROLLBACK')
+            count = len(readers)
+            recovered_status, recovered, _ = request('/api/migration/migration-1/history')
+            assert recovered_status == 200 and recovered['history'][0]['run_id'] == 'retained-run'
+            assert len(readers) - count == 2 and not inspections[-1].facts.unreadable
+            assert tuple(writer.iterdump()) == contents
+            assert all(reader.cleared_before_close for reader in readers)
+        assert _fingerprint(tmp_path) == before
+    (tmp_path / 'http-lock-order.json').write_text(json.dumps({
+        'unreadable_first': unreadable_first, 'status': status, 'code': payload['error_code'],
+        'elapsed_including_event_pause': elapsed, 'database_errors': [type(error).__name__ for error in errors],
+        'recovered_status': recovered_status,
+    }, indent=2))

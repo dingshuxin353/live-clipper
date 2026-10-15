@@ -921,14 +921,17 @@ class MigrationCoordinator:
         body: Mapping[str, Any] | None = None,
         *,
         auth_context: str = "browser",
+        startup: StartupInspection | None = None,
     ) -> tuple[int, dict[str, Any]] | None:
         parts = [part for part in path.split("?")[0].split("/") if part]
         if parts[:2] != ["api", "migration"]:
             return None
         payload = dict(body or {})
         if method == "GET" and parts == ["api", "migration"]:
-            return 200, self.snapshot()
+            return 200, self.snapshot(startup=startup)
         if method == "GET" and len(parts) == 4 and parts[3] == "history":
+            if startup is not None and startup.facts.unreadable:
+                raise MigrationError("diagnostic_required", "无法读取已保存的历史记录，请记录问题编号以便排查。")
             return self.history(parts[2])
         if method == "GET" and len(parts) == 4 and parts[3] == "backup-grant":
             return self.backup_grant(parts[2], auth_context=auth_context)

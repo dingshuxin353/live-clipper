@@ -697,6 +697,7 @@ def handle_api_request(
     auth_context: str = "browser",
     range_header: str | None = None,
     head_only: bool = False,
+    startup: StartupInspection | None = None,
 ) -> tuple[int, dict[str, str], Any]:
     paths = paths or WebPaths()
     parsed = urlparse(request_path)
@@ -724,6 +725,7 @@ def handle_api_request(
                     request_path,
                     body=body,
                     auth_context=auth_context,
+                    startup=startup,
                 )
             except migration_coordinator.MigrationError as exc:
                 return _json_response(
@@ -1260,6 +1262,7 @@ class LiveClipperRequestHandler(BaseHTTPRequestHandler):
                     body=body_payload,
                     auth_context=self._auth_context(),
                     head_only=head_only,
+                    startup=inspection,
                 )
             elif current_restriction is not None:
                 status, headers, payload = _json_response(
