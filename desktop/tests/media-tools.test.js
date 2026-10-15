@@ -11,6 +11,11 @@ const { checkMediaTools } = require("../media-runtime");
 const { default: beforePack, prepareTools, verifyCache } = require("../scripts/prepare-media-tools");
 const { default: afterPack } = require("../scripts/after-pack");
 
+test.beforeEach(() => {
+  delete process.env.VENUS_RELEASE_MEDIA_CACHE;
+  delete process.env.VENUS_RELEASE_ARCHIVE_CACHE;
+});
+
 function temporary(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "venus-media-tools-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -237,3 +242,49 @@ test("shared media cache copies verified bytes and refuses corrupt reuse", (t) =
   fs.writeFileSync(cached, "corrupt");
   assert.throws(() => prepareTools(temporary(t)), /hash mismatch/);
 });
+
+for (const populated of [false, true]) {
+  test(`media tests preserve inherited ${populated ? "populated" : "empty"} release caches`, (t) => {
+    const root = fs.realpathSync(temporary(t));
+    const media = path.join(root, "media");
+    const archives = path.join(root, "archives");
+    for (const directory of [media, archives]) {
+      fs.mkdirSync(directory);
+      if (populated) {
+        fs.mkdirSync(path.join(directory, "sentinel"));
+        fs.writeFileSync(path.join(directory, "sentinel", "keep"), "external cache bytes");
+      }
+    }
+    if (populated) fs.writeFileSync(path.join(media, "entries.json"), "{}\n");
+    function snapshot(directory) {
+      return ["", ...fs.readdirSync(directory, { recursive: true })].sort().map((name) => {
+        const file = path.join(directory, name);
+        const stat = fs.lstatSync(file);
+        return [name, {
+          device: stat.dev, inode: stat.ino, mode: stat.mode,
+          ...(stat.isDirectory() ? { directory: true } : {
+            size: stat.size, sha256: createHash("sha256").update(fs.readFileSync(file)).digest("hex"),
+          }),
+        }];
+      });
+    }
+    const before = [snapshot(media), snapshot(archives)];
+    const names = [
+      "valid cache is rehashed and reused without running the builder",
+      "stale identity, missing artifacts, wrong hashes and escaped files fail closed",
+      "a missing cache invokes the source builder and propagates failure without installing",
+      "shared media cache copies verified bytes and refuses corrupt reuse",
+    ];
+    const env = { ...process.env, TMPDIR: root, VENUS_RELEASE_MEDIA_CACHE: media, VENUS_RELEASE_ARCHIVE_CACHE: archives };
+    // Start an independent runner rather than inheriting the parent's test worker context.
+    delete env.NODE_TEST_CONTEXT;
+    const result = childProcess.spawnSync(process.execPath, [
+      "--test", "--test-reporter=tap", `--test-name-pattern=^(${names.join("|")})$`, __filename,
+    ], {
+      env, encoding: "utf8", timeout: 30000,
+    });
+    assert.equal(result.status, 0, result.error?.message || result.stderr || result.stdout);
+    assert.match(result.stdout, /^# pass 4$/m);
+    assert.deepEqual([snapshot(media), snapshot(archives)], before);
+  });
+}
