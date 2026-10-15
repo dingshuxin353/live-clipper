@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import sqlite3
 import subprocess
 import time
 
@@ -109,6 +110,41 @@ def _execute_completed(coordinator):
     )[1]
     completed = _wait_completed(coordinator, accepted["session"]["migration_id"])
     return completed["session"]
+
+
+def test_history_read_budget_preserves_database_error_and_writer_transaction(tmp_path, monkeypatch):
+    from test_startup_snapshot import _assert_readers_closed, _track_readers
+
+    coordinator, service_dir = _legacy_home(tmp_path)
+    writer = sqlite3.connect(database_path(service_dir), isolation_level=None)
+    try:
+        writer.execute('CREATE TABLE protected(value)')
+        writer.execute("INSERT INTO protected VALUES ('retained')")
+        writer.execute('BEGIN EXCLUSIVE')
+        readers = _track_readers(monkeypatch)
+        started = time.monotonic()
+        with pytest.raises(sqlite3.DatabaseError):
+            coordinator.history('missing')
+        assert time.monotonic() - started < 2
+        assert writer.in_transaction
+        assert writer.execute('SELECT value FROM protected').fetchall() == [('retained',)]
+        _assert_readers_closed(readers)
+    finally:
+        writer.close()
+
+
+def test_history_remains_readable_after_completed_migration(tmp_path, monkeypatch):
+    from test_startup_snapshot import _assert_readers_closed, _track_readers
+
+    coordinator, _service_dir = _legacy_home(tmp_path)
+    session = _execute_completed(coordinator)
+    readers = _track_readers(monkeypatch)
+    status, payload = coordinator.history(session['migration_id'])
+    assert status == 200 and payload['ok'] is True
+    assert len(payload['history']) == 1
+    assert payload['history'][0]['status'] == 'completed'
+    assert all(set(item) == {'run_id', 'status', 'created_at'} for item in payload['history'])
+    _assert_readers_closed(readers)
 
 
 def _tree_facts(root):
