@@ -334,7 +334,7 @@ def test_candidate_preflight_failure_has_no_build_or_publish_side_effects(tmp_pa
         return '1) ' + 'A' * 40 + ' "Developer ID Application: Test"'
 
     monkeypatch.setattr(release, "run", command)
-    args = argparse.Namespace(source="a" * 40, previous_tag="v1.0.2" if failure == "old_version" else "v1.0.1", output=tmp_path / "new-release")
+    args = argparse.Namespace(previous_published_manifest=None, source="a" * 40, previous_tag="v1.0.2" if failure == "old_version" else "v1.0.1", output=tmp_path / "new-release")
     with pytest.raises(release.ReleaseError):
         release.candidate(args)
     assert not args.output.exists()
@@ -356,7 +356,10 @@ def test_candidate_existing_frozen_directory_is_verified_without_rebuilding(tmp_
     monkeypatch.setattr(release, "verify_candidate", lambda *_: {"source": "a" * 40, "previous_tag": "v1.0.1", "tools": {}})
     monkeypatch.setattr(release, "tools_snapshot", lambda: {})
     monkeypatch.setattr(release, "run", lambda *_a, **_kw: pytest.fail("Must not rebuild or write externally"))
-    release.candidate(argparse.Namespace(source="a" * 40, previous_tag="v1.0.1", output=root))
+    (root / 'evidence').mkdir()
+    release.atomic_json(root / 'evidence/previous-input.json', {'input': {'mode': 'network'}})
+    monkeypatch.setattr(release, 'previous_input', lambda *_: ({'mode': 'network'}, None, None))
+    release.candidate(argparse.Namespace(previous_published_manifest=None, source="a" * 40, previous_tag="v1.0.1", output=root))
 
 
 def test_archive_rejects_escape_before_extracting(tmp_path):
@@ -744,7 +747,7 @@ def test_changed_tool_snapshot_stops_before_build_or_external_writes(tmp_path, m
     monkeypatch.setattr(release, "ensure_tag", lambda *_: pytest.fail("No tag allowed"))
     with pytest.raises(release.ReleaseError, match="Tool environment changed"):
         if operation == "candidate":
-            release.candidate(argparse.Namespace(source="a" * 40, previous_tag="v1.0.3", output=root))
+            release.candidate(argparse.Namespace(previous_published_manifest=None, source="a" * 40, previous_tag="v1.0.3", output=root))
         else:
             release.publish(argparse.Namespace(candidate=manifest, acceptance=root / "acceptance.json", confirm_version="v1.0.4"))
     assert sorted(p.name for p in root.iterdir()) == ["candidate-manifest.json"]
@@ -832,6 +835,7 @@ def test_candidate_uses_preflight_identities(tmp_path, monkeypatch, boundary):
     monkeypatch.setattr(release, 'prune_media_cache', lambda *_: None)
     monkeypatch.setattr(release, 'cleanup_plan', lambda *_: {})
     monkeypatch.setattr(release, 'cache_keep_versions', lambda *_: [])
+    monkeypatch.setattr(release, 'previous_app', lambda *_: tmp_path / 'previous.app')
     purges = []
     monkeypatch.setattr(release, 'limit_download_cache', lambda cache, python: purges.append(python))
     monkeypatch.setenv('VENUS_NOTARY_PROFILE', 'test-only')
@@ -858,5 +862,287 @@ def test_candidate_uses_preflight_identities(tmp_path, monkeypatch, boundary):
 
     monkeypatch.setattr(release, 'run', command)
     with pytest.raises(release.ReleaseError, match=f'Reached selected {boundary} boundary'):
-        release.candidate(argparse.Namespace(source='a' * 40, previous_tag='v1.0.3', output=tmp_path / 'release'))
+        release.candidate(argparse.Namespace(previous_published_manifest=None, source='a' * 40, previous_tag='v1.0.3', output=tmp_path / 'release'))
     assert purges and set(purges) == {'/selected/bin/python3.11'}
+
+
+@pytest.fixture
+def previous_input_files(tmp_path, monkeypatch):
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    monkeypatch.setattr(release, 'ROOT', repo)
+    tag, source, tag_object = 'v1.0.1', 'a' * 40, 'b' * 40
+    def git(_repo, *args):
+        if '--git-common-dir' in args:
+            return str(_repo / '.git')
+        if args[0] == 'ls-remote':
+            return f'{tag_object}\trefs/tags/{tag}\n{source}\trefs/tags/{tag}^{{}}'
+        return source if args[-1].endswith('^{commit}') else tag_object
+    monkeypatch.setattr(release, 'git', git)
+    root = tmp_path / 'published'
+    owner = release.create_root(root, repo, source)
+    assets = release.owned_directory(root, 'release-assets')
+    name = release.asset_names(tag[1:])['zip']
+    archive = assets / name
+    archive.write_bytes(b'final stapled bytes')
+    records = {n: {'size': archive.stat().st_size, 'sha256': release.sha256(archive)}
+               for n in release.asset_names(tag[1:]).values()}
+    candidate = {'owner_id': owner['id'], 'source': source, 'github': 'example/repo', 'version': tag[1:]}
+    release.atomic_json(root / 'candidate-manifest.json', candidate)
+    candidate_hash = release.sha256(root / 'candidate-manifest.json')
+    final = {'candidate_sha256': candidate_hash, 'source': source, 'assets': records,
+             'signature': {'cdhash': 'c' * 40, 'timestamp': 'today', 'hardened_runtime': True}}
+    release.atomic_json(root / 'final-manifest.json', final)
+    done = {'candidate_sha256': candidate_hash, 'source': source, 'tag': tag, 'tag_object': tag_object,
+            'github': 'example/repo', 'release_id': 123, 'assets': records}
+    manifest = root / 'published-manifest.json'
+    release.atomic_json(manifest, done)
+    remote = {'draft': False, 'prerelease': False, 'id': 123, 'tag_name': tag,
+              'assets': [{'id': 456, 'name': name, 'size': archive.stat().st_size,
+                          'digest': 'sha256:' + release.sha256(archive), 'browser_download_url': 'https://example.test/old.zip'}]}
+    monkeypatch.setattr(release, 'github_release', lambda *_: remote)
+    monkeypatch.setattr(release, 'download', lambda *_: pytest.fail('Explicit local input must never download'))
+    return manifest, archive, remote
+
+
+@pytest.mark.parametrize('fault', ['repo', 'tag', 'source', 'tag_object', 'release_id', 'candidate_hash',
+                                   'final_hash', 'final_source', 'final_assets', 'remote_id', 'remote_tag',
+                                   'remote_size', 'remote_digest', 'missing_digest', 'duplicate_zip',
+                                   'truncated', 'zip_directory', 'zip_symlink', 'manifest_symlink', 'parent_symlink',
+                                   'owner_repo', 'owner_source', 'owner_id', 'candidate_repo', 'candidate_version'])
+def test_previous_input_rejects_invalid_files_and_remote_identity(previous_input_files, monkeypatch, tmp_path, fault):
+    manifest, archive, remote = previous_input_files
+    if fault.startswith('remote_') or fault in ('missing_digest', 'duplicate_zip'):
+        if fault == 'remote_id':
+            remote['id'] += 1
+        elif fault == 'remote_tag':
+            remote['tag_name'] = 'v9.9.9'
+        elif fault == 'duplicate_zip':
+            remote['assets'].append(dict(remote['assets'][0]))
+        elif fault == 'missing_digest':
+            remote['assets'][0].pop('digest')
+        else:
+            remote['assets'][0][fault[7:]] = 1 if fault == 'remote_size' else 'sha256:' + '0' * 64
+    elif fault in ('truncated', 'zip_directory', 'zip_symlink'):
+        archive.unlink()
+        if fault == 'truncated':
+            archive.write_bytes(b'short')
+        elif fault == 'zip_directory':
+            archive.mkdir()
+        else:
+            target = tmp_path / 'outside.zip'
+            target.write_bytes(b'final stapled bytes')
+            archive.symlink_to(target)
+    elif fault == 'manifest_symlink':
+        target = tmp_path / 'outside.json'
+        manifest.rename(target)
+        manifest.symlink_to(target)
+    elif fault == 'parent_symlink':
+        target = tmp_path / 'alias'
+        target.symlink_to(manifest.parent, target_is_directory=True)
+        manifest = target / manifest.name
+    else:
+        path = manifest
+        if fault.startswith('final_'):
+            path = manifest.parent / 'final-manifest.json'
+        elif fault.startswith('owner_'):
+            path = manifest.parent / 'owner.json'
+        elif fault.startswith('candidate_') and fault != 'candidate_hash':
+            path = manifest.parent / 'candidate-manifest.json'
+        data = release.read_json(path)
+        key = {'repo': 'github', 'candidate_hash': 'candidate_sha256', 'final_hash': 'candidate_sha256',
+               'final_source': 'source', 'final_assets': 'assets', 'owner_repo': 'repo', 'owner_source': 'source',
+               'owner_id': 'id', 'candidate_repo': 'github', 'candidate_version': 'version'}.get(fault, fault)
+        data[key] = {} if key == 'assets' else str(tmp_path / 'other-repo') if fault == 'owner_repo' else 'wrong'
+        release.atomic_json(path, data)
+    before = {p: p.read_bytes() for p in manifest.parent.glob('*.json') if p.is_file()}
+    with pytest.raises((release.ReleaseError, OSError, ValueError)):
+        release.previous_input('example/repo', 'v1.0.1', manifest)
+    assert all(p.read_bytes() == content for p, content in before.items())
+
+
+@pytest.mark.parametrize('fault', ['signature', 'provider', 'copy_changed_source', 'copy_corrupt'])
+def test_previous_copy_and_app_checks_stop_on_mismatch(previous_input_files, monkeypatch, tmp_path, fault):
+    manifest, archive, _ = previous_input_files
+    root = tmp_path / 'new'
+    release.create_root(root, release.ROOT, 'd' * 40)
+    original_bytes = archive.read_bytes()
+    copy = release.shutil.copyfileobj
+    def copy_bytes(source, target, length):
+        copy(source, target, length)
+        if fault == 'copy_changed_source':
+            archive.write_bytes(b'changed during copy')
+        if fault == 'copy_corrupt':
+            target.write(b'extra')
+    monkeypatch.setattr(release.shutil, 'copyfileobj', copy_bytes)
+    def extract(_archive, target):
+        app = target / 'Venus.app/Contents/Resources'
+        app.mkdir(parents=True)
+        (app / 'app-update.yml').write_text('provider: github\nowner: example\nrepo: wrong\nupdaterCacheDirName: cache\n')
+    monkeypatch.setattr(release, 'extract_zip', extract)
+    signature = release.read_json(manifest.parent / 'final-manifest.json')['signature']
+    if fault == 'signature':
+        signature['cdhash'] = '0' * 40
+    monkeypatch.setattr(release, 'app_facts', lambda *_: signature)
+    with pytest.raises(release.ReleaseError, match={'signature': 'signature', 'provider': 'Provider',
+                            'copy_changed_source': 'changed during copy', 'copy_corrupt': 'bytes mismatch'}[fault]):
+        release.previous_app(root, 'example/repo', 'v1.0.1', {}, manifest)
+    assert not (root / 'evidence/previous-input.json').exists()
+    if fault != 'copy_changed_source':
+        assert archive.read_bytes() == original_bytes
+    assert archive.stat().st_ino != (root / 'previous' / archive.name).stat().st_ino
+
+
+@pytest.mark.parametrize('local', [True, False])
+def test_previous_failure_precedes_dependency_installation(tmp_path, monkeypatch, local):
+    import argparse
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    monkeypatch.setattr(release, 'ROOT', repo)
+    monkeypatch.setattr(release, 'metadata', lambda *_: {'version': '1.0.2', 'github': 'example/repo'})
+    monkeypatch.setattr(release, 'check_source', lambda *_: None)
+    monkeypatch.setattr(release, 'git', lambda _repo, *args: 'a' * 40 if args[0] == 'rev-parse' else '')
+    monkeypatch.setattr(release, 'github_release', lambda *_: None)
+    monkeypatch.setattr(release, 'tools_snapshot', lambda: {})
+    monkeypatch.setattr(release, 'space_preflight', lambda *_: {})
+    monkeypatch.setenv('VENUS_NOTARY_PROFILE', 'test-only')
+    calls = []
+    def command(args, **kwargs):
+        calls.append(args[0])
+        assert args[0] in ('security', 'xcrun')
+        return '1) ' + 'A' * 40 + ' "Developer ID Application: Test"'
+    monkeypatch.setattr(release, 'run', command)
+    selected = tmp_path / 'published-manifest.json' if local else None
+    def previous(root, github, tag, info, manifest):
+        assert manifest == selected
+        assert not (root / 'source').exists() and not (root.parent / 'download-cache').exists()
+        raise release.ReleaseError('Previous input rejected')
+    monkeypatch.setattr(release, 'previous_app', previous)
+    with pytest.raises(release.ReleaseError, match='Previous input rejected'):
+        release.candidate(argparse.Namespace(source='a' * 40, previous_tag='v1.0.1',
+                          output=tmp_path / 'release', previous_published_manifest=selected))
+    assert calls == ['security', 'xcrun']
+
+
+@pytest.mark.parametrize('change', ['mode', 'manifest_sha256', 'asset_id', 'sha256'])
+def test_frozen_previous_input_change_is_rejected(tmp_path, monkeypatch, change):
+    import argparse
+    root = tmp_path / 'release'
+    (root / 'evidence').mkdir(parents=True)
+    (root / 'candidate-manifest.json').write_text('{}')
+    original = {'mode': 'published', 'manifest_sha256': 'a' * 64, 'asset_id': 1, 'sha256': 'b' * 64}
+    release.atomic_json(root / 'evidence/previous-input.json', {'input': original})
+    changed = {**original, change: 'different'}
+    monkeypatch.setattr(release, 'metadata', lambda *_: {'version': '1.0.2', 'github': 'example/repo'})
+    monkeypatch.setattr(release, 'check_source', lambda *_: None)
+    monkeypatch.setattr(release, 'git', lambda *_: 'a' * 40)
+    monkeypatch.setattr(release, 'verify_candidate', lambda *_: {'source': 'a' * 40, 'previous_tag': 'v1.0.1', 'tools': {}})
+    monkeypatch.setattr(release, 'tools_snapshot', lambda: {})
+    monkeypatch.setattr(release, 'previous_input', lambda *_: (changed, None, None))
+    monkeypatch.setattr(release, 'run', lambda *_a, **_kw: pytest.fail('No build or external write'))
+    with pytest.raises(release.ReleaseError, match='Frozen previous input changed'):
+        release.candidate(argparse.Namespace(source='a' * 40, previous_tag='v1.0.1', output=root,
+                          previous_published_manifest=None))
+
+
+@pytest.mark.skipif(not all(os.environ.get(key) for key in ('VENUS_RELEASE_TEST_PREVIOUS_MANIFEST',
+                    'VENUS_RELEASE_TEST_CURRENT_ZIP', 'VENUS_RELEASE_TEST_SOURCE')),
+                    reason='Explicit published input, target ZIP and installed probe runtime required')
+def test_published_previous_input_real_signature_and_provider(tmp_path):
+    """Run the production input path and updater against retained bytes, without installing an App."""
+    manifest = Path(os.environ['VENUS_RELEASE_TEST_PREVIOUS_MANIFEST'])
+    current = Path(os.environ['VENUS_RELEASE_TEST_CURRENT_ZIP'])
+    source = Path(os.environ['VENUS_RELEASE_TEST_SOURCE'])
+    for name in ('scripts/release-smoke.cjs', 'desktop/package-lock.json'):
+        assert release.sha256(source / name) == release.sha256(release.ROOT / name)
+    info = release.metadata(release.ROOT)
+    tag = release.read_json(manifest)['tag']
+    old_zip = manifest.parent / 'release-assets' / release.asset_names(tag[1:])['zip']
+    originals = [manifest.parent / name for name in ('owner.json', 'candidate-manifest.json',
+                                                    'final-manifest.json', 'published-manifest.json')]
+    originals.extend((old_zip, current))
+    before = {str(p): release.input_file(p) for p in originals}
+    directories = {str(p): (p.stat().st_dev, p.stat().st_ino) for p in (manifest.parent, old_zip.parent, current.parent)}
+    root = tmp_path / 'tool-check'
+    release.create_root(root, release.ROOT, release.git(release.ROOT, 'rev-parse', 'HEAD'))
+    result = None
+    try:
+        app = release.previous_app(root, info['github'], tag, info, manifest)
+        copied = root / 'previous' / old_zip.name
+        assert copied.stat().st_ino != old_zip.stat().st_ino
+        result = release.provider_smoke(root, source, app, current.parent, info)
+        assert result['previous_version'] == tag[1:] and result['version'] == info['version']
+        assert result['sha256'] == before[str(current)]['sha256'] and not result['native_installer_executed']
+    finally:
+        after = {str(p): release.input_file(p) for p in originals}
+        assert before == after
+        assert directories == {str(p): (p.stat().st_dev, p.stat().st_ino) for p in map(Path, directories)}
+        release.atomic_json(root / 'evidence/real-input-check.json', {
+            'before': before, 'after': after, 'directory_identity': directories, 'provider': result})
+        if (root / 'previous').exists():
+            assert release.remove_owned(root, 'previous')['removed']
+        assert release.resource_state(root) == {'processes': [], 'mounts': []}
+
+
+@pytest.mark.parametrize('name', ['owner.json', 'candidate-manifest.json', 'final-manifest.json'])
+@pytest.mark.parametrize('kind', ['symlink', 'directory'])
+def test_previous_related_records_must_be_regular_files(previous_input_files, tmp_path, name, kind):
+    manifest, _, _ = previous_input_files
+    path = manifest.parent / name
+    target = tmp_path / name
+    path.rename(target)
+    if kind == 'symlink':
+        path.symlink_to(target)
+    else:
+        path.mkdir()
+    with pytest.raises(release.ReleaseError):
+        release.previous_input('example/repo', 'v1.0.1', manifest)
+
+
+def test_previous_metadata_error_does_not_fall_back(previous_input_files, monkeypatch):
+    manifest, archive, _ = previous_input_files
+    original = archive.read_bytes()
+    def unavailable(*_):
+        raise release.ReleaseError('Metadata unavailable')
+    monkeypatch.setattr(release, 'github_release', unavailable)
+    with pytest.raises(release.ReleaseError, match='Metadata unavailable'):
+        release.previous_input('example/repo', 'v1.0.1', manifest)
+    assert archive.read_bytes() == original
+
+
+def test_previous_read_only_input_does_not_authorize_deletion(previous_input_files):
+    manifest, archive, _ = previous_input_files
+    owner_file = manifest.parent / 'owner.json'
+    owner = release.read_json(owner_file)
+    owner['directories']['release-assets']['device'] += 1
+    release.atomic_json(owner_file, owner)
+    original = archive.read_bytes()
+    result = release.remove_owned(manifest.parent, 'release-assets')
+    assert not result['removed'] and archive.read_bytes() == original
+    assert release.read_json(owner_file) == owner
+
+
+def test_unfrozen_root_is_preserved_before_previous_input(tmp_path, monkeypatch):
+    import argparse
+    root = tmp_path / 'failed'
+    root.mkdir()
+    partial = root / 'partial.zip'
+    partial.write_bytes(b'failed download evidence')
+    monkeypatch.setattr(release, 'metadata', lambda *_: {'version': '1.0.2', 'github': 'example/repo'})
+    monkeypatch.setattr(release, 'check_source', lambda *_: None)
+    monkeypatch.setattr(release, 'git', lambda *_: 'a' * 40)
+    monkeypatch.setattr(release, 'previous_input', lambda *_: pytest.fail('Must preserve unfinished root'))
+    with pytest.raises(release.ReleaseError, match='Unfinished/unknown release root'):
+        release.candidate(argparse.Namespace(source='a' * 40, previous_tag='v1.0.1', output=root,
+                          previous_published_manifest=None))
+    assert partial.read_bytes() == b'failed download evidence'
+
+
+def test_previous_network_zip_digest_is_checked_before_extraction(previous_input_files, monkeypatch, tmp_path):
+    root = tmp_path / 'network'
+    release.create_root(root, release.ROOT, 'd' * 40)
+    monkeypatch.setattr(release, 'download', lambda _url, target: target.write_bytes(b'corrupted download'))
+    monkeypatch.setattr(release, 'extract_zip', lambda *_: pytest.fail('Invalid digest must stop extraction'))
+    with pytest.raises(release.ReleaseError, match='bytes mismatch'):
+        release.previous_app(root, 'example/repo', 'v1.0.1', {})
+    assert not (root / 'evidence/previous-input.json').exists()

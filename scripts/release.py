@@ -334,10 +334,10 @@ def directory_bytes(path):
     return sum(p.lstat().st_size for p in path.rglob('*') if p.is_file() and not p.is_symlink())
 
 
-def owner_record(root):
+def owner_record(root, *, repo=None):
     root = canonical_path(root)
     data = read_json(root / 'owner.json')
-    require(data.get('format') == 1 and data.get('repo') == str(ROOT.resolve()) and data.get('id'), 'Directory ownership mismatch')
+    require(data.get('format') == 1 and data.get('repo') == str((ROOT if repo is None else repo).resolve()) and data.get('id'), 'Directory ownership mismatch')
     return data
 
 
@@ -720,20 +720,94 @@ def download(url, destination):
         shutil.copyfileobj(response, stream, 1024 * 1024)
 
 
-def previous_app(root, github, previous_tag, info):
+def input_file(path):
+    path = canonical_path(path)
+    before = path.stat()
+    require(stat.S_ISREG(before.st_mode), "Previous input must be a regular file")
+    digest = sha256(path)
+    after = path.stat()
+    def identity(st):
+        return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns
+    require(identity(before) == identity(after), "Previous input changed while reading")
+    return {"device": after.st_dev, "inode": after.st_ino, "size": after.st_size,
+            "mtime_ns": after.st_mtime_ns, "ctime_ns": after.st_ctime_ns, "sha256": digest}
+
+
+def previous_input(github, previous_tag, published_manifest=None):
     release = github_release(github, previous_tag)
-    require(release and not release["draft"] and not release["prerelease"], "Previous stable release not found")
+    require(release and not release["draft"] and not release["prerelease"] and
+            release["tag_name"] == previous_tag, "Previous stable release not found")
+    name = asset_names(previous_tag[1:])["zip"]
     files = [a for a in release["assets"] if a["name"].endswith("-arm64-mac.zip")]
-    require(len(files) == 1, "Previous ZIP is ambiguous")
-    previous = root / "previous"
-    owned_directory(root, "previous")
-    archive = previous / files[0]["name"]
-    download(files[0]["browser_download_url"], archive)
-    require(archive.stat().st_size == files[0]["size"], "Previous ZIP truncated")
+    require(len(files) == 1 and files[0]["name"] == name, "Previous ZIP is ambiguous or misnamed")
+    asset = files[0]
+    require(re.fullmatch(r"sha256:[0-9a-f]{64}", asset.get("digest") or ""), "Previous ZIP requires a SHA-256 digest")
+    source = git(ROOT, "rev-parse", f"{previous_tag}^{{commit}}")
+    tag_object = git(ROOT, "rev-parse", f"refs/tags/{previous_tag}")
+    refs = dict(line.split()[::-1] for line in git(ROOT, "ls-remote", "origin",
+                f"refs/tags/{previous_tag}", f"refs/tags/{previous_tag}^{{}}").splitlines())
+    require(refs.get(f"refs/tags/{previous_tag}") == tag_object and
+            refs.get(f"refs/tags/{previous_tag}^{{}}", tag_object) == source, "Previous remote tag changed")
+    origin = {"mode": "published" if published_manifest is not None else "network", "github": github,
+              "tag": previous_tag, "tag_object": tag_object, "source": source, "release_id": release["id"],
+              "asset_id": asset["id"], "name": name, "size": asset["size"], "sha256": asset["digest"][7:]}
+    archive = None
+    if published_manifest is not None:
+        path = canonical_path(published_manifest)
+        require(path.name == "published-manifest.json", "Expected published-manifest.json")
+        root = path.parent
+        records = {name: input_file(root / name) for name in
+                   ("owner.json", "candidate-manifest.json", "final-manifest.json", "published-manifest.json")}
+        owner = read_json(root / "owner.json")
+        repo = canonical_path(Path(owner["repo"]))
+        # Worktrees share provenance, but deletion still requires the exact owner and directory identity.
+        require(git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir") ==
+                git(ROOT, "rev-parse", "--path-format=absolute", "--git-common-dir"), "Previous repository mismatch")
+        done = published_record(root, repo=repo)
+        candidate = read_json(root / "candidate-manifest.json")
+        final = read_json(root / "final-manifest.json")
+        require(done["github"] == candidate["github"] == github and done["tag"] == previous_tag and
+                candidate["version"] == previous_tag[1:] and done["tag_object"] == tag_object and
+                done["source"] == final["source"] == source and done["release_id"] == release["id"],
+                "Previous published identity mismatch")
+        require(final["candidate_sha256"] == records["candidate-manifest.json"]["sha256"] and
+                final["assets"] == done["assets"], "Previous final manifest mismatch")
+        expected = done["assets"][name]
+        require(expected["size"] == origin["size"] and expected["sha256"] == origin["sha256"],
+                "Previous published ZIP differs from remote")
+        archive = root / "release-assets" / name
+        records[str(archive.relative_to(root))] = input_file(archive)
+        require(records[str(archive.relative_to(root))]["size"] == origin["size"] and
+                records[str(archive.relative_to(root))]["sha256"] == origin["sha256"], "Previous local ZIP differs from published bytes")
+        require(all(input_file(root / name) == facts for name, facts in records.items()), "Previous input changed during validation")
+        origin.update(published_manifest=str(path), manifest_sha256=records[path.name]["sha256"],
+                      files=records, final_signature=final["signature"])
+    return origin, asset, archive
+
+
+def previous_app(root, github, previous_tag, info, published_manifest=None):
+    origin, asset, original = previous_input(github, previous_tag, published_manifest)
+    previous = owned_directory(root, "previous")
+    archive = previous / origin["name"]
+    if original is None:
+        download(asset["browser_download_url"], archive)
+    else:
+        with original.open("rb") as source, archive.open("xb") as target:
+            shutil.copyfileobj(source, target, 1024 * 1024)
+        old_root = Path(origin["published_manifest"]).parent
+        require(all(input_file(old_root / name) == facts for name, facts in origin["files"].items()),
+                "Previous input changed during copy")
+    copied = input_file(archive)
+    require(copied["size"] == origin["size"] and copied["sha256"] == origin["sha256"], "Previous ZIP bytes mismatch")
     extract_zip(archive, previous / "unpacked")
-    archive.unlink()
     app = previous / "unpacked/Venus.app"
-    app_facts(app, {**info, "version": previous_tag[1:]}, root / "evidence", "previous")
+    signature = app_facts(app, {**info, "version": previous_tag[1:]}, root / "evidence", "previous")
+    if original is not None:
+        require(signature == origin["final_signature"], "Previous final signature mismatch")
+    provider = read_updater_config(app / "Contents/Resources/app-update.yml")
+    require(provider["provider"] == "github" and f"{provider['owner']}/{provider['repo']}" == github,
+            "Previous Provider differs from repository")
+    atomic_json(root / "evidence/previous-input.json", {"input": origin, "signature": signature, "provider": provider})
     return app
 
 
@@ -863,6 +937,8 @@ def candidate(args):
         manifest = verify_candidate(output / "candidate-manifest.json")
         require(manifest["source"] == args.source and manifest["previous_tag"] == args.previous_tag, "Existing candidate belongs to different input")
         require(manifest["tools"] == tools_snapshot(), "Tool environment changed")
+        origin, _, _ = previous_input(info["github"], args.previous_tag, args.previous_published_manifest)
+        require(read_json(output / "evidence/previous-input.json")["input"] == origin, "Frozen previous input changed")
         print("Candidate already frozen and verified; no rebuild: " + str(output / "candidate-manifest.json"))
         return
     require(not output.exists(), "Unfinished/unknown release root; preserve and inspect")
@@ -884,6 +960,7 @@ def candidate(args):
     source = output / "source"
     evidence = output / "evidence"
     atomic_json(evidence / 'space-preflight.json', space)
+    previous = previous_app(output, info["github"], args.previous_tag, info, args.previous_published_manifest)
     cache = prepare_download_cache(output.parent, repo)
     owned_directory(output, 'build-environment')
     python = tools["python_identity"]["executable"]
@@ -928,7 +1005,6 @@ def candidate(args):
     signature = check_packages(output, directory, info, source, "candidate", matches[0][0])
     app = directory / "mac-arm64/Venus.app"
     backend = backend_smoke(output, app)
-    previous = previous_app(output, info["github"], args.previous_tag, info)
     provider = provider_smoke(output, source, previous, directory, info)
     require(not git(source, "diff", "--name-only"), "Build changed tracked source")
     check_source(repo, args.source, info["github"])
@@ -1079,8 +1155,8 @@ def upload_assets(root, info, final, release, progress, state_path):
         verify_remote_asset(info, tag, name, facts, root)
 
 
-def published_record(root):
-    owner = owner_record(root)
+def published_record(root, *, repo=None):
+    owner = owner_record(root, repo=repo)
     done = read_json(root / 'published-manifest.json')
     candidate = read_json(root / 'candidate-manifest.json')
     require(candidate['owner_id'] == owner['id'] and candidate['source'] == owner['source'] == done['source'], 'Published ownership mismatch')
@@ -1345,6 +1421,7 @@ def main(argv=None):
     build.add_argument("--source", required=True)
     build.add_argument("--previous-tag", required=True)
     build.add_argument("--output", type=Path, required=True)
+    build.add_argument("--previous-published-manifest", type=Path)
     ship = commands.add_parser("publish", help="Requires human acceptance and explicit release authorization")
     ship.add_argument("--candidate", type=Path, required=True)
     ship.add_argument("--acceptance", type=Path, required=True)

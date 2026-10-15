@@ -19,6 +19,18 @@ python3.11 scripts/release.py candidate \
   --output <absolute-new-release-directory>
 ```
 
+The previous release is prepared before dependency installation and compilation. By default, the tool downloads its ZIP. If you retain the published release directory, add:
+
+```sh
+  --previous-published-manifest <absolute-previous-release-directory>/published-manifest.json
+```
+
+This selects the standard ZIP in that directory's `release-assets`. The tool checks the owner, candidate, final and published records against the repository, tag and GitHub Release. The ZIP's size and SHA-256 must match both the final published record and GitHub's explicit asset digest. Missing metadata or an invalid local input stops the command without switching to a download.
+
+The original files stay unchanged. The tool copies the ZIP into the new release root, verifies the copy, then checks the extracted App's version, architecture, signature, CDHash and updater configuration. The previous certificate may differ from the certificate selected for the new build. Directory ownership checks for deletion remain separate from these read-only checks.
+
+The input identity, signature and Provider results are frozen with the candidate. Repeating `candidate` requires the same input mode and identity. Publishing uses the frozen copy; the local input does not replace the loopback updater test, the five anonymous public asset downloads or the public GitHub Provider test.
+
 The candidate command checks local and remote source identity, creates an isolated source checkout, installs dependencies, runs Python checks, Desktop tests and a full Desktop audit, including development dependencies, which must report zero vulnerabilities, then calls `build-backend.sh`. That script runs the Frontend check once. Packaging explicitly disables notarization and automatic publishing.
 
 Machine checks cover signed arm64 binaries, Hardened Runtime, the bundled backend, FFmpeg and ffprobe, macOS 14 declarations, App/ZIP/DMG consistency, startup readiness, project reads and synthetic recording discovery. A loopback updater feed tests the previous release's update selection and ZIP download. It uses Node HTTP transport and does not execute Squirrel or install an update.
@@ -58,7 +70,7 @@ The tool pushes the exact tag and creates a draft Release. All five assets—DMG
 
 Keep the release directory and `progress.json`. Re-run with the same arguments only after understanding the failed step. A saved Apple Submission ID is reused; an uncertain submission without an ID stops for reconciliation. A matching existing remote asset is verified, never uploaded with `--clobber`. Unowned tags or Releases are not adopted.
 
-An interrupted local build or finalize directory is deliberately not repaired automatically. Do not edit a frozen candidate to get past a failed check. If publication succeeded but a later download or cleanup failed, the Release may already be visible: report that state rather than claiming a rollback.
+An interrupted local build without a frozen candidate requires a new output directory and a full build after the cause is corrected. Preserve the failed directory and its evidence. An interrupted finalize directory is deliberately not repaired automatically. Do not edit a frozen candidate to get past a failed check. If publication succeeded but a later download or cleanup failed, the Release may already be visible: report that state rather than claiming a rollback.
 
 ## Cache and cleanup
 
