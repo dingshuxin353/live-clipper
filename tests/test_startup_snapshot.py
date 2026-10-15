@@ -111,18 +111,60 @@ def test_invalid_database_paths_are_diagnostic_without_repair(tmp_path, case):
     assert not (tmp_path / 'missing').exists()
 
 
-def test_read_lock_timeout_is_bounded_and_does_not_repair(tmp_path):
+def test_read_lock_timeout_is_bounded_and_does_not_repair(tmp_path, monkeypatch, capsys):
+    import json
+    import platform
+    import sys
+
+    record = {"python": sys.version, "sqlite": sqlite3.sqlite_version,
+              "platform": platform.platform(), "stages": []}
+    with sqlite3.connect(":memory:") as metadata:
+        record["sqlite_source_id"] = metadata.execute("SELECT sqlite_source_id()").fetchone()[0]
+        record["compile_options"] = [row[0] for row in metadata.execute("PRAGMA compile_options")]
+    connect = sqlite3.connect
+
+    def observed(label, operation):
+        wall, cpu = time.monotonic(), time.process_time()
+        stage = {"name": label}
+        try:
+            return operation()
+        except sqlite3.Error as exc:
+            stage.update(error=type(exc).__name__, sqlite_error=getattr(exc, "sqlite_errorname", None))
+            raise
+        finally:
+            stage.update(wall_seconds=time.monotonic() - wall, cpu_seconds=time.process_time() - cpu)
+            record["stages"].append(stage)
+
+    class Reader(sqlite3.Connection):
+        def execute(self, sql, *args):
+            return observed(sql, lambda: super(Reader, self).execute(sql, *args))
+
+        def close(self):
+            return observed("close", lambda: super(Reader, self).close())
+
+    def measured_connect(*args, **kwargs):
+        record["connect_timeout"] = kwargs.get("timeout")
+        connection = observed("connect", lambda: connect(*args, **kwargs, factory=Reader))
+        record["busy_timeout_ms"] = sqlite3.Connection.execute(connection, "PRAGMA busy_timeout").fetchone()[0]
+        return connection
+
     path = database_path(tmp_path)
-    writer = sqlite3.connect(path, isolation_level=None)
+    writer = connect(path, isolation_level=None)
     try:
         writer.execute('CREATE TABLE facts(value)')
         writer.execute('BEGIN EXCLUSIVE')
+        monkeypatch.setattr(sqlite3, 'connect', measured_connect)
         start = time.monotonic()
+        cpu = time.process_time()
         assert _read_database_facts(path).unreadable
+        record.update(total_wall=time.monotonic() - start, total_cpu=time.process_time() - cpu,
+                      writer_in_transaction=writer.in_transaction)
         assert time.monotonic() - start < 2
         assert writer.in_transaction
     finally:
         writer.close()
+        with capsys.disabled():
+            print("START002_DIAG=" + json.dumps(record, sort_keys=True), flush=True)
 
 
 def test_unreadable_database_is_diagnostic_without_permission_changes(tmp_path):
