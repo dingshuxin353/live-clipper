@@ -14,10 +14,38 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .project_domain import PROJECT_VIDEO_EXTENSIONS, assert_secret_free
+
+if TYPE_CHECKING:
+    from .project_storage import MigrationSession
+
+_HISTORY_REASON_LABELS = {
+    "content_identity_missing": "缺少识别录像所需的信息，无法导入项目。",
+    "duplicate_content_identity": "录像标识重复，无法导入项目。",
+    "source_identity_unsupported": "无法确认录像来源，不能导入项目。",
+    "timestamp_untrusted": "记录的时间信息不完整或不符合要求，无法导入项目。",
+    "state_unrecognized": "无法识别旧版处理状态，不能导入项目。",
+}
+
+
+class MigrationError(RuntimeError):
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        status: int = 409,
+        fields: Mapping[str, str] | None = None,
+    ) -> None:
+        self.code = code
+        self.message = message
+        self.status = status
+        self.fields = dict(fields or {})
+        super().__init__(code)
+
 
 PLAN_VERSION = 3
 MAX_SOURCE_FILE_BYTES = 16 * 1024 * 1024
@@ -127,6 +155,94 @@ class MigrationBackup:
     path: Path = field(repr=False)
     reused: bool
     manifest: tuple[Mapping[str, Any], ...]
+
+
+def migration_plan_payload(plan: MigrationPlan) -> dict[str, Any]:
+    raw = plan.to_dict()
+    backup = dict(raw["backup_summary"])
+    backup.pop("target_path", None)
+    history_entries = raw["history_summary"]["entries"]
+    public_entries = []
+    for position, item in enumerate(history_entries, start=1):
+        category = str(item["category"])
+        reason_code = str(item["reason_code"]) if item.get("reason_code") else None
+        if reason_code is not None:
+            reason_label = _HISTORY_REASON_LABELS.get(reason_code, "这条记录无法导入项目，将保留在升级备份中。")
+        elif category == "compatibility":
+            reason_label = "这条记录尚未处理完成，升级后不会自动继续处理。"
+        elif item.get("safe_result"):
+            reason_label = "记录可导入，关联成片将在升级时核验。"
+        else:
+            reason_label = "记录可导入"
+        public_entries.append(
+            {
+                "display_identity": f"历史记录 {position}",
+                "category": category,
+                "reason_code": reason_code,
+                "reason_label": reason_label,
+                "safe_result": bool(item.get("safe_result")),
+            }
+        )
+    public_history = {
+        "counts": raw["history_summary"]["counts"],
+        "entries": public_entries,
+        "quarantine_reason_codes": sorted(
+            {
+                str(item["reason_code"])
+                for item in history_entries
+                if item.get("category") == "quarantined"
+            }
+        ),
+    }
+    return {
+        "plan_version": raw["plan_version"],
+        "source_fingerprint": raw["source_fingerprint"],
+        "plan_hash": raw["plan_hash"],
+        "project": raw["project_preview"],
+        "resources": raw["resource_summary"],
+        "discovery": raw["discovery_summary"],
+        "history": public_history,
+        "backup": backup,
+        "readiness": raw["readiness_summary"],
+        "required_choices": raw["requires_user_choices"],
+        "warnings": [],
+        "choices": raw["choices"],
+    }
+
+def migration_session_payload(session: MigrationSession) -> dict[str, Any]:
+    total = 0
+    processed = 0
+    if session.report:
+        total = int(session.report.get("history_total", 0))
+        processed = total if session.state.startswith("completed_") else 0
+    return {
+        "migration_id": session.migration_id,
+        "state": session.state,
+        "stage": session.stage,
+        "revision": session.revision,
+        "processed_history_count": processed if session.stage == "history" else None,
+        "total_history_count": total if session.stage == "history" else None,
+        "backup_status": session.backup_status,
+        "failure": (
+            {"code": session.failure_code, "summary": session.failure_summary}
+            if session.failure_code
+            else None
+        ),
+        "project_id": session.project_id,
+        "started_at": session.started_at,
+        "updated_at": session.updated_at,
+    }
+
+def migration_completion_consistent(data_mode: str, project_ids: tuple[str, ...], session: MigrationSession) -> bool:
+    return bool(
+        data_mode == "projects"
+        and session.project_id in project_ids
+        and session.report
+        and session.report.get("project", {}).get("project_id") == session.project_id
+        and session.report.get("backup_created") is True
+        and session.backup_status == "completed"
+        and session.backup_path
+    )
 
 
 def _freeze(value: Any) -> Any:

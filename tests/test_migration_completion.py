@@ -6,7 +6,7 @@ from threading import Event, current_thread
 import pytest
 from test_migration_coordinator import _legacy_home, _validated
 
-from live_clipper.migration_coordinator import MigrationError
+from live_clipper.project_migration import MigrationError, migration_session_payload
 from live_clipper.project_storage import ProjectRepository
 from live_clipper.resource_store import ResourceStore
 
@@ -302,7 +302,7 @@ def _migration_process(root, boundary, pipe):
             if not repository.connection.in_transaction:
                 rows = repository.list_migration_sessions()
                 if rows and rows[0].state.startswith('completed_') and not repository.resource_migration_pending():
-                    pipe.send({'session': coordinator._session_payload(rows[0])})
+                    pipe.send({'session': migration_session_payload(rows[0])})
                     pipe.recv()
         ProjectRepository.transaction = observe_commit
     coordinator = MigrationCoordinator(service_dir=root/'work/service', config_path=root/'live-clipper.toml',

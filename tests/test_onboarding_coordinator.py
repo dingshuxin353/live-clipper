@@ -176,3 +176,67 @@ def test_onboarding_write_and_replay_identity_commit_together(tmp_path, monkeypa
     _, replay = getattr(coordinator, operation)(body)
     assert replay['reused'] is True
     assert replay['session'] == saved['session']
+
+
+@pytest.mark.parametrize('via_http', [False, True])
+def test_snapshot_recovers_reserved_project_and_returns_only_post_recovery_state(tmp_path, monkeypatch, via_http):
+    import json
+    from http.server import ThreadingHTTPServer
+    from threading import Thread
+    from urllib.request import urlopen
+
+    from live_clipper.first_run_detection import StartupInspection
+    from live_clipper.project_storage import ProjectRepository
+    from live_clipper.web import LiveClipperRequestHandler, WebPaths
+
+    coordinator, source = _coordinator(tmp_path)
+    coordinator.start({})
+    with coordinator._repo() as repo:
+        session = repo.get_first_run_session()
+        reserved = repo.reserve_first_project_request(session.revision, 'recover-project', 'a' * 64)
+        project = repo.create_project('保留项目', default_project_config(source, tmp_path / 'output'))
+        repo.save_idempotency_key('project.create', 'recover-project', request_hash='a' * 64,
+                                 object_type='project', object_id=project.project_id)
+    before = coordinator.inspect()
+    assert before.facts.session.first_project_id is None
+    summaries = []
+    original_summary = StartupInspection.migration_summary
+
+    def summary(inspection):
+        summaries.append(inspection)
+        return original_summary(inspection)
+
+    monkeypatch.setattr(StartupInspection, 'migration_summary', summary)
+    if via_http:
+        class Handler(LiveClipperRequestHandler):
+            paths = WebPaths(service_dir=coordinator.service_dir, config_path=coordinator.config_path,
+                             input_dir=coordinator.input_dir, output_root=coordinator.output_root)
+
+        server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        thread = Thread(target=server.serve_forever)
+        thread.start()
+        try:
+            with urlopen(f'http://127.0.0.1:{server.server_port}/api/onboarding', timeout=5) as response:
+                assert response.status == 200
+                payload = json.load(response)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(5)
+            assert not thread.is_alive()
+    else:
+        payload = coordinator.snapshot(startup=before)
+    assert payload['entry']['onboarding'] == 'activation_pending'
+    assert payload['session']['state'] == 'activation_pending'
+    assert payload['session']['revision'] == reserved.revision + 1
+    assert payload['session']['first_project']['project_id'] == project.project_id
+    assert payload['session']['pending_finish_request_id'] == 'recover-project'
+    assert payload['migration'] is None
+    assert len(summaries) == 1
+    assert summaries[0].facts.session.first_project_id == project.project_id
+    assert summaries[0].entry == payload['entry']
+    repeated = coordinator.snapshot()
+    assert repeated['entry'] == payload['entry'] and repeated['session'] == payload['session']
+    with ProjectRepository(coordinator.service_dir) as repo:
+        assert [item.project_id for item in repo.list_projects()] == [project.project_id]
+        assert repo.get_first_run_session().revision == reserved.revision + 1

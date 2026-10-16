@@ -12,7 +12,8 @@ import pytest
 
 from live_clipper import service
 from live_clipper.config import Settings
-from live_clipper.migration_coordinator import MigrationCoordinator, MigrationError
+from live_clipper.migration_coordinator import MigrationCoordinator
+from live_clipper.project_migration import MigrationError
 from live_clipper.project_result_api import ProjectResultAPI
 from live_clipper.project_service import ProjectManager
 from live_clipper.project_storage import ProjectRepository, database_path
@@ -784,13 +785,28 @@ def test_retry_checks_before_transition_and_preserves_original_session(tmp_path,
         assert "无法直接继续升级" in current["failure"]["summary"]
 
 
-def test_completed_snapshot_and_acknowledgement_reject_inconsistent_backup(tmp_path):
+@pytest.mark.parametrize('conflict, startup_mode', [
+    ('report_backup', 'workbench'), ('report_project', 'workbench'),
+    ('backup_path', 'workbench'),
+])
+def test_completed_snapshot_and_acknowledgement_reject_inconsistent_backup(tmp_path, conflict, startup_mode):
     coordinator, service = _legacy_home(tmp_path)
     session = _execute_completed(coordinator)
     with ProjectRepository(service) as repository:
         with repository.transaction():
-            repository.connection.execute("UPDATE migration_sessions SET report_json=json_set(report_json, '$.backup_created', json('false')) WHERE migration_id=?", (session["migration_id"],))
-    assert coordinator.snapshot()["entry"] == "diagnostic"
+            updates = {
+                'report_backup': "report_json=json_set(report_json, '$.backup_created', json('false'))",
+                'report_project': "report_json=json_set(report_json, '$.project.project_id', 'other-project')",
+                'backup_path': "backup_path=''",
+            }
+            repository.connection.execute(f"UPDATE migration_sessions SET {updates[conflict]} WHERE migration_id=?", (session["migration_id"],))
+    from live_clipper.first_run_detection import inspect_startup_state
+
+    startup = inspect_startup_state(config_path=coordinator.config_path, env_path=coordinator.env_path, service_dir=service)
+    assert startup.entry['mode'] == startup_mode
+    snapshot = coordinator.snapshot(startup=startup)
+    assert snapshot["entry"] == "diagnostic"
+    assert startup.migration_summary() == {key: snapshot[key] for key in ('entry', 'session', 'report')}
     with pytest.raises(MigrationError, match="diagnostic_required"):
         coordinator.acknowledge({"request_id": "ack", "migration_id": session["migration_id"], "expected_revision": session["revision"]})
 

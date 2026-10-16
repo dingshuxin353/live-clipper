@@ -19,7 +19,6 @@ from . import (
     jobs,
     mcp_tools,
     migration_coordinator,
-    onboarding,
     onboarding_coordinator,
     review_automation,
     scheduler,
@@ -27,9 +26,10 @@ from . import (
 )
 from .automation import DEFAULT_LOG_DIR, DEFAULT_STATE_DIR, _pid_is_running, check_automation_runs
 from .config import RecordingSourceDefaultConfig, ServiceConfig, Settings, load_settings
-from .first_run_detection import StartupInspection
+from .first_run_detection import StartupInspection, inspect_startup_state
 from .pipeline import cleanup_local_artifacts, cleanup_plan
 from .project_api import ProjectAPI
+from .project_migration import MigrationError
 from .project_result_api import ProjectResultAPI, ResultAPIError
 from .project_result_api import _error as _result_error
 from .project_storage import ProjectRepository, database_path
@@ -141,21 +141,16 @@ def _project_mode_active(paths: WebPaths) -> bool:
 
 
 def _startup_inspection(paths: WebPaths) -> StartupInspection:
-    return onboarding_coordinator.OnboardingCoordinator(
+    return inspect_startup_state(
         service_dir=paths.service_dir,
         config_path=paths.config_path,
         env_path=paths.config_path.parent / ".env",
-        input_dir=paths.input_dir,
-        output_root=paths.output_root,
-    ).inspect()
+    )
 
 
 def _startup_restricted(paths: WebPaths) -> str | None:
     """Return the read-only startup gate for mutating legacy/service routes."""
-    decision = _startup_inspection(paths).decision
-    if decision.entry in {"migration_required", "diagnostic_required"}:
-        return decision.entry
-    return None
+    return _startup_inspection(paths).restriction
 
 
 def _is_project_api_route(method: str, parts: list[str], paths: WebPaths) -> bool:
@@ -179,64 +174,6 @@ def _is_project_api_route(method: str, parts: list[str], paths: WebPaths) -> boo
 
 def _structured_error(error_code: str, message: str) -> dict[str, Any]:
     return {"ok": False, "error_code": error_code, "message": message, "error": message}
-
-
-def _restricted_onboarding_snapshot(paths: WebPaths, inspection: StartupInspection) -> dict[str, Any]:
-    decision, detection = inspection.decision, inspection.detection
-    mode = decision.entry
-    recommended = asr_models.recommended_model()["id"]
-    migration = migration_coordinator.migration_summary_for_startup(
-        startup=inspection,
-        service_dir=paths.service_dir,
-        config_path=paths.config_path,
-        input_dir=paths.input_dir,
-        output_root=paths.output_root,
-    )
-    return {
-        "ok": True,
-        "entry": {
-            "mode": mode,
-            "onboarding": None,
-            "reason_code": decision.reason_code,
-            "evidence_codes": list(detection.evidence_codes),
-        },
-        "session": None,
-        "environment": {
-            "status": "blocked",
-            "checks": [
-                {
-                    "name": "startup_safety",
-                    "status": "blocked",
-                    "problem": "请先完成数据升级或问题排查，再继续操作。",
-                }
-            ],
-        },
-        "resources": {
-            "asr": {
-                "mode": "local",
-                "configured": False,
-                "ready": False,
-                "model_id": None,
-                "model_label": None,
-                "credential_present": False,
-                "problem": "暂未读取模型设置。",
-            },
-            "ai": {
-                "configured": False,
-                "ready": False,
-                "provider_label": None,
-                "api_base_display": None,
-                "model": None,
-                "credential_present": False,
-                "problem": "暂未读取模型设置。",
-            },
-        },
-        "model_catalog": [],
-        "initial_local_model": recommended,
-        "provider_presets": [dict(item) for item in onboarding.PROVIDER_PRESETS],
-        "suggestions": {"project_name": "我的第一个项目", "output_directory": str(paths.output_root)},
-        "migration": migration,
-    }
 
 
 def _action_status(payload: dict[str, Any]) -> int:
@@ -727,7 +664,7 @@ def handle_api_request(
                     auth_context=auth_context,
                     startup=startup,
                 )
-            except migration_coordinator.MigrationError as exc:
+            except MigrationError as exc:
                 return _json_response(
                     {
                         "ok": False,
@@ -770,7 +707,7 @@ def handle_api_request(
                 output_root=paths.output_root,
             )
             try:
-                routed = coordinator.dispatch(method, request_path, body=body)
+                routed = coordinator.dispatch(method, request_path, body=body, startup=startup)
             except onboarding_coordinator.OnboardingError as exc:
                 return _json_response(
                     {
@@ -1241,14 +1178,14 @@ class LiveClipperRequestHandler(BaseHTTPRequestHandler):
         inspection: StartupInspection | None = None
         if self.restricted_startup:
             inspection = _startup_inspection(self.paths)
-            current_restriction = inspection.decision.entry if inspection.decision.entry in {"migration_required", "diagnostic_required"} else None
+            current_restriction = inspection.restriction
             if current_restriction is None:
                 self.restricted_startup = None
-            elif method == "GET" and parsed_path == "/api/onboarding":
-                status, headers, payload = _json_response(
-                    _restricted_onboarding_snapshot(self.paths, inspection)
-                )
-            elif parsed_path == "/api/migration" or parsed_path.startswith("/api/migration/"):
+            elif (
+                (method == "GET" and parsed_path == "/api/onboarding")
+                or parsed_path == "/api/migration"
+                or parsed_path.startswith("/api/migration/")
+            ):
                 body_payload: dict[str, Any] | None = None
                 if method in {"POST", "PATCH"}:
                     raw_length = self.headers.get("Content-Length")

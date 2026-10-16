@@ -249,15 +249,14 @@ class OnboardingCoordinator:
         check("embedded_service", service.embedded_service_active() or service.get_service_status(service_dir=self.service_dir).get("running", False))
         return {"status": "ready" if all(item["status"] == "ready" for item in checks) else "blocked", "checks": checks}
 
-    def snapshot(self) -> dict[str, Any]:
-        inspection = self.inspect()
-        decision, detection = inspection.decision, inspection.detection
+    def snapshot(self, *, startup: StartupInspection | None = None) -> dict[str, Any]:
+        inspection = startup or self.inspect()
         try:
             initial_local_model = asr_models.recommended_model()["id"]
         except ValueError as exc:
             raise OnboardingError("diagnostic_required", "无法确定推荐的语音识别模型", status=409) from exc
         session = inspection.facts.session
-        if decision.entry not in {"migration_required", "diagnostic_required"} and session is not None and session.state == "in_progress" and session.project_request_id and session.project_request_hash and session.first_project_id is None:
+        if not inspection.restriction and session is not None and session.state == "in_progress" and session.project_request_id and session.project_request_hash and session.first_project_id is None:
             with self._repo() as repo:
                 durable = repo.get_idempotency_key("project.create", session.project_request_id)
                 if durable is not None:
@@ -270,44 +269,61 @@ class OnboardingCoordinator:
                     except (FirstRunStateError, ValueError) as exc:
                         raise OnboardingError("diagnostic_required", "无法恢复上次创建的项目，请提供问题编号以便排查。", status=409) from exc
             inspection = self.inspect()
-            decision, detection = inspection.decision, inspection.detection
             session = inspection.facts.session
-        session_payload = _safe_session(session)
-        if session_payload:
-            session_payload["first_project"] = inspection.facts.first_project
-        try:
-            settings = self.settings()
-        except Exception:  # noqa: BLE001 - diagnostic startup must still return a safe DTO.
-            settings = Settings()
-        resources = self._resource_summary(session.draft if session else {})
-        migration = None
-        if decision.entry in {"migration_required", "diagnostic_required", "workbench"}:
-            from .migration_coordinator import migration_summary_for_startup
-
-            migration = migration_summary_for_startup(
-                startup=inspection,
-                service_dir=self.service_dir,
-                config_path=self.config_path,
-                input_dir=self.input_dir,
-                output_root=self.output_root,
-                include_inspection=decision.entry in {"migration_required", "diagnostic_required"},
-            )
+        if inspection.restriction:
+            session_payload = None
+            environment = {
+                "status": "blocked",
+                "checks": [
+                    {
+                        "name": "startup_safety",
+                        "status": "blocked",
+                        "problem": "请先完成数据升级或问题排查，再继续操作。",
+                    }
+                ],
+            }
+            resources = {
+                "asr": {
+                    "mode": "local",
+                    "configured": False,
+                    "ready": False,
+                    "model_id": None,
+                    "model_label": None,
+                    "credential_present": False,
+                    "problem": "暂未读取模型设置。",
+                },
+                "ai": {
+                    "configured": False,
+                    "ready": False,
+                    "provider_label": None,
+                    "api_base_display": None,
+                    "model": None,
+                    "credential_present": False,
+                    "problem": "暂未读取模型设置。",
+                },
+            }
+            resources["model_catalog"] = []
+        else:
+            session_payload = _safe_session(session)
+            if session_payload:
+                session_payload["first_project"] = inspection.facts.first_project
+            try:
+                settings = self.settings()
+            except Exception:  # noqa: BLE001 - diagnostic startup must still return a safe DTO.
+                settings = Settings()
+            resources = self._resource_summary(session.draft if session else {})
+            environment = self._environment_summary(settings=settings)
         return {
             "ok": True,
-            "entry": {
-                "mode": decision.entry,
-                "onboarding": decision.onboarding,
-                "reason_code": decision.reason_code,
-                "evidence_codes": list(detection.evidence_codes),
-            },
+            "entry": inspection.entry,
             "session": session_payload,
-            "environment": self._environment_summary(settings=settings),
+            "environment": environment,
             "resources": {"asr": resources["asr"], "ai": resources["ai"]},
             "model_catalog": resources["model_catalog"],
             "initial_local_model": initial_local_model,
             "provider_presets": [dict(item) for item in onboarding.PROVIDER_PRESETS],
             "suggestions": {"project_name": "我的第一个项目", "output_directory": str(self.output_root)},
-            "migration": migration,
+            "migration": inspection.migration_summary(),
         }
 
     def _require_writable_session(
@@ -753,13 +769,15 @@ class OnboardingCoordinator:
             except ResourceError as exc:
                 raise OnboardingError(exc.code, '所选模型暂时无法使用，请返回模型详情检查。', status=422) from None
 
-    def dispatch(self, method: str, path: str, body: dict[str, Any] | None = None) -> tuple[int, dict[str, Any]] | None:
+    def dispatch(
+        self, method: str, path: str, body: dict[str, Any] | None = None, *, startup: StartupInspection | None = None,
+    ) -> tuple[int, dict[str, Any]] | None:
         parts = [item for item in path.split("?")[0].split("/") if item]
         if parts[:2] != ["api", "onboarding"]:
             return None
         body = body or {}
         if method == "GET" and parts == ["api", "onboarding"]:
-            return 200, self.snapshot()
+            return 200, self.snapshot(startup=startup)
         handlers: dict[tuple[str, tuple[str, ...]], Callable[[dict[str, Any]], tuple[int, dict[str, Any]]]] = {
             ("POST", ("api", "onboarding", "start")): self.start,
             ("PATCH", ("api", "onboarding", "session")): self.patch_session,
