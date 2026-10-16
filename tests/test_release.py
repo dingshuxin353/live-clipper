@@ -1545,6 +1545,8 @@ def test_atomic_completion_copy_and_publication_survive_kill(publish_case, bound
             process.join(timeout=5)
     remote.update(release.read_json(root.parent / 'observed-remote.json'))
     downloaded = list(remote['downloads'])
+    copied = {file.name: (file.stat().st_ino, file.stat().st_mtime_ns)
+              for file in (root / 'release-assets').glob('*') if file.is_file() and not file.name.startswith('.')}
     exit_code = release.main(args)
     if boundary == 'published' and after:
         assert exit_code == 1
@@ -1553,6 +1555,8 @@ def test_atomic_completion_copy_and_publication_survive_kill(publish_case, bound
     else:
         assert exit_code == 0
     assert all(remote['downloads'].count(item) == 1 for item in downloaded)
+    assert all(((root / 'release-assets' / name).stat().st_ino, (root / 'release-assets' / name).stat().st_mtime_ns) == identity
+               for name, identity in copied.items())
     assert remote['writes'].count('publish') == 1
     assert remote['provider_downloads'] == 1
     for evidence in (root / 'evidence').glob('*.json'):
