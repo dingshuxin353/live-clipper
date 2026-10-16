@@ -293,3 +293,97 @@ def test_backup_copy_failure_removes_partial_and_does_not_publish(tmp_path, monk
         create_migration_backup(inspection, backup_root=backup_root, migration_id="migration-fail")
     assert not (backup_root / "migration-fail").exists()
     assert not list(backup_root.glob("*.partial-*"))
+
+
+@pytest.mark.parametrize('state_file', ['service.json', 'scheduler.json', 'scheduler_runs.json', 'events.jsonl'])
+def test_verified_snapshot_preserves_original_plan_and_config_relative_paths(tmp_path, state_file):
+    config, service, source, output = _tree(tmp_path, weekly=False)
+    config.write_text(config.read_text().replace(str(source), 'recordings').replace(str(output), 'clips'))
+    runtime = service / state_file
+    runtime.write_text('{"status":"before"}\n')
+    original = inspect_legacy_state(service, config_path=config)
+    plan = build_migration_plan(original, backup_root=tmp_path / 'backups')
+    backup = create_migration_backup(original, backup_root=tmp_path / 'backups', migration_id='snapshot')
+    saved = _snapshot(backup.path)
+    runtime.write_text('{"status":"after"}\n')
+    current = inspect_legacy_state(service, config_path=config)
+    restored = migration.validate_migration_snapshot(current, migration_id='snapshot',
+        source_fingerprint=original.source_fingerprint, source_manifest=[e.to_dict() for e in original.source_manifest],
+        backup_path=backup.path)
+    assert build_migration_plan(restored, backup_root=tmp_path / 'backups').plan_hash == plan.plan_hash
+    assert restored.source_directory == str(source) and restored.output_directory == str(output)
+    assert _snapshot(backup.path) == saved
+    assert runtime.read_text() == '{"status":"after"}\n'
+
+
+@pytest.mark.parametrize('change', ['duplicate', 'unknown', 'type', 'missing-field', 'negative-size', 'bad-hash', 'missing-business'])
+def test_snapshot_rejects_invalid_original_manifest(tmp_path, change):
+    config, service, _, _ = _tree(tmp_path, weekly=False)
+    original = inspect_legacy_state(service, config_path=config)
+    manifest = [e.to_dict() for e in original.source_manifest]
+    if change == 'duplicate':
+        manifest.append(manifest[0].copy())
+    elif change == 'unknown':
+        manifest[0]['source_identity'] = '../outside'
+    elif change == 'type':
+        manifest[0]['logical_type'] = 'service'
+    elif change == 'missing-field':
+        del manifest[0]['sha256']
+    elif change == 'negative-size':
+        manifest[0]['size'] = -1
+    elif change == 'bad-hash':
+        manifest[0]['sha256'] = 'invalid'
+    else:
+        manifest.pop(0)
+    with pytest.raises(LegacySourceError, match='migration_source_invalid|migration_source_changed'):
+        migration.validate_migration_snapshot(original, migration_id='test',
+            source_fingerprint=original.source_fingerprint, source_manifest=manifest, backup_path=None)
+
+
+@pytest.mark.parametrize('damage', ['duplicate', 'metadata', 'full-fingerprint', 'parent-symlink'])
+def test_backup_verifies_entire_original_manifest_and_fingerprint(tmp_path, damage):
+    config, service, _, _ = _tree(tmp_path, weekly=False)
+    original = inspect_legacy_state(service, config_path=config)
+    backup = create_migration_backup(original, backup_root=tmp_path/'backups', migration_id='test')
+    manifest_path = backup.path/'manifest.json'
+    payload = json.loads(manifest_path.read_text())
+    fingerprint = original.source_fingerprint
+    if damage == 'duplicate':
+        payload['files'].append(payload['files'][0].copy())
+    elif damage == 'metadata':
+        payload['files'][0]['mtime_ns'] += 1
+    elif damage == 'full-fingerprint':
+        fingerprint = payload['source_fingerprint'] = 'a' * 64
+    else:
+        directory = backup.path/'files/service'
+        saved = backup.path/'service-saved'
+        directory.rename(saved)
+        directory.symlink_to(saved, target_is_directory=True)
+    manifest_path.write_text(json.dumps(payload))
+    with pytest.raises(LegacySourceError, match='migration_backup_invalid'):
+        verify_migration_backup(backup.path, migration_id='test', source_fingerprint=fingerprint,
+                                source_manifest=original.source_manifest)
+
+
+@pytest.mark.parametrize('damage', ['removed-runtime', 'runtime-symlink', 'runtime-invalid', 'business-mtime'])
+def test_current_source_guards_remain_active_with_valid_backup(tmp_path, damage):
+    config, service, _, _ = _tree(tmp_path, weekly=False)
+    original = inspect_legacy_state(service, config_path=config)
+    backup = create_migration_backup(original, backup_root=tmp_path/'backups', migration_id='test')
+    runtime = service/'service.json'
+    if damage == 'removed-runtime':
+        runtime.rename(service/'preserved-runtime')
+    elif damage == 'runtime-symlink':
+        saved = service/'preserved-runtime'
+        runtime.rename(saved)
+        runtime.symlink_to(saved)
+    elif damage == 'runtime-invalid':
+        runtime.write_text('{')
+    else:
+        stat = config.stat()
+        os.utime(config, ns=(stat.st_atime_ns, stat.st_mtime_ns+1))
+    with pytest.raises(LegacySourceError):
+        current = inspect_legacy_state(service, config_path=config)
+        migration.validate_migration_snapshot(current, migration_id='test',
+            source_fingerprint=original.source_fingerprint, source_manifest=[e.to_dict() for e in original.source_manifest],
+            backup_path=backup.path)

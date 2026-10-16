@@ -9,8 +9,8 @@ import stat
 import tempfile
 import tomllib
 from collections import Counter
-from collections.abc import Mapping
-from dataclasses import dataclass, field
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
@@ -30,6 +30,11 @@ _LEGACY_METADATA_NAMES = (
     "scheduler_runs.json",
     "events.jsonl",
 )
+_SOURCE_TYPES = {"config/live-clipper.toml": "config", **{
+    f"service/{name}": name.removesuffix(".json").removesuffix(".jsonl")
+    for name in _LEGACY_METADATA_NAMES
+}}
+_BUSINESS_SOURCES = frozenset({"config/live-clipper.toml", "service/runs.json"})
 _INTERVALS = frozenset({30, 60, 180, 360, 720})
 _DAILY_TIME = re.compile(r"(?:[01]\d|2[0-3]):[0-5]\d")
 _SAFE_RESULT_EXTENSIONS = frozenset({".m4v", ".mov", ".mp4", ".webm"})
@@ -41,6 +46,12 @@ class LegacySourceError(ValueError):
     def __init__(self, code: str) -> None:
         self.code = code
         super().__init__(code)
+
+
+class MigrationBackupNotCreatedError(OSError):
+    """The attempted first backup failed before atomic publication."""
+
+    code = "migration_backup_not_created"
 
 
 @dataclass(frozen=True)
@@ -325,20 +336,12 @@ def inspect_legacy_state(
         raise LegacySourceError("legacy_metadata_invalid")
     runs = tuple(_safe_run(raw, index) for index, raw in enumerate(raw_runs) if isinstance(raw, Mapping))
 
-    digest = hashlib.sha256()
-    for entry in sorted(entries, key=lambda item: (item.logical_type, item.source_identity)):
-        digest.update(entry.logical_type.encode())
-        digest.update(b"\0")
-        digest.update(entry.source_identity.encode())
-        digest.update(b"\0")
-        digest.update(contents[entry.source_identity])
-        digest.update(b"\0")
     return LegacyInspection(
         service_dir=service,
         config_path=config,
         source_files=tuple(source_files),
         source_manifest=tuple(entries),
-        source_fingerprint=digest.hexdigest(),
+        source_fingerprint=_source_fingerprint(entries, contents),
         source_directory=source_directory,
         output_directory=output_directory,
         timezone=timezone,
@@ -346,6 +349,70 @@ def inspect_legacy_state(
         runs=runs,
         resource_facts=_resource_facts(config_data),
     )
+
+
+def _source_fingerprint(entries: Sequence[SourceManifestEntry], contents: Mapping[str, bytes]) -> str:
+    digest = hashlib.sha256()
+    for entry in sorted(entries, key=lambda item: (item.logical_type, item.source_identity)):
+        digest.update(entry.logical_type.encode() + b"\0" + entry.source_identity.encode() + b"\0")
+        digest.update(contents[entry.source_identity])
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _parse_source_manifest(values: Sequence[Mapping[str, Any]]) -> tuple[SourceManifestEntry, ...]:
+    entries = []
+    seen = set()
+    for value in values:
+        if not isinstance(value, Mapping) or set(value) != {"logical_type", "source_identity", "size", "mtime_ns", "sha256"}:
+            raise LegacySourceError("migration_source_invalid")
+        identity = value["source_identity"]
+        if (not isinstance(identity, str) or identity not in _SOURCE_TYPES or identity in seen
+                or value["logical_type"] != _SOURCE_TYPES[identity]
+                or type(value["size"]) is not int or not 0 <= value["size"] <= MAX_SOURCE_FILE_BYTES
+                or type(value["mtime_ns"]) is not int or value["mtime_ns"] < 0
+                or not isinstance(value["sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", value["sha256"])):
+            raise LegacySourceError("migration_source_invalid")
+        seen.add(identity)
+        entries.append(SourceManifestEntry(**value))
+    if not entries or sum(item.size for item in entries) > MAX_SOURCE_BYTES:
+        raise LegacySourceError("migration_source_invalid")
+    return tuple(entries)
+
+
+def validate_migration_snapshot(
+    current: LegacyInspection, *, migration_id: str, source_fingerprint: str,
+    source_manifest: Sequence[Mapping[str, Any]], backup_path: Path | None,
+) -> LegacyInspection:
+    """Keep the original snapshot identity after verifying live business inputs."""
+    original = _parse_source_manifest(source_manifest)
+    business = {e.source_identity: e for e in current.source_manifest if e.source_identity in _BUSINESS_SOURCES}
+    expected = {e.source_identity: e for e in original if e.source_identity in _BUSINESS_SOURCES}
+    if business != expected:
+        raise LegacySourceError("migration_source_changed")
+    if {e.source_identity for e in original} - {e.source_identity for e in current.source_manifest}:
+        raise LegacySourceError("legacy_source_missing")
+    if backup_path is not None:
+        verify_migration_backup(backup_path, migration_id=migration_id,
+                                source_fingerprint=source_fingerprint, source_manifest=original)
+        files = tuple(backup_path / "files" / entry.source_identity for entry in original)
+    else:
+        paths = {entry.source_identity: path for entry, path in zip(current.source_manifest, current.source_files, strict=True)}
+        files = []
+        contents = {}
+        try:
+            for entry in original:
+                path = paths[entry.source_identity]
+                actual, data = _read_approved_file(path, logical_type=entry.logical_type, source_identity=entry.source_identity)
+                if (actual.size, actual.sha256) != (entry.size, entry.sha256):
+                    raise LegacySourceError("migration_backup_invalid")
+                files.append(path)
+                contents[entry.source_identity] = data
+        except (KeyError, OSError, LegacySourceError) as exc:
+            raise LegacySourceError("migration_backup_invalid") from exc
+        if _source_fingerprint(original, contents) != source_fingerprint:
+            raise LegacySourceError("migration_backup_invalid")
+    return replace(current, source_files=tuple(files), source_manifest=original, source_fingerprint=source_fingerprint)
 
 
 def _normalized_utc(value: Any) -> str | None:
@@ -626,17 +693,6 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
-def _backup_manifest(path: Path) -> tuple[dict[str, Any], ...]:
-    try:
-        payload = json.loads((path / "manifest.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise LegacySourceError("migration_backup_invalid") from exc
-    entries = payload.get("files") if isinstance(payload, Mapping) else None
-    if not isinstance(payload, Mapping) or payload.get("format_version") != 1 or not isinstance(entries, list):
-        raise LegacySourceError("migration_backup_invalid")
-    return tuple(dict(item) for item in entries if isinstance(item, Mapping))
-
-
 def verify_migration_backup(
     path: str | Path,
     *,
@@ -644,43 +700,36 @@ def verify_migration_backup(
     source_fingerprint: str,
     source_manifest: tuple[SourceManifestEntry, ...],
 ) -> tuple[Mapping[str, Any], ...]:
-    """Verify a published metadata-only backup without trusting its manifest."""
+    """Verify every original file and the complete snapshot, independently of live state."""
     target = _absolute(path)
-    entries = _backup_manifest(target)
-    expected = {item.source_identity: item for item in source_manifest}
-    if {str(item.get("source_identity")) for item in entries} != set(expected):
-        raise LegacySourceError("migration_backup_invalid")
-    manifest_payload = json.loads((target / "manifest.json").read_text(encoding="utf-8"))
-    if (
-        manifest_payload.get("migration_id") != migration_id
-        or manifest_payload.get("source_fingerprint") != source_fingerprint
-    ):
-        raise LegacySourceError("migration_backup_invalid")
-    for item in entries:
-        identity = str(item["source_identity"])
-        registered = expected[identity]
-        candidate = target / "files" / identity
-        try:
-            resolved = candidate.resolve(strict=True)
-            resolved.relative_to((target / "files").resolve(strict=True))
-        except (OSError, ValueError) as exc:
-            raise LegacySourceError("migration_backup_invalid") from exc
-        if candidate.is_symlink() or not candidate.is_file():
+    try:
+        original = _parse_source_manifest([entry.to_dict() for entry in source_manifest])
+        if target.resolve(strict=True) != target or not target.is_dir():
             raise LegacySourceError("migration_backup_invalid")
-        digest = hashlib.sha256()
-        size = 0
-        with candidate.open("rb") as handle:
-            while block := handle.read(1024 * 1024):
-                digest.update(block)
-                size += len(block)
-        if (
-            size != registered.size
-            or item.get("size") != registered.size
-            or digest.hexdigest() != registered.sha256
-            or item.get("sha256") != registered.sha256
-        ):
+        _, data = _read_approved_file(target / "manifest.json", logical_type="manifest", source_identity="manifest.json")
+        payload = json.loads(data)
+        expected = [entry.to_dict() for entry in original]
+        if (not isinstance(payload, Mapping)
+                or set(payload) != {"format_version", "migration_id", "source_fingerprint", "files"}
+                or type(payload["format_version"]) is not int or payload["format_version"] != 1
+                or payload["migration_id"] != migration_id
+                or payload["source_fingerprint"] != source_fingerprint or payload["files"] != expected):
             raise LegacySourceError("migration_backup_invalid")
-    return tuple(_freeze(item) for item in entries)
+        _parse_source_manifest(payload["files"])
+        contents = {}
+        for entry in original:
+            candidate = target / "files" / entry.source_identity
+            if candidate.resolve(strict=True) != candidate:
+                raise LegacySourceError("migration_backup_invalid")
+            actual, data = _read_approved_file(candidate, logical_type=entry.logical_type, source_identity=entry.source_identity)
+            if (actual.size, actual.sha256) != (entry.size, entry.sha256):
+                raise LegacySourceError("migration_backup_invalid")
+            contents[entry.source_identity] = data
+        if _source_fingerprint(original, contents) != source_fingerprint:
+            raise LegacySourceError("migration_backup_invalid")
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        raise LegacySourceError("migration_backup_invalid") from exc
+    return tuple(_freeze(entry) for entry in expected)
 
 
 def create_migration_backup(
@@ -707,6 +756,7 @@ def create_migration_backup(
         return MigrationBackup(path=target, reused=True, manifest=manifest)
 
     partial = Path(tempfile.mkdtemp(prefix=f".{migration_id}.partial-", dir=root))
+    publication_started = False
     try:
         files_root = partial / "files"
         files_root.mkdir()
@@ -750,6 +800,7 @@ def create_migration_backup(
         for directory in sorted((item for item in partial.rglob("*") if item.is_dir()), reverse=True):
             _fsync_directory(directory)
         _fsync_directory(partial)
+        publication_started = True
         os.rename(partial, target)
         _fsync_directory(root)
         manifest = verify_migration_backup(
@@ -759,6 +810,8 @@ def create_migration_backup(
             source_manifest=inspection.source_manifest,
         )
         return MigrationBackup(path=target, reused=False, manifest=manifest)
-    except Exception:
+    except Exception as exc:
         shutil.rmtree(partial, ignore_errors=True)
+        if not publication_started:
+            raise MigrationBackupNotCreatedError(str(exc)) from exc
         raise

@@ -20,11 +20,13 @@ from .project_migration import (
     PLAN_VERSION,
     LegacyInspection,
     LegacySourceError,
+    MigrationBackupNotCreatedError,
     MigrationPlan,
     SourceManifestEntry,
     build_migration_plan,
     create_migration_backup,
     inspect_legacy_state,
+    validate_migration_snapshot,
     verify_migration_backup,
 )
 from .project_result_domain import RequestConflictError, RevisionConflictError
@@ -411,7 +413,7 @@ class MigrationCoordinator:
             key = (str(self.service_dir), session.migration_id)
             future = self._futures.get(key)
             if session.state == "backing_up" and (future is None or future.done()):
-                self._futures[key] = self._submit_owned(execution.pop_all(), self._run, inspection, plan, session.migration_id)
+                self._futures[key] = self._submit_owned(execution.pop_all(), self._run, plan, session.migration_id, True)
         return 202, {"ok": True, "session": self._session_payload(session)}
 
     def retry(self, body: Mapping[str, Any]) -> tuple[int, dict[str, Any]]:
@@ -473,9 +475,10 @@ class MigrationCoordinator:
             if repository.get_migration_session(migration_id).revision != expected_revision:
                 raise MigrationError('revision_conflict', '升级状态已变化，请重新读取后重试。')
             try:
-                inspection = self._inspection()
-                if inspection.source_fingerprint != current.source_fingerprint:
-                    raise MigrationError("migration_source_changed", "旧版数据与本次升级记录不一致，无法直接继续升级。请记录问题编号并联系开发者排查。")
+                create_first_backup = self._first_backup_unpublished(current)
+                if create_first_backup and (repository.get_data_mode() != 'legacy' or repository.list_projects()):
+                    raise MigrationError('migration_completion_conflict', '已存在项目，不能重新创建升级备份。')
+                inspection = self._session_inspection(current)
                 plan = build_migration_plan(inspection, choices=current.choices, backup_root=self.backup_root)
                 if plan.backup_summary["space_status"] != "ready":
                     raise MigrationError("migration_space_insufficient", "备份空间不足，请释放磁盘空间后重试升级。")
@@ -488,11 +491,13 @@ class MigrationCoordinator:
                     raise
                 raise error from exc
             with repository.transaction():
-                retrying = repository.update_migration_stage(migration_id, expected_revision, state="backing_up", stage="copy", backup_status="pending")
+                # Clear the failed-publication receipt before a retry can publish its first backup.
+                retrying = repository.update_migration_stage(migration_id, expected_revision, state="backing_up", stage="copy",
+                    backup_status="pending" if create_first_backup else "completed")
                 repository.save_idempotency_key(scope, request_id, request_hash=digest, object_type="migration", object_id=migration_id)
             key = (str(self.service_dir), migration_id)
             try:
-                self._futures[key] = self._submit_owned(execution.pop_all(), self._run, inspection, plan, migration_id)
+                self._futures[key] = self._submit_owned(execution.pop_all(), self._run, plan, migration_id, create_first_backup)
             except Exception as exc:
                 repository.record_migration_failure(migration_id, retrying.revision, failure_code="migration_apply_failed", failure_summary=_safe_failure_summary(exc), backup_status=current.backup_status)
                 raise MigrationError("migration_apply_failed", "无法开始升级，请重新读取升级状态。") from exc
@@ -504,19 +509,10 @@ class MigrationCoordinator:
                 or session.report.get('project', {}).get('project_id') != session.project_id
                 or session.backup_status != 'completed' or not session.backup_path):
             raise MigrationError('migration_completion_conflict', '无法确认已保存的升级结果，请保留数据并联系开发者排查。')
-        inspection = self._inspection()
-        if inspection.source_fingerprint != session.source_fingerprint:
-            raise MigrationError('migration_source_changed', '旧版设置或记录已变化，无法安全继续原来的升级。')
+        inspection = self._session_inspection(session)
         plan = build_migration_plan(inspection, choices=session.choices, backup_root=self.backup_root)
         if plan.plan_hash != session.plan_hash:
             raise MigrationError('migration_plan_changed', '升级设置已变化，无法安全继续原来的升级。')
-        try:
-            backup = self._authorized_backup_path(session.migration_id, session.backup_path)
-            verify_migration_backup(backup, migration_id=session.migration_id,
-                                    source_fingerprint=session.source_fingerprint,
-                                    source_manifest=inspection.source_manifest)
-        except (MigrationError, LegacySourceError, OSError, ValueError, TypeError) as exc:
-            raise MigrationError('migration_backup_invalid', '无法核验原升级备份，请保留数据并联系开发者排查。') from exc
         for project in repository.list_projects():
             refs = repository.get_config_revision(project.project_id).config['resources']
             for value in refs.values():
@@ -534,6 +530,29 @@ class MigrationCoordinator:
         if any(credentials) and not (self.service_dir / 'resource-migration-owned.jsonl').exists():
             raise MigrationError('migration_credential_source_unknown', '原升级没有记录这份凭据的来源，暂时不能自动绑定当前凭据。请保留数据并联系开发者排查。')
         return settings
+
+    def _first_backup_unpublished(self, session: MigrationSession) -> bool:
+        target = self.backup_root / session.migration_id
+        return (session.failure_code == 'migration_backup_not_created' and session.backup_status == 'failed'
+                and not session.project_id and session.state == 'failed_rolled_back'
+                and session.backup_path == str(target) and not target.exists() and not target.is_symlink())
+
+    def _session_inspection(self, session: MigrationSession) -> LegacyInspection:
+        current = self._inspection()
+        try:
+            if self._first_backup_unpublished(session):
+                backup = None
+            else:
+                backup = self._authorized_backup_path(session.migration_id, session.backup_path)
+            return validate_migration_snapshot(current, migration_id=session.migration_id,
+                source_fingerprint=session.source_fingerprint, source_manifest=session.source_manifest,
+                backup_path=backup)
+        except LegacySourceError as exc:
+            message = ("旧版数据与本次升级记录不一致，无法直接继续升级。" if exc.code == 'migration_source_changed'
+                       else "无法核验原升级快照，请保留数据并联系开发者排查。")
+            raise MigrationError(exc.code, message) from exc
+        except (MigrationError, OSError, ValueError, TypeError) as exc:
+            raise MigrationError('migration_backup_invalid', '无法核验原升级备份，请保留数据并联系开发者排查。') from exc
 
     def _resume_resources(self, migration_id: str) -> None:
         from .resource_migration import prepare_resource_migration
@@ -780,32 +799,33 @@ class MigrationCoordinator:
                 parent = parent.parent
         owner.unlink()
 
-    def _run(self, inspection: LegacyInspection, plan: MigrationPlan, migration_id: str) -> None:
+    def _run(self, plan: MigrationPlan, migration_id: str, create_first_backup: bool) -> None:
         repository: ProjectRepository | None = None
         try:
-            current_inspection = self._inspection()
-            if current_inspection.source_fingerprint != inspection.source_fingerprint:
-                raise MigrationError("migration_source_changed", "旧版数据与本次升级记录不一致，无法直接继续升级。请记录问题编号并联系开发者排查。")
-            backup = create_migration_backup(
-                current_inspection,
-                backup_root=self.backup_root,
-                migration_id=migration_id,
-            )
             repository = ProjectRepository(self.service_dir)
             current = repository.get_migration_session(migration_id)
             if current is None:
                 raise MigrationStateError("migration session disappeared")
+            if create_first_backup:
+                current_inspection = validate_migration_snapshot(self._inspection(), migration_id=migration_id,
+                    source_fingerprint=current.source_fingerprint, source_manifest=current.source_manifest, backup_path=None)
+            else:
+                current_inspection = self._session_inspection(current)
+            backup_path = self.backup_root / migration_id
+            if create_first_backup:
+                backup_path = create_migration_backup(current_inspection,
+                    backup_root=self.backup_root, migration_id=migration_id).path
             backed_up = repository.update_migration_stage(
                 migration_id,
                 current.revision,
                 state="backing_up",
                 stage="copy",
                 backup_status="completed",
-                backup_path=str(backup.path),
+                backup_path=str(backup_path),
             )
-            after_backup = self._inspection()
-            if after_backup.source_fingerprint != inspection.source_fingerprint:
-                raise MigrationError("migration_source_changed", "备份后检测到旧版数据与本次升级记录不一致，无法直接继续升级。请记录问题编号并联系开发者排查。")
+            after_backup = self._session_inspection(backed_up)
+            if build_migration_plan(after_backup, choices=current.choices, backup_root=self.backup_root).plan_hash != current.plan_hash:
+                raise MigrationError('migration_plan_changed', '升级设置已变化，无法安全继续原来的升级。')
             migrating = repository.update_migration_stage(
                 migration_id,
                 backed_up.revision,
@@ -897,7 +917,7 @@ class MigrationCoordinator:
                         return
                     self._cleanup_evidence(repository, current)
                     backup_status = "completed" if current.backup_status == "completed" else "failed"
-                    code = exc.code if isinstance(exc, MigrationError) else ("migration_resources_failed" if current.stage == "resources" else "migration_apply_failed")
+                    code = exc.code if isinstance(exc, (MigrationError, LegacySourceError, MigrationBackupNotCreatedError)) else ("migration_resources_failed" if current.stage == "resources" else "migration_apply_failed")
                     repository.record_migration_failure(
                         migration_id,
                         current.revision,

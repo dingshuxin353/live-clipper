@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- Fixed interrupted upgrades being blocked after background service status changes, while preserving the original project, history, and backup.
 - Fixed repeated database waits when reading upgrade status or saved history while the database is busy.
 - Fixed local backend connection failures when several requests arrive at once.
 - Fixed concurrent background service updates causing status queries to fail or losing saved status fields and error counts.

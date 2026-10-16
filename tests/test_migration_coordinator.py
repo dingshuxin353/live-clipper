@@ -857,3 +857,162 @@ def test_dispatch_migration_reuses_readable_facts_without_reopening_database(tmp
             coordinator.dispatch('GET', '/api/migration/migration-1/history', startup=startup)
         assert writer.in_transaction
         _assert_readers_closed(readers)
+
+
+def test_failed_transaction_retries_after_stop_without_replacing_backup(tmp_path):
+    from test_migration_completion import execute, finish
+
+    coordinator, service_dir = _legacy_home(tmp_path)
+    def fail(stage):
+        if stage == 'after_project':
+            raise OSError('transaction interrupted')
+    coordinator.fault_injection = fail
+    session = execute(coordinator)
+    failed = finish(coordinator, session)['session']
+    assert failed['state'] == 'failed_rolled_back'
+    backup_before = _tree_facts(coordinator.backup_root)
+    service.stop_service(service_dir=service_dir)
+    coordinator.fault_injection = None
+    body = {'request_id': 'retry-after-stop', 'migration_id': session['migration_id'],
+            'expected_revision': failed['revision']}
+    accepted = coordinator.retry(body)[1]['session']
+    completed = finish(coordinator, accepted)
+    assert completed['entry'] == 'completed'
+    assert completed['session']['migration_id'] == session['migration_id']
+    assert _tree_facts(coordinator.backup_root) == backup_before
+    assert coordinator.retry(body)[1]['session']['revision'] == completed['session']['revision']
+
+
+@pytest.mark.parametrize('original_runtime', [False, True])
+def test_first_backup_retry_requires_original_bytes_and_proven_failed_publication(tmp_path, monkeypatch, original_runtime):
+    from test_migration_completion import execute, finish
+
+    from live_clipper import project_migration
+
+    coordinator, service_dir = _legacy_home(tmp_path)
+    if original_runtime:
+        service.stop_service(service_dir=service_dir)
+    write = project_migration.os.write
+    def disk_failure(_descriptor, _data):
+        raise OSError('test disk write failure')
+    with monkeypatch.context() as fault:
+        fault.setattr(project_migration.os, 'write', disk_failure)
+        accepted = execute(coordinator)
+        failed = finish(coordinator, accepted)['session']
+    assert project_migration.os.write is write
+    assert failed['failure']['code'] == 'migration_backup_not_created'
+    backup = coordinator.backup_root / failed['migration_id']
+    assert not backup.exists()
+    service.stop_service(service_dir=service_dir)
+    body = {'request_id': 'retry-first-backup', 'migration_id': failed['migration_id'],
+            'expected_revision': failed['revision']}
+    if original_runtime:
+        with pytest.raises(MigrationError, match='migration_backup_invalid'):
+            coordinator.retry(body)
+        assert not backup.exists()
+    else:
+        retried = coordinator.retry(body)[1]['session']
+        completed = finish(coordinator, retried)
+        assert completed['entry'] == 'completed'
+        assert completed['session']['migration_id'] == failed['migration_id']
+        assert not (backup / 'files/service/service.json').exists()
+
+
+@pytest.mark.parametrize('known_published', [True, False])
+def test_missing_backup_is_not_recreated_without_proof_of_first_publication(tmp_path, known_published):
+    from test_migration_completion import execute, finish
+
+    coordinator, _ = _legacy_home(tmp_path)
+    def fail(stage):
+        if stage == 'after_project':
+            raise OSError('test transaction failure')
+    coordinator.fault_injection = fail
+    accepted = execute(coordinator)
+    failed = finish(coordinator, accepted)['session']
+    backup = coordinator.backup_root / failed['migration_id']
+    backup.rename(backup.with_name('preserved-original'))
+    if not known_published:
+        with ProjectRepository(coordinator.service_dir) as repository:
+            repository.record_migration_failure(failed['migration_id'], failed['revision'],
+                failure_code='migration_interrupted', failure_summary='interrupted before outcome recorded', backup_status='failed')
+        failed = coordinator.snapshot()['session']
+    coordinator.fault_injection = None
+    with pytest.raises(MigrationError, match='migration_backup_invalid'):
+        coordinator.retry({'request_id': 'missing-backup', 'migration_id': failed['migration_id'],
+                           'expected_revision': failed['revision']})
+    assert not backup.exists()
+    with ProjectRepository(coordinator.service_dir) as repository:
+        assert not repository.list_projects() and not repository.list_runs()
+
+
+@pytest.mark.parametrize('when', ['before-copy', 'after-publication'])
+def test_new_execution_allows_runtime_creation_around_backup(tmp_path, monkeypatch, when):
+    from threading import current_thread
+
+    from test_migration_completion import finish
+
+    from live_clipper import project_migration
+
+    coordinator, service_dir = _legacy_home(tmp_path)
+    plan = _validated(coordinator)
+    changed = []
+    original_open, original_rename = project_migration.os.open, project_migration.os.rename
+    def observed_open(path, *args, **kwargs):
+        if (when == 'before-copy' and str(path) == str(coordinator.config_path)
+                and current_thread().name.startswith('venus-migration') and not changed):
+            changed.append(True)
+            service.stop_service(service_dir=service_dir)
+        return original_open(path, *args, **kwargs)
+    def observed_rename(source, target, *args, **kwargs):
+        result = original_rename(source, target, *args, **kwargs)
+        if when == 'after-publication' and str(target).startswith(str(coordinator.backup_root)) and not changed:
+            changed.append(True)
+            service.stop_service(service_dir=service_dir)
+        return result
+    monkeypatch.setattr(project_migration.os, 'open', observed_open)
+    monkeypatch.setattr(project_migration.os, 'rename', observed_rename)
+    accepted = coordinator.execute({'request_id': 'runtime-around-backup', 'source_fingerprint': plan['source_fingerprint'],
+                                    'plan_hash': plan['plan_hash'], 'choices': plan['choices']})[1]['session']
+    result = finish(coordinator, accepted)
+    assert changed and result['entry'] == 'completed'
+    with ProjectRepository(service_dir) as repository:
+        stored = repository.get_migration_session(accepted['migration_id'])
+        assert stored.source_fingerprint == plan['source_fingerprint'] and stored.plan_hash == plan['plan_hash']
+        assert not any(e['source_identity'] == 'service/service.json' for e in stored.source_manifest)
+    assert (service_dir/'service.json').exists()
+    assert not (coordinator.backup_root/accepted['migration_id']/'files/service/service.json').exists()
+
+
+def test_first_backup_retry_clears_nonpublication_proof_before_publication(tmp_path, monkeypatch):
+    from test_migration_completion import execute, finish
+
+    from live_clipper import project_migration
+
+    coordinator, _ = _legacy_home(tmp_path)
+    def disk_failure(*_args):
+        raise OSError('write failed')
+    with monkeypatch.context() as fault:
+        fault.setattr(project_migration.os, 'write', disk_failure)
+        failed = finish(coordinator, execute(coordinator))['session']
+    assert failed['failure']['code'] == 'migration_backup_not_created'
+    rename = project_migration.os.rename
+    observed = []
+    def uncertain_publication(source, target):
+        with ProjectRepository(coordinator.service_dir) as observer:
+            session = observer.get_migration_session(failed['migration_id'])
+            assert session.failure_code is None and session.state == 'backing_up'
+        rename(source, target)
+        observed.append(True)
+        raise OSError('publication outcome interrupted')
+    with monkeypatch.context() as fault:
+        fault.setattr(project_migration.os, 'rename', uncertain_publication)
+        accepted = coordinator.retry({'request_id': 'publication-interruption', 'migration_id': failed['migration_id'],
+                                      'expected_revision': failed['revision']})[1]['session']
+        result = finish(coordinator, accepted)['session']
+    assert observed and result['failure']['code'] != 'migration_backup_not_created'
+    backup = coordinator.backup_root/failed['migration_id']
+    backup.rename(backup.with_name('preserved-published'))
+    with pytest.raises(MigrationError, match='migration_backup_invalid'):
+        coordinator.retry({'request_id': 'no-rebuild-after-publication', 'migration_id': failed['migration_id'],
+                           'expected_revision': result['revision']})
+    assert not backup.exists()

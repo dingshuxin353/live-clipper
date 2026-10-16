@@ -93,12 +93,16 @@ def test_resource_creation_failure_rolls_back_whole_migration_and_owned_credenti
     assert list((service_dir / 'resource-credentials').glob('*.env')) == []
 
 
-def released_half_complete(tmp_path, *, acknowledged=False, asr_backend='mlx_whisper'):
+def released_half_complete(tmp_path, *, acknowledged=False, asr_backend='mlx_whisper', service_state=False):
     """Execute the released storage transaction, without its later resource conversion."""
     from live_clipper.project_domain import legacy_id
     from live_clipper.project_migration import build_migration_plan, create_migration_backup
 
     coordinator, service_dir = _legacy_home(tmp_path)
+    if service_state:
+        from live_clipper.service import stop_service
+
+        stop_service(service_dir=service_dir)
     coordinator.config_path.write_text(coordinator.config_path.read_text().replace('[asr]\n', f'[asr]\nbackend = "{asr_backend}"\n'))
     choices = _validated(coordinator)['choices']
     inspection = coordinator._inspection()
@@ -129,6 +133,62 @@ def released_half_complete(tmp_path, *, acknowledged=False, asr_backend='mlx_whi
         if acknowledged:
             session = repo.acknowledge_migration_session(migration_id, session.revision)
     return coordinator, session
+
+
+@pytest.mark.parametrize('service_state', [False, True])
+def test_half_complete_http_resume_after_service_stop_preserves_original_snapshot(tmp_path, service_state):
+    import json
+    import os
+    import subprocess
+    import sys
+
+    from test_migration_coordinator import _tree_facts
+
+    from live_clipper.migration_coordinator import MigrationCoordinator
+    from live_clipper.service import stop_service
+
+    coordinator, original = released_half_complete(tmp_path, service_state=service_state)
+    with ProjectRepository(coordinator.service_dir) as repository:
+        history = repository.list_runs()
+        project = repository.get_project(original.project_id)
+    backup_before = _tree_facts(coordinator.backup_root)
+    stop_service(service_dir=coordinator.service_dir)
+    with migration_http(coordinator) as request:
+        status, accepted = request('/api/migration/retry', {
+            'request_id': 'resume-after-stop', 'migration_id': original.migration_id,
+            'expected_revision': original.revision,
+        })
+        assert status == 202, accepted
+        assert finish(coordinator, accepted['session'])['entry'] == 'completed'
+    restarted = MigrationCoordinator(service_dir=coordinator.service_dir, config_path=coordinator.config_path,
+        env_path=coordinator.env_path, input_dir=coordinator.input_dir, output_root=coordinator.output_root)
+    with migration_http(restarted) as request:
+        assert request('/api/migration')[1]['entry'] == 'completed'
+    with ProjectRepository(coordinator.service_dir) as repository:
+        current = repository.get_migration_session(original.migration_id)
+        assert current.project_id == original.project_id
+        assert (current.source_fingerprint, current.source_manifest, current.plan_hash, current.choices) == (
+            original.source_fingerprint, original.source_manifest, original.plan_hash, original.choices)
+        assert repository.list_runs() == history
+        assert repository.get_project(original.project_id).activation_state == project.activation_state
+        assert len(repository.list_projects()) == len(repository.list_migration_sessions()) == 1
+    assert _tree_facts(coordinator.backup_root) == backup_before
+    child = subprocess.run([sys.executable, '-B', '-c', '''
+import json, sys
+from pathlib import Path
+from live_clipper.migration_coordinator import MigrationCoordinator
+from test_migration_completion import migration_http
+root = Path(sys.argv[1])
+coordinator = MigrationCoordinator(service_dir=root/'work/service', config_path=root/'live-clipper.toml',
+    env_path=root/'.env', input_dir=root/'input', output_root=root/'output')
+with migration_http(coordinator) as request:
+    print(json.dumps(request('/api/migration')))
+''', str(tmp_path)], env={**os.environ, 'LIVE_CLIPPER_HOME': str(tmp_path),
+        'PYTHONPATH': os.pathsep.join(sys.path)}, capture_output=True, text=True, timeout=10, check=True)
+    status, payload = json.loads(child.stdout)
+    assert status == 200 and payload['entry'] == 'completed'
+    assert payload['session']['migration_id'] == original.migration_id
+    assert payload['session']['project_id'] == original.project_id
 
 
 @pytest.mark.parametrize('acknowledged', [False, True])
@@ -484,3 +544,75 @@ def test_credential_unused_by_this_conversion_is_not_bound(tmp_path, key, backen
     assert finish(coordinator, accepted)['session']['state'] == 'completed_attention'
     with ProjectRepository(coordinator.service_dir) as repository:
         assert not repository.connection.execute('SELECT 1 FROM resource_revisions WHERE binding_ref IS NOT NULL').fetchone()
+
+
+@pytest.mark.parametrize('change', ['runtime', 'config', 'runs'])
+def test_http_resume_rechecks_source_after_acceptance_before_background_work(tmp_path, change):
+    from live_clipper.service import stop_service
+
+    coordinator, original = released_half_complete(tmp_path, service_state=True)
+    with ProjectRepository(coordinator.service_dir) as repository:
+        before = repository.list_runs(), repository.list_projects()
+    release = Event()
+    occupied = [Event(), Event()]
+    def occupy(ready):
+        ready.set()
+        assert release.wait(10)
+    blockers = [coordinator._executor.submit(occupy, ready) for ready in occupied]
+    try:
+        assert all(ready.wait(5) for ready in occupied)
+        with migration_http(coordinator) as request:
+            status, payload = request('/api/migration/retry', {
+                'request_id': 'queued-resume', 'migration_id': original.migration_id,
+                'expected_revision': original.revision,
+            })
+            assert status == 202
+            if change == 'runtime':
+                stop_service(service_dir=coordinator.service_dir)
+            else:
+                path = coordinator.config_path if change == 'config' else coordinator.service_dir / 'runs.json'
+                path.write_text(path.read_text() + '\n')
+            release.set()
+            result = finish(coordinator, payload['session'])
+            if change == 'runtime':
+                assert result['entry'] == 'completed'
+            else:
+                assert result['entry'] == 'incomplete'
+                assert result['session']['failure']['code'] == 'migration_source_changed'
+                with ProjectRepository(coordinator.service_dir) as repository:
+                    assert (repository.list_runs(), repository.list_projects()) == before
+                    assert not ResourceStore(repository).list()
+    finally:
+        release.set()
+        for future in blockers:
+            future.result(timeout=5)
+
+
+@pytest.mark.parametrize('damage', ['missing', 'runtime-content', 'manifest'])
+def test_half_complete_rejects_damaged_original_backup_after_service_stop(tmp_path, damage):
+    from pathlib import Path
+
+    from live_clipper.service import stop_service
+
+    coordinator, original = released_half_complete(tmp_path, service_state=True)
+    backup = Path(original.backup_path)
+    if damage == 'missing':
+        backup.rename(backup.with_name('preserved-original'))
+    elif damage == 'runtime-content':
+        (backup / 'files/service/service.json').write_text('{}')
+    else:
+        (backup / 'manifest.json').write_text('{}')
+    stop_service(service_dir=coordinator.service_dir)
+    with ProjectRepository(coordinator.service_dir) as repository:
+        before = repository.list_runs(), repository.list_projects()
+    with migration_http(coordinator) as request:
+        status, payload = request('/api/migration/retry', {
+            'request_id': 'bad-original-backup', 'migration_id': original.migration_id,
+            'expected_revision': original.revision,
+        })
+        assert status == 409 and payload['error']['code'] == 'migration_backup_invalid'
+    with ProjectRepository(coordinator.service_dir) as repository:
+        assert (repository.list_runs(), repository.list_projects()) == before
+        assert not ResourceStore(repository).list()
+    if damage == 'missing':
+        assert not backup.exists()
