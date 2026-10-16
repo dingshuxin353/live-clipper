@@ -13,6 +13,7 @@ import pytest
 SPEC = importlib.util.spec_from_file_location("release", Path(__file__).parents[1] / "scripts/release.py")
 release = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(release)
+REAL_RUN = release.run
 
 
 def test_signature_runtime_is_parsed_from_codesign_flags():
@@ -235,50 +236,23 @@ def test_anonymous_download_rejects_non_https_before_writing(tmp_path):
     assert list(tmp_path.iterdir()) == []
 
 
-def test_publish_rejects_pending_acceptance_before_tag_or_apple(tmp_path, monkeypatch):
-    import argparse
-
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    monkeypatch.setattr(release, "ROOT", repo)
-    root = tmp_path / "release"
-    root.mkdir()
-    manifest = root / "candidate-manifest.json"
-    manifest.write_text("{}")
-    acceptance = root / "acceptance.json"
-    acceptance.write_text(json.dumps(release.acceptance_template(manifest, "a" * 40)))
-    info = {"version": "1.0.2", "github": "example/repo"}
-    monkeypatch.setattr(release, "verify_candidate", lambda *_: {**info, "source": "a" * 40, "tools": {}})
-    monkeypatch.setattr(release, "metadata", lambda *_: info)
-    monkeypatch.setattr(release, "check_source", lambda *_: None)
-    monkeypatch.setattr(release, "tools_snapshot", lambda: {})
-    calls = []
-    monkeypatch.setattr(release, "ensure_tag", lambda *_: calls.append("tag"))
-    with pytest.raises(release.ReleaseError, match="reviewer"):
-        release.publish(argparse.Namespace(candidate=manifest, acceptance=acceptance, confirm_version="v1.0.2"))
-    assert calls == []
+def test_publish_rejects_pending_acceptance_before_tag_or_apple(publish_case):
+    root, remote, args = publish_case
+    acceptance = release.read_json(root / 'acceptance.json')
+    acceptance['reviewer'] = ''
+    release.atomic_json(root / 'acceptance.json', acceptance)
+    assert release.main(args) == 1
+    assert remote['writes'] == []
 
 
-def test_partial_upload_reconciles_existing_bytes_and_only_uploads_missing(tmp_path, monkeypatch):
-    calls = []
-    monkeypatch.setattr(release, "run", lambda args, **kwargs: calls.append(args) or "")
-    verified = []
-    monkeypatch.setattr(release, "verify_remote_asset", lambda _info, _tag, name, *_: verified.append(name))
-    (tmp_path / "finalize").mkdir()
-    names = list(release.asset_names('1.0.2').values())
-    for name in names:
-        (tmp_path / 'finalize' / name).write_bytes(b'frozen')
-    final = {'assets': {name: {'size': 6, 'sha256': release.sha256(tmp_path / 'finalize' / name)} for name in names}}
-    release.upload_assets(tmp_path, {'version': '1.0.2', 'github': 'example/repo'}, final,
-                          {'draft': True, 'assets': [{'name': name} for name in names[:-1]]}, {}, tmp_path / 'progress.json')
-    assert len(calls) == 1 and str(calls[0][4]).endswith(names[-1])
-    assert verified == names
-    calls.clear()
-    del final['assets'][names[-1]]
-    with pytest.raises(release.ReleaseError, match='Five'):
-        release.upload_assets(tmp_path, {'version': '1.0.2'}, final, {'assets': []}, {}, tmp_path / 'progress.json')
-    assert calls == []
-
+def test_partial_upload_reconciles_existing_bytes_and_only_uploads_missing(publish_case):
+    _root, remote, args = publish_case
+    remote['lost_response'] = 'upload'
+    assert release.main(args) == 1
+    remote['lost_response'] = None
+    assert release.main(args) == 1
+    uploads = [item for item in remote['writes'] if item.startswith('upload:')]
+    assert len(uploads) == len(set(uploads)) == 3
 
 
 def test_unowned_existing_release_is_never_adopted(tmp_path, monkeypatch):
@@ -408,6 +382,7 @@ def test_retained_release_backend_and_previous_updater(tmp_path):
     old = Path(os.environ["VENUS_RELEASE_TEST_PREVIOUS_ZIP"]).resolve()
     current = Path(os.environ["VENUS_RELEASE_TEST_CURRENT_ZIP"]).resolve()
     originals = {file: release.sha256(file) for file in (old, current)}
+    release.atomic_json(tmp_path / "owner.json", {"format": 1, "repo": str(release.ROOT), "id": "retained-test", "source": "test"})
     evidence = tmp_path / "evidence"
     evidence.mkdir()
     release.extract_zip(old, tmp_path / "previous")
@@ -741,7 +716,8 @@ def test_changed_tool_snapshot_stops_before_build_or_external_writes(tmp_path, m
     monkeypatch.setattr(release, "check_source", lambda *_: None)
     monkeypatch.setattr(release, "git", lambda *_: "a" * 40)
     monkeypatch.setattr(release, "verify_candidate", lambda *_: {
-        **info, "source": "a" * 40, "previous_tag": "v1.0.3", "tools": frozen})
+        **info, "owner_id": "test-owner", "source": "a" * 40, "previous_tag": "v1.0.3", "tools": frozen})
+    release.atomic_json(root / "owner.json", {"format": 1, "repo": str(repo), "id": "test-owner", "source": "a" * 40})
     monkeypatch.setattr(release, "tools_snapshot", lambda: changed)
     monkeypatch.setattr(release, "run", lambda *_a, **_kw: pytest.fail("No build or external command allowed"))
     monkeypatch.setattr(release, "ensure_tag", lambda *_: pytest.fail("No tag allowed"))
@@ -750,7 +726,7 @@ def test_changed_tool_snapshot_stops_before_build_or_external_writes(tmp_path, m
             release.candidate(argparse.Namespace(previous_published_manifest=None, source="a" * 40, previous_tag="v1.0.3", output=root))
         else:
             release.publish(argparse.Namespace(candidate=manifest, acceptance=root / "acceptance.json", confirm_version="v1.0.4"))
-    assert sorted(p.name for p in root.iterdir()) == ["candidate-manifest.json"]
+    assert sorted(p.name for p in root.iterdir()) == ["candidate-manifest.json", "owner.json"]
 
 
 def test_resolved_python_creates_working_copied_venv_and_media_environment(tmp_path, monkeypatch):
@@ -1146,3 +1122,499 @@ def test_previous_network_zip_digest_is_checked_before_extraction(previous_input
     with pytest.raises(release.ReleaseError, match='bytes mismatch'):
         release.previous_app(root, 'example/repo', 'v1.0.1', {})
     assert not (root / 'evidence/previous-input.json').exists()
+
+
+@pytest.fixture
+def publish_case(tmp_path, monkeypatch, apple_tools):
+    """Real publish orchestration and files; only external command/download I/O is replaced."""
+    original_run = release.run
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    for name in ('pyproject.toml', 'CHANGELOG.md', 'frontend/package.json', 'frontend/package-lock.json',
+                 'desktop/package.json', 'desktop/package-lock.json', 'desktop/electron-builder.yml',
+                 'desktop/build/app-update.yml', 'scripts/release.py', 'scripts/release-smoke.cjs'):
+        target = repo / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(SPEC.origin if name == 'scripts/release.py' else Path(SPEC.origin).parents[1] / name, target)
+    (repo / '.gitignore').write_text('desktop/node_modules/\n')
+    def local_git(*args):
+        return subprocess.check_output(['git', '-C', str(repo), *args], text=True).strip()
+    local_git('init', '-b', 'master')
+    local_git('config', 'user.email', 'release-test@example.test')
+    local_git('config', 'user.name', 'Release test')
+    local_git('add', '.')
+    local_git('commit', '-qm', 'Isolated release fixture')
+    source = local_git('rev-parse', 'HEAD')
+    monkeypatch.setattr(release, 'ROOT', repo)
+    info = release.metadata(repo)
+    local_git('remote', 'add', 'origin', 'https://github.com/' + info['github'] + '.git')
+    root = tmp_path / 'release'
+    owner = release.create_root(root, repo, source)
+    frozen = release.owned_directory(root, 'source')
+    subprocess.run(['git', 'clone', '-q', str(repo), str(frozen)], check=True)
+    (frozen / 'desktop/node_modules').mkdir()
+    previous = release.owned_directory(root, 'previous')
+    (previous / 'input.zip').write_bytes(b'previous package')
+    if os.environ.get('VENUS_RELEASE_TEST_PREVIOUS_ZIP'):
+        import zipfile
+        with zipfile.ZipFile(os.environ['VENUS_RELEASE_TEST_PREVIOUS_ZIP']) as bundle:
+            for name in ('Contents/Resources/app.asar', 'Contents/Resources/app-update.yml'):
+                target = previous / 'unpacked/Venus.app' / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(bundle.read('Venus.app/' + name))
+    assets = release.owned_directory(root, 'candidate')
+    for name in release.asset_names(info['version']).values():
+        (assets / name).write_bytes(('release fixture ' + name).encode())
+    archive = assets / release.asset_names(info['version'])['zip']
+    (assets / 'latest-mac.yml').write_text(f"version: {info['version']}\nfiles:\n  - url: {archive.name}\n    sha512: {release.sha512(archive)}\n    size: {archive.stat().st_size}\npath: {archive.name}\nsha512: {release.sha512(archive)}\nreleaseDate: 2026-10-16T00:00:00.000Z\n")
+    notice = assets / 'mac-arm64/Venus.app/Contents/Resources/licenses/ffmpeg/CORRESPONDING-SOURCE.md'
+    notice.parent.mkdir(parents=True)
+    media = assets / release.asset_names(info['version'])['media_source']
+    notice.write_text(f"https://github.com/{info['github']}/releases/download/v{info['version']}/{media.name}\n{release.sha256(media)}")
+    final = release.owned_directory(root, 'finalize')
+    shutil.copytree(assets, final, dirs_exist_ok=True)
+    tools = release.tools_snapshot()
+    manifest = {'format': 1, **info, 'owner_id': owner['id'], 'source': source, 'tools': tools,
+                'notary_profile': 'test-only', 'candidate_inventory': release.inventory(assets),
+                'assets': release.asset_records(assets, info['version']), 'evidence': {},
+                'previous_inventory': release.inventory(previous), 'node_dependencies': {}}
+    release.atomic_json(root / 'candidate-manifest.json', manifest)
+    final_manifest = {'candidate_sha256': release.sha256(root / 'candidate-manifest.json'), 'source': source,
+                      'inventory': release.inventory(final), 'assets': manifest['assets']}
+    release.atomic_json(root / 'final-manifest.json', final_manifest)
+    evidence = root / 'evidence/human.txt'
+    evidence.write_text('Isolated fixture acceptance, never production approval')
+    acceptance = {'candidate_sha256': final_manifest['candidate_sha256'], 'source': source,
+                  'reviewer': 'Fixture', 'reviewed_at': '2026-10-16T00:00:00Z',
+                  'checks': {key: {'status': 'passed', 'evidence': [{'path': 'evidence/human.txt', 'sha256': release.sha256(evidence)}]}
+                             for key in release.HUMAN_CHECKS}}
+    release.atomic_json(root / 'acceptance.json', acceptance)
+    execution = {'release_sha256': release.sha256(repo / 'scripts/release.py'),
+                 'probe_sha256': release.sha256(repo / 'scripts/release-smoke.cjs'),
+                 'python': sys.version, 'executable': str(Path(sys.executable).resolve())}
+    progress = {'format': 2, 'execution': execution, 'candidate_sha256': final_manifest['candidate_sha256'],
+                'notary': {name: {'sha256': manifest['assets'][name]['sha256'], 'id': 'accepted-' + kind, 'state': 'accepted'}
+                           for kind, name in release.asset_names(info['version']).items() if kind in ('zip', 'dmg')}}
+    release.atomic_json(root / 'progress.json', progress)
+    remote_bytes = {name: (assets / name).read_bytes() for name in manifest['assets']}
+    remote = {'release': None, 'tag': None, 'downloads': [], 'writes': [], 'fail_at': 3}
+    def command(args, **kwargs):
+        args = [str(a) for a in args]
+        if args[0] == 'node' and 'provider' in args:
+            import http.server
+            import threading
+            class GithubHTTP(http.server.BaseHTTPRequestHandler):
+                def do_GET(self):
+                    if self.path.endswith('.atom'):
+                        content = f'<feed><entry><link href="https://github.com/{info["github"]}/releases/tag/v{info["version"]}"/><title>Fixture release</title><content>Fixture</content></entry></feed>'.encode()
+                    elif self.path.endswith('/latest'):
+                        content = json.dumps({'tag_name': 'v' + info['version']}).encode()
+                    else:
+                        name = self.path.split('?')[0].rsplit('/', 1)[-1]
+                        if name not in remote_bytes:
+                            self.send_error(404)
+                            return
+                        content = remote_bytes[name]
+                        if name.endswith('.zip'):
+                            remote['provider_downloads'] = remote.get('provider_downloads', 0) + 1
+                            remote['provider_bytes'] = remote.get('provider_bytes', 0) + len(content)
+                    self.send_response(200)
+                    self.send_header('Content-Length', str(len(content)))
+                    self.end_headers()
+                    self.wfile.write(content)
+                def log_message(self, *_args):
+                    pass
+            server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), GithubHTTP)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            preload = tmp_path / 'github-http.cjs'
+            preload.write_text("const https=require('https'), http=require('http'); https.request=(options,callback)=>{ if(!['github.com','api.github.com'].includes(options.hostname)) throw Error('Unexpected remote'); return http.request({...options,protocol:'http:',hostname:'127.0.0.1',host:'127.0.0.1',port:" + str(server.server_port) + "},callback); };\n")
+            thread.start()
+            try:
+                dependency_source = Path(os.environ.get('VENUS_RELEASE_TEST_SOURCE', str(Path(__file__).parents[1])))
+                result = REAL_RUN([args[0], '--require', preload, *args[1:]], **{**kwargs,
+                    'env': {**kwargs['env'], 'NODE_PATH': str(dependency_source / 'desktop/node_modules')}})
+                release.atomic_json(tmp_path / 'observed-remote.json', remote)
+                if remote.get('lost_response') == 'provider':
+                    raise release.ReleaseError('Provider stdout lost', category='unknown')
+                return result
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+        if args[0] == 'git' and '-C' in args:
+            if 'ls-remote' in args:
+                return ((source if 'refs/heads/master' in args else remote['tag']) or '')
+            if 'push' in args:
+                remote['tag'] = local_git('rev-parse', 'refs/tags/v' + info['version'])
+                remote['writes'].append('tag')
+                return ''
+            return subprocess.check_output(args, text=True).strip()
+        if args[:2] == ['gh', 'api'] and '--slurp' in args:
+            return json.dumps([[remote['release']] if remote['release'] else []])
+        if args[:2] == ['gh', 'api'] and 'POST' in args:
+            remote['release'] = {**json.loads(kwargs['input_text']), 'id': 7, 'assets': [], 'html_url': 'https://example.test/release'}
+            remote['writes'].append('create')
+            return json.dumps(remote['release'])
+        if args[:2] == ['gh', 'api'] and 'PATCH' in args:
+            remote['release']['draft'] = False
+            remote['writes'].append('publish')
+            if remote.get('lost_response') == 'publish':
+                raise release.ReleaseError('Publication response lost', category='external-command')
+            return '{}'
+        if args[:3] == ['gh', 'release', 'upload']:
+            name = Path(args[4]).name
+            facts = manifest['assets'][name]
+            remote['release']['assets'].append({'id': len(remote['release']['assets']) + 100, 'name': name,
+                'size': facts['size'], 'digest': 'sha256:' + facts['sha256'], 'updated_at': '2026-10-16T00:00:00Z',
+                'browser_download_url': 'https://example.test/' + name})
+            remote['writes'].append('upload:' + name)
+            if remote.get('lost_response') == 'upload':
+                raise release.ReleaseError('Upload response lost', category='external-command')
+            return ''
+        if args[:3] == ['gh', 'release', 'download']:
+            name = args[args.index('--pattern') + 1]
+            remote['downloads'].append(('authenticated', name))
+            release.atomic_json(tmp_path / 'observed-remote.json', remote)
+            if len(remote['downloads']) == remote['fail_at']:
+                if remote.get('signal'):
+                    import signal
+                    if remote.get('full_download'):
+                        (Path(args[args.index('--dir') + 1]) / name).write_bytes(remote_bytes[name])
+                        remote['authenticated_bytes'] = remote.get('authenticated_bytes', 0) + len(remote_bytes[name])
+                        release.atomic_json(tmp_path / 'observed-remote.json', remote)
+                    os.kill(os.getpid(), getattr(signal, remote['signal']))
+                raise release.ReleaseError('Injected external download failure')
+            (Path(args[args.index('--dir') + 1]) / name).write_bytes(remote_bytes[name])
+            remote['authenticated_bytes'] = remote.get('authenticated_bytes', 0) + len(remote_bytes[name])
+            release.atomic_json(tmp_path / 'observed-remote.json', remote)
+            return ''
+        return original_run(args, **kwargs)
+    def fetch(url, destination):
+        name = url.rsplit('/', 1)[-1]
+        remote['downloads'].append(('anonymous', name))
+        release.atomic_json(tmp_path / 'observed-remote.json', remote)
+        if len(remote['downloads']) == remote['fail_at']:
+            raise release.ReleaseError('Injected external download failure')
+        destination.write_bytes(remote_bytes[name])
+        remote['anonymous_bytes'] = remote.get('anonymous_bytes', 0) + len(remote_bytes[name])
+        release.atomic_json(tmp_path / 'observed-remote.json', remote)
+    monkeypatch.setattr(release, 'run', command)
+    monkeypatch.setattr(release, 'download', fetch)
+    args = ['publish', '--candidate', str(root / 'candidate-manifest.json'), '--acceptance', str(root / 'acceptance.json'),
+            '--confirm-version', 'v' + info['version']]
+    return root, remote, args
+
+
+def test_publish_resumes_completed_asset_checks(publish_case):
+    root, remote, args = publish_case
+    assert release.main(args) == 1
+    first = remote['downloads'][:2]
+    assert len(first) == 2
+    remote['fail_at'] = len(remote['downloads']) + 2
+    assert release.main(args) == 1
+    assert all(remote['downloads'].count(item) == 1 for item in first)
+    assert len(list((root / 'evidence').glob('*.complete.json'))) >= 3
+
+
+def test_anonymous_checks_resume_and_adopt_atomic_result(publish_case):
+    root, remote, args = publish_case
+    remote['fail_at'] = 9
+    assert release.main(args) == 1
+    assert len(remote['downloads']) == 9
+    state = release.read_json(root / 'progress.json')
+    first = next(v for k, v in state['checks'].items() if k.startswith('anonymous:'))
+    del first['attempts'][-1]['result']  # Crash after atomic evidence, before progress replacement.
+    release.atomic_json(root / 'progress.json', state)
+    remote['fail_at'] = 11
+    assert release.main(args) == 1
+    assert len(remote['downloads']) == 11
+    assert len(set(remote['downloads'][:8])) == 8
+    assert all(remote['downloads'].count(item) == 1 for item in remote['downloads'][:8])
+    assert remote['writes'].count('publish') == 1
+
+
+@pytest.mark.parametrize('change', ['asset_id', 'digest', 'receipt', 'acceptance', 'final', 'probe'])
+def test_resume_rejects_changed_identity_before_more_transfers(publish_case, change):
+    root, remote, args = publish_case
+    assert release.main(args) == 1
+    before = list(remote['downloads'])
+    if change in ('asset_id', 'digest'):
+        remote['release']['assets'][0]['id' if change == 'asset_id' else 'digest'] = 999 if change == 'asset_id' else 'sha256:' + '0' * 64
+    elif change == 'receipt':
+        next((root / 'evidence').glob('*.complete.json')).write_text('{}')
+    elif change == 'acceptance':
+        data = release.read_json(root / 'acceptance.json')
+        data['reviewer'] = 'Changed reviewer'
+        release.atomic_json(root / 'acceptance.json', data)
+    elif change == 'final':
+        with (root / 'final-manifest.json').open('a') as stream:
+            stream.write(' ')
+    else:
+        (release.ROOT / 'scripts/release-smoke.cjs').write_text('// changed')
+    assert release.main(args) == 1
+    assert remote['downloads'] == before
+
+
+def test_missing_remote_digest_rechecks_only_that_asset(publish_case):
+    root, remote, args = publish_case
+    assert release.main(args) == 1
+    first, second = remote['downloads'][:2]
+    remote['release']['assets'][0]['digest'] = None
+    remote['fail_at'] = len(remote['downloads']) + 2
+    assert release.main(args) == 1
+    assert remote['downloads'].count(first) == 2
+    assert remote['downloads'].count(second) == 1
+
+
+@pytest.mark.skipif(not os.environ.get('VENUS_RELEASE_TEST_PREVIOUS_ZIP'), reason='Retained previous release supplied for real updater verification')
+@pytest.mark.parametrize('recovery', ['complete', 'partial', 'missing-discovery', 'wrong-target'])
+def test_provider_saves_result_before_stdout_and_recovers_download(tmp_path, recovery):
+    import zipfile
+    source = Path(os.environ.get('VENUS_RELEASE_TEST_SOURCE', str(Path(__file__).parents[1])))
+    app = tmp_path / 'previous/Venus.app'
+    archive = Path(os.environ['VENUS_RELEASE_TEST_PREVIOUS_ZIP'])
+    with zipfile.ZipFile(archive) as bundle:
+        for name in ('Contents/Resources/app.asar', 'Contents/Resources/app-update.yml'):
+            target = app / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(bundle.read('Venus.app/' + name))
+    feed = tmp_path / 'feed'
+    feed.mkdir()
+    zip_file = feed / 'Venus-9.0.0-arm64-mac.zip'
+    zip_file.write_bytes(b'local transport verification\n' * 100)
+    digest = release.sha512(zip_file)
+    (feed / 'latest-mac.yml').write_text(f'version: 9.0.0\nfiles:\n  - url: {zip_file.name}\n    sha512: {digest}\n    size: {zip_file.stat().st_size}\npath: {zip_file.name}\nsha512: {digest}\nreleaseDate: 2026-10-16T00:00:00.000Z\n')
+    scope = tmp_path / 'probe'
+    scope.mkdir()
+    result = tmp_path / 'probe.complete.json'
+    identity = {'expected': {'name': zip_file.name, 'size': zip_file.stat().st_size, 'sha256': release.sha256(zip_file), 'sha512': digest},
+                'metadata_sha256': release.sha256(feed / 'latest-mac.yml'),
+                'config_sha256': release.sha256(app / 'Contents/Resources/app-update.yml'),
+                'asar_sha256': release.sha256(app / 'Contents/Resources/app.asar')}
+    inputs = tmp_path / 'probe.input.json'
+    release.atomic_json(inputs, identity)
+    probe = Path(__file__).parents[1] / 'scripts/release-smoke.cjs'
+    with release.asset_server(feed) as url:
+        command = ['node', str(probe), 'provider', str(app), str(source), str(scope), '9.0.0', url, str(inputs), str(result)]
+        subprocess.run(command, check=True, stdout=subprocess.DEVNULL)
+        assert result.is_file()
+        first = release.read_json(result)
+        assert first['result']['sha256'] == release.sha256(zip_file)
+        assert first['result']['native_installer_executed'] is False
+        result.unlink()  # Completed bytes and durable discovery, but parent never received the result.
+        if recovery == 'complete':
+            zip_file.unlink()  # A second network download cannot succeed.
+        elif recovery == 'partial':
+            (scope / 'download.zip').write_bytes(b'partial')
+        elif recovery == 'missing-discovery':
+            Path(str(result) + '.discovery.json').unlink()
+            (scope / 'download.zip').write_bytes(b'no origin')
+        else:
+            discovery = Path(str(result) + '.discovery.json')
+            data = release.read_json(discovery)
+            data['version'] = '8.0.0'
+            release.atomic_json(discovery, data)
+            assert subprocess.run(command, stdout=subprocess.DEVNULL).returncode != 0
+            assert not result.exists()
+            return
+        subprocess.run(command, check=True, stdout=subprocess.DEVNULL)
+        recovered = release.read_json(result)
+        assert recovered['result']['sha256'] == first['result']['sha256']
+        assert recovered['exit_code'] is None
+        assert recovered['recovery'] == ('local-content-check' if recovery == 'complete' else 'download')
+
+
+def test_command_diagnostics_preserve_exit_and_redact_secrets(tmp_path):
+    log = tmp_path / 'failure.log'
+    output = 'Authorization: Bearer header-secret\nhttps://user:password@example.test/file?signature=signed-secret\nenv-secret'
+    with pytest.raises(release.ReleaseError) as error:
+        release.run([sys.executable, '-c', 'import sys; print(sys.argv[1]); sys.exit(7)', output],
+                    env={**os.environ, 'TEST_TOKEN': 'env-secret'}, log=log)
+    assert error.value.exit_code == 7
+    assert error.value.category == 'external-command'
+    text = log.read_text() + str(error.value)
+    assert not any(secret in text for secret in ('header-secret', 'password', 'signed-secret', 'env-secret'))
+
+
+@pytest.mark.skipif(not os.environ.get('VENUS_RELEASE_TEST_PREVIOUS_ZIP'), reason='Retained updater fixture required')
+def test_publish_completion_survives_lost_provider_stdout_and_cleanup(publish_case):
+    root, remote, args = publish_case
+    remote['fail_at'] = 0
+    remote['lost_response'] = 'provider'
+    assert release.main(args) == 1
+    assert remote['provider_downloads'] == 1
+    assert not (root / 'published-manifest.json').exists()
+    remote['lost_response'] = None
+    with (root / 'source/busy').open('w'):
+        assert release.main(args) == 1
+        done = release.read_json(root / 'published-manifest.json')
+        assert not done['cleanup_complete']
+        downloads, writes = list(remote['downloads']), list(remote['writes'])
+        assert release.main(args) == 1
+        assert remote['downloads'] == downloads and remote['writes'] == writes
+    assert release.main(['cleanup', '--root', str(root), '--apply']) == 0
+    assert release.main(args) == 0
+    assert release.main(args) == 0
+    assert remote['provider_downloads'] == 1
+    assert remote['downloads'] == downloads and remote['writes'] == writes
+    assert release.read_json(root / 'published-manifest.json')['cleanup_complete']
+    assert release.asset_records(root / 'release-assets', '1.0.6') == done['assets']
+
+
+@pytest.mark.parametrize('signal_name,full_download', [('SIGTERM', False), ('SIGKILL', True)])
+def test_publish_new_process_resumes_after_real_termination(publish_case, signal_name, full_download):
+    import multiprocessing
+    import signal
+    root, remote, args = publish_case
+    remote.update(signal=signal_name, full_download=full_download)
+    context = multiprocessing.get_context('fork')
+    def invoke():
+        raise SystemExit(release.main(args))
+    process = context.Process(target=invoke)
+    process.start()
+    try:
+        process.join(timeout=20)
+        assert not process.is_alive()
+        assert process.exitcode == (-signal.SIGKILL if signal_name == 'SIGKILL' else 1)
+    finally:
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=5)
+    remote.update(release.read_json(root.parent / 'observed-remote.json'))
+    first = list(remote['downloads'])
+    remote.update(signal=None, fail_at=5 if full_download else 6)
+    process = context.Process(target=invoke)
+    process.start()
+    try:
+        process.join(timeout=20)
+        assert not process.is_alive()
+        assert process.exitcode == 1
+    finally:
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=5)
+    observed = release.read_json(root.parent / 'observed-remote.json')
+    for item in first[:3 if full_download else 2]:
+        assert observed['downloads'].count(item) == 1
+    assert len(observed['downloads']) == (5 if full_download else 6)
+    if full_download:
+        results = [release.read_json(p) for p in (root / 'evidence').glob('*.complete.json')]
+        recovered = [r for r in results if r['recovery'] == 'local-content-check']
+        assert len(recovered) == 1 and recovered[0]['exit_code'] is None
+
+
+def test_publish_lost_publication_response_is_reconciled(publish_case):
+    _root, remote, args = publish_case
+    remote.update(fail_at=0, lost_response='publish')
+    assert release.main(args) == 1
+    remote.update(fail_at=6, lost_response=None)
+    assert release.main(args) == 1
+    assert remote['writes'].count('publish') == 1
+    assert len(remote['downloads']) == 6
+
+
+@pytest.mark.skipif(not os.environ.get('VENUS_RELEASE_TEST_PREVIOUS_ZIP'), reason='Retained updater fixture required')
+@pytest.mark.parametrize('boundary,after', [('receipt', False), ('receipt', True), ('copy', False), ('copy', True), ('published', False), ('published', True)])
+def test_atomic_completion_copy_and_publication_survive_kill(publish_case, boundary, after):
+    import multiprocessing
+    import signal
+    root, remote, args = publish_case
+    remote['fail_at'] = 0
+    original_replace = os.replace
+    def invoke():
+        def replace(source, target):
+            target = Path(target)
+            matches = ((boundary == 'receipt' and target.name.endswith('.complete.json')) or
+                       (boundary == 'copy' and target.parent.name == 'release-assets' and not target.name.startswith('.')) or
+                       (boundary == 'published' and target.name == 'published-manifest.json'))
+            if matches and not after:
+                os.kill(os.getpid(), signal.SIGKILL)
+            original_replace(source, target)
+            if matches:
+                os.kill(os.getpid(), signal.SIGKILL)
+        os.replace = replace
+        raise SystemExit(release.main(args))
+    process = multiprocessing.get_context('fork').Process(target=invoke)
+    process.start()
+    try:
+        process.join(timeout=30)
+        assert process.exitcode == -signal.SIGKILL
+    finally:
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=5)
+    remote.update(release.read_json(root.parent / 'observed-remote.json'))
+    downloaded = list(remote['downloads'])
+    copied = {file.name: (file.stat().st_ino, file.stat().st_mtime_ns)
+              for file in (root / 'release-assets').glob('*') if file.is_file() and not file.name.startswith('.')}
+    exit_code = release.main(args)
+    if boundary == 'published' and after:
+        assert exit_code == 1
+        assert release.main(['cleanup', '--root', str(root), '--apply']) == 0
+        assert release.main(args) == 0
+    else:
+        assert exit_code == 0
+    assert all(remote['downloads'].count(item) == 1 for item in downloaded)
+    assert all(((root / 'release-assets' / name).stat().st_ino, (root / 'release-assets' / name).stat().st_mtime_ns) == identity
+               for name, identity in copied.items())
+    assert remote['writes'].count('publish') == 1
+    assert remote['provider_downloads'] == 1
+    for evidence in (root / 'evidence').glob('*.json'):
+        assert isinstance(release.read_json(evidence), dict)
+
+
+@pytest.mark.parametrize('fault', ['historical', 'notary-unknown', 'unfinished-final', 'unowned-release'])
+def test_resume_preserves_explicit_stop_conditions(publish_case, fault):
+    root, remote, args = publish_case
+    state_path = root / 'progress.json'
+    state = release.read_json(state_path)
+    if fault == 'historical':
+        del state['format']
+        release.atomic_json(state_path, state)
+    elif fault == 'notary-unknown':
+        del next(iter(state['notary'].values()))['id']
+        release.atomic_json(state_path, state)
+    elif fault == 'unfinished-final':
+        (root / 'final-manifest.json').unlink()
+    else:
+        assert release.main(args) == 1
+        remote['release']['body'] = 'Unowned release'
+    before_writes = list(remote['writes'])
+    before_downloads = list(remote['downloads'])
+    assert release.main(args) == 1
+    assert remote['writes'] == before_writes and remote['downloads'] == before_downloads
+    assert (root / 'finalize').is_dir()
+
+
+def test_resume_unknown_transfer_directory_is_preserved(publish_case):
+    root, remote, args = publish_case
+    assert release.main(args) == 1
+    state = release.read_json(root / 'progress.json')
+    record = list(state['checks'].values())[-1]
+    scope = root / record['attempts'][-1]['scope']
+    keep = scope / 'user-file'
+    keep.write_text('preserve')
+    owner = release.read_json(root / 'owner.json')
+    del owner['directories'][scope.name]
+    release.atomic_json(root / 'owner.json', owner)
+    before = list(remote['downloads'])
+    assert release.main(args) == 1
+    assert remote['downloads'] == before and keep.read_text() == 'preserve'
+
+
+@pytest.mark.skipif(not os.environ.get('VENUS_RELEASE_TEST_PREVIOUS_ZIP'), reason='Retained updater fixture required')
+def test_published_supplementary_check_can_resume_after_failure(publish_case):
+    root, remote, args = publish_case
+    remote['fail_at'] = 0
+    assert release.main(args) == 0
+    asset = remote['release']['assets'][0]
+    original_digest = asset['digest']
+    asset['digest'] = None
+    remote['fail_at'] = len(remote['downloads']) + 1
+    assert release.main(args) == 1
+    assert release.read_json(root / 'published-manifest.json')['cleanup_complete']
+    asset['digest'] = original_digest
+    remote['fail_at'] = 0
+    assert release.main(args) == 0
+    assert remote['provider_downloads'] == 1
+    assert remote['writes'].count('publish') == 1

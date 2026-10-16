@@ -35,7 +35,20 @@ HUMAN_CHECKS = ("fresh_first_frame", "previous_data_upgrade", "release_risk_path
 
 
 class ReleaseError(Exception):
-    pass
+    def __init__(self, message, *, category="input-or-content", exit_code=None):
+        super().__init__(message)
+        self.category = category
+        self.exit_code = exit_code
+
+
+def safe_diagnostic(text, env=None):
+    for key, value in (env or os.environ).items():
+        if value and re.search(r"TOKEN|PASSWORD|SECRET|API_KEY|CREDENTIAL", key, re.I):
+            text = text.replace(value, "[REDACTED]")
+    text = re.sub(r"(?im)(authorization|proxy-authorization|cookie|set-cookie)\s*:[^\r\n]*", r"\1: [REDACTED]", text)
+    text = re.sub(r"(https?://)[^\s/]+@", r"\1[REDACTED]@", text)
+    return re.sub(r"(https?://[^\s?\#]+)[?\#][^\s]*", r"\1?[REDACTED]", text)
+
 
 
 def require(condition, message):
@@ -159,10 +172,14 @@ def run(args, *, cwd=ROOT, env=None, log=None, input_text=None, timeout=3600):
         process = subprocess.Popen([str(a) for a in args], cwd=cwd, env=env,
                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                    text=True, start_new_session=True)
+        failure = None
         try:
             remember_process(root, process, cwd)
             stdout, stderr = process.communicate(input_text, timeout=timeout)
             result = subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
+        except (subprocess.TimeoutExpired, KeyboardInterrupt) as exc:
+            failure = exc
+            raise
         finally:
             if process.poll() is None:
                 os.killpg(process.pid, signal.SIGTERM)
@@ -172,18 +189,21 @@ def run(args, *, cwd=ROOT, env=None, log=None, input_text=None, timeout=3600):
                     os.killpg(process.pid, signal.SIGKILL)
                     process.communicate(timeout=5)
             forget_process(root, process.pid)
+            if failure is not None:
+                failure.exit_code = process.returncode
+                failure.category = "timeout" if isinstance(failure, subprocess.TimeoutExpired) else "interrupted"
     else:
         result = subprocess.run([str(a) for a in args], cwd=cwd, env=env, input=input_text,
                                 text=True, capture_output=True, timeout=timeout)
+    diagnostic = safe_diagnostic(result.stdout + result.stderr, env)
     if log:
-        # Tool output can contain authenticated URLs. Redact known environment secrets too.
-        text = result.stdout + result.stderr
-        for key, value in (env or os.environ).items():
-            if value and re.search(r"TOKEN|PASSWORD|SECRET|API_KEY", key, re.I):
-                text = text.replace(value, "[REDACTED]")
-        text = re.sub(r"https?://[^\s/@]+:[^\s/@]+@", "https://[REDACTED]@", text)
-        Path(log).write_text(text)
-    require(result.returncode == 0, f"{Path(str(args[0])).name} failed (exit {result.returncode}); inspect private evidence")
+        target = Path(log)
+        if target.exists():
+            target = target.with_name(target.stem + "-" + uuid.uuid4().hex + target.suffix)
+        target.write_text(diagnostic)
+    if result.returncode != 0:
+        raise ReleaseError(f"{Path(str(args[0])).name} failed (exit {result.returncode}): {diagnostic[-2000:]}",
+                           category="external-command", exit_code=result.returncode)
     return result.stdout or result.stderr
 
 
@@ -832,24 +852,80 @@ def asset_server(directory):
 
 
 def provider_smoke(root, source, app, directory, info, public=False):
-    scope = root / ("public-updater" if public else "candidate-updater")
-    if (root / 'owner.json').exists():
-        owned_directory(root, scope.name)
-    else:
-        scope.mkdir()
-    env = isolated_env(scope)
-    args = ["node", source / "scripts/release-smoke.cjs", "provider", app, source, scope, info["version"]]
+    name = "public-provider" if public else "candidate-provider"
+    state_path = root / "progress.json" if public else root / "evidence/candidate-provider.json"
+    progress = read_json(state_path) if state_path.exists() else {}
+    expected = directory / asset_names(info["version"])["zip"]
+    inputs = {"owner_id": owner_record(root)["id"], "version": info["version"], "github": info["github"],
+              "previous": inventory(root / "previous"), "app": inventory(app),
+              "config_sha256": sha256(app / "Contents/Resources/app-update.yml"),
+              "asar_sha256": sha256(app / "Contents/Resources/app.asar"),
+              "probe_sha256": sha256(source / "scripts/release-smoke.cjs"),
+              "expected": {"name": expected.name, "size": expected.stat().st_size, "sha256": sha256(expected), "sha512": sha512(expected)},
+              "metadata_sha256": sha256(directory / "latest-mac.yml")}
     if public:
-        result = run([*args, "github"], env=env, log=root / "evidence/public-provider.log")
+        inputs["context"] = progress["inputs"]
+        inputs["remote"] = {key: {k: v for k, v in record["inputs"].items() if k != "digest"} for key, record in progress["checks"].items() if key.startswith("anonymous:")}
+        stage(root, progress, name)
+    record = progress.get("provider")
+    if record:
+        require(record["inputs"] == inputs, "Provider input identity changed")
     else:
-        with asset_server(directory) as url:
-            result = run([*args, url], env=env, log=root / "evidence/candidate-provider.log")
-    report = json.loads(result)
-    expected = directory / f"Venus-{info['version']}-arm64-mac.zip"
-    require(report["version"] == info["version"] and report["sha256"] == sha256(expected), "Previous updater downloaded different ZIP")
-    if (root / 'owner.json').is_file():
-        require(remove_owned(root, scope.name)['removed'], 'Provider temporary data cleanup failed')
-    return report
+        identifier = uuid.uuid4().hex
+        record = {"id": identifier, "scope": name + "-" + identifier, "inputs": inputs}
+        progress["provider"] = record
+        atomic_json(state_path, progress)
+    result = saved_result(root, record, inputs)
+    if not result:
+        scope = root / record["scope"]
+        if scope.exists():
+            checked_scope(root, record["scope"])
+        else:
+            require(not record.get("result"), "Provider completion evidence missing")
+            owned_directory(root, record["scope"])
+        input_path = canonical_path(root / "evidence" / (record["id"] + ".input.json"))
+        if input_path.exists():
+            require(read_json(input_path) == inputs, "Provider invocation input changed")
+        else:
+            atomic_json(input_path, inputs)
+        args = ["node", source / "scripts/release-smoke.cjs", "provider", app, source, scope, info["version"]]
+        env = isolated_env(scope)
+        log = root / "evidence" / (record["id"] + "-" + uuid.uuid4().hex + ".log")
+        if public:
+            run([*args, "github", input_path, result_path(root, record)], env=env, log=log)
+        else:
+            with asset_server(directory) as url:
+                run([*args, url, input_path, result_path(root, record)], env=env, log=log)
+        result = saved_result(root, record, inputs)
+        require(result is not None, "Provider completion evidence missing")
+    validate_provider_result(root, record, result)
+    record["result"] = {"path": str(result_path(root, record).relative_to(root)), "sha256": sha256(result_path(root, record))}
+    atomic_json(state_path, progress)
+    print(f"Provider complete: {result['completed_at']}; process exit: {result['exit_code']}", flush=True)
+    if (root / record["scope"]).exists():
+        record["cleanup"] = remove_owned(root, record["scope"])
+        atomic_json(state_path, progress)
+    return result["result"]
+
+
+def validate_provider_result(root, record, saved):
+    inputs = record["inputs"]
+    result = saved["result"]
+    expected = inputs["expected"]
+    require(result["version"] == inputs["version"] and all(result[k] == expected[k] for k in ("size", "sha256", "sha512"))
+            and result["transport"] == "node-http" and result["native_installer_executed"] is False,
+            "Provider completion content differs")
+    path = result_path(root, record)
+    for suffix, key in ((".discovery.json", "discovery_sha256"), (".extracted.json", "extraction_sha256")):
+        evidence = canonical_path(Path(str(path) + suffix))
+        require(evidence.is_file() and sha256(evidence) == result[key], "Provider supporting evidence changed")
+    discovery = read_json(Path(str(path) + ".discovery.json"))
+    require(discovery["inputs"] == inputs and discovery["version"] == inputs["version"]
+            and discovery["updater_version"] == result["updater_version"]
+            and discovery["previous_version"] == result["previous_version"]
+            and discovery["provider"] == result["provider"]
+            and discovery["file"]["size"] == expected["size"] and discovery["file"]["sha512"] == expected["sha512"]
+            and discovery["file"]["name"] == expected["name"], "Provider discovery differs")
 
 
 def backend_smoke(root, app):
@@ -1019,7 +1095,7 @@ def candidate(args):
                 "node_dependencies": inventory(source / "desktop/node_modules")}
     atomic_json(output / "candidate-manifest.json", manifest)
     atomic_json(output / "acceptance.json", acceptance_template(output / "candidate-manifest.json", args.source))
-    atomic_json(output / "progress.json", {"candidate_sha256": sha256(output / "candidate-manifest.json")})
+    atomic_json(output / "progress.json", {"format": 2, "execution": execution_identity(), "candidate_sha256": sha256(output / "candidate-manifest.json")})
     print(f"Candidate ready, NOT accepted: {output / 'candidate-manifest.json'}\nHuman checklist: {output / 'acceptance.json'}\nLaunch only: {app / 'Contents/MacOS/Venus'}\nUse a new isolated LIVE_CLIPPER_HOME beneath {output}; verify PID executable and visible window.")
 
 
@@ -1137,6 +1213,135 @@ def verify_remote_asset(info, tag, name, expected, root, public_url=None):
         require(target.stat().st_size == expected["size"] and sha256(target) == expected["sha256"], f"Remote asset differs: {name}")
 
 
+
+def execution_identity():
+    return {"release_sha256": sha256(ROOT / "scripts/release.py"),
+            "probe_sha256": sha256(ROOT / "scripts/release-smoke.cjs"),
+            "python": sys.version, "executable": str(Path(sys.executable).resolve())}
+
+
+def stage(root, progress, name):
+    progress["active"] = {"stage": name, "started_at": datetime.now(UTC).isoformat(), "exit_code": None}
+    atomic_json(root / "progress.json", progress)
+    print(f"Stage: {name}; evidence: {root / 'evidence'}", flush=True)
+
+
+def checked_scope(root, name):
+    target = canonical_path(root / name)
+    require(target != root and target.is_relative_to(root), "Scope escapes release root")
+    owner = owner_record(root)
+    identity = owner.get("directories", {}).get(name)
+    require(identity is not None and target.is_dir(), "Missing owned transfer directory")
+    facts = target.stat()
+    require(identity == {"device": facts.st_dev, "inode": facts.st_ino}, "Transfer directory identity changed")
+    inventory(target)
+    require(not any(os.path.ismount(p) for p in (target, *target.rglob('*'))), "Mounted transfer directory")
+    occupied = subprocess.run(["lsof", "-t", "+D", str(target)], capture_output=True, text=True)
+    require(occupied.returncode == 1 and not occupied.stdout.strip() and not occupied.stderr.strip(), "Transfer directory occupied or check failed")
+    return target
+
+
+def result_path(root, attempt):
+    require(re.fullmatch(r"[0-9a-f]{32}", attempt["id"]), "Invalid evidence identity")
+    return canonical_path(root / "evidence" / (attempt["id"] + ".complete.json"))
+
+
+def saved_result(root, attempt, inputs):
+    path = result_path(root, attempt)
+    reference = attempt.get("result")
+    if reference:
+        require(reference["path"] == str(path.relative_to(root)), "Completion evidence path changed")
+        require(not path.exists() or sha256(path) == reference["sha256"], "Completion evidence changed")
+    if not path.exists():
+        return None
+    result = read_json(path)
+    require(result["inputs"] == inputs and result.get("completed_at"), "Completion input identity changed")
+    return result
+
+
+def save_result(root, progress, attempt, inputs, result, *, recovered=False):
+    path = result_path(root, attempt)
+    if not path.exists():
+        atomic_json(path, {"inputs": inputs, "completed_at": datetime.now(UTC).isoformat(),
+                           "result": result, "exit_code": None if recovered else 0,
+                           "recovery": "local-content-check" if recovered else "download"})
+    attempt["result"] = {"path": str(path.relative_to(root)), "sha256": sha256(path)}
+    atomic_json(root / "progress.json", progress)
+    return read_json(path)
+
+
+def remote_asset_inputs(info, remote, name, expected, progress):
+    marker = f"<!-- release-candidate:{progress['inputs']['owner_id']} source:{progress['inputs']['source']} -->"
+    require(remote["id"] == progress["release_id"] and remote["tag_name"] == "v" + info["version"]
+            and remote["target_commitish"] == progress["inputs"]["source"] and not remote["prerelease"]
+            and marker in remote.get("body", ""), "Remote release identity changed")
+    matches = [a for a in remote["assets"] if a["name"] == name]
+    require(len(matches) == 1, "Remote asset missing or duplicated: " + name)
+    asset = matches[0]
+    require(asset.get("id") and asset.get("updated_at") and asset.get("size") == expected["size"], "Remote asset metadata incomplete or changed")
+    digest = asset.get("digest")
+    require(digest is None or digest == "sha256:" + expected["sha256"], "Remote asset digest changed: " + name)
+    return {"release_id": remote["id"], "tag_object": progress["tag_object"], "github": info["github"],
+            "tag": "v" + info["version"], "asset_id": asset["id"], "name": name, "size": asset["size"],
+            "digest": digest, "updated_at": asset["updated_at"], "expected": expected}
+
+
+def check_remote_asset(root, info, remote, name, expected, progress, *, public=False):
+    key = ("anonymous:" if public else "authenticated:") + name
+    stage(root, progress, key)
+    inputs = {"context": {**progress["inputs"], "final_sha256": progress["final_sha256"]}, "access": "anonymous" if public else "authenticated",
+              **remote_asset_inputs(info, remote, name, expected, progress)}
+    record = progress.setdefault("checks", {}).get(key)
+    if record:
+        before = record["inputs"]
+        require({k: v for k, v in before.items() if k != "digest"} ==
+                {k: v for k, v in inputs.items() if k != "digest"}, "Asset check identity changed: " + name)
+        require(not before.get("digest") or not inputs["digest"] or before["digest"] == inputs["digest"], "Remote digest changed")
+        attempt = record["attempts"][-1]
+        saved = saved_result(root, attempt, before)
+        if saved:
+            require(saved["result"] == {"size": expected["size"], "sha256": expected["sha256"]}, "Asset result differs from final")
+            if inputs["digest"] and before.get("digest"):
+                save_result(root, progress, attempt, before, saved["result"])
+                print(f"Reused {key}: {saved['completed_at']}", flush=True)
+                return attempt["result"]
+        elif (root / attempt["scope"]).exists():
+            scope = checked_scope(root, attempt["scope"])
+            origin = canonical_path(scope / "origin.json")
+            if origin.exists():
+                require(read_json(origin) == before, "Download origin changed")
+                file = canonical_path(scope / name)
+                if file.is_file() and file.stat().st_size == expected["size"] and sha256(file) == expected["sha256"]:
+                    saved = save_result(root, progress, attempt, before, {"size": file.stat().st_size, "sha256": sha256(file)}, recovered=True)
+                    if inputs["digest"] and before.get("digest"):
+                        return attempt["result"]
+        if (root / attempt["scope"]).exists():
+            checked_scope(root, attempt["scope"])
+            require(remove_owned(root, attempt["scope"])["removed"], "Previous download cleanup incomplete")
+        record["inputs"] = inputs
+    else:
+        record = {"inputs": inputs, "attempts": []}
+        progress["checks"][key] = record
+    identifier = uuid.uuid4().hex
+    attempt = {"id": identifier, "scope": "asset-check-" + identifier, "exit_code": None}
+    record["attempts"].append(attempt)
+    atomic_json(root / "progress.json", progress)
+    scratch = owned_directory(root, attempt["scope"])
+    atomic_json(scratch / "origin.json", inputs)
+    target = scratch / name
+    if public:
+        asset = next(a for a in remote["assets"] if a["name"] == name)
+        download(asset["browser_download_url"], target)
+    else:
+        run(["gh", "release", "download", inputs["tag"], "--repo", info["github"], "--pattern", name, "--dir", scratch],
+            env={**os.environ, "VENUS_RELEASE_ROOT": str(root)})
+    require(target.is_file() and not target.is_symlink() and target.stat().st_size == expected["size"]
+            and sha256(target) == expected["sha256"], "Remote asset differs: " + name)
+    save_result(root, progress, attempt, inputs, {"size": target.stat().st_size, "sha256": sha256(target)})
+    attempt["cleanup"] = remove_owned(root, attempt["scope"])
+    atomic_json(root / "progress.json", progress)
+    return attempt["result"]
+
 def upload_assets(root, info, final, release, progress, state_path):
     tag = "v" + info["version"]
     expected = final["assets"]
@@ -1148,11 +1353,14 @@ def upload_assets(root, info, final, release, progress, state_path):
         require(not local.is_symlink() and local.stat().st_size == facts["size"] and sha256(local) == facts["sha256"], "Final asset changed before upload")
         if name not in assets:
             require(release["draft"], "Published release is incomplete; stop, do not repair it in place")
+            stage(root, progress, "upload:" + name)
             progress["upload_intent"] = name
             atomic_json(state_path, progress)
             # A lost response is reconciled by the next invocation's remote asset inventory.
             run(["gh", "release", "upload", tag, root / "finalize" / name, "--repo", info["github"]])
-        verify_remote_asset(info, tag, name, facts, root)
+        current = github_release(info["github"], tag)
+        require(current and current["id"] == release["id"], "Release changed during upload")
+        check_remote_asset(root, info, current, name, facts, progress)
 
 
 def published_record(root, *, repo=None):
@@ -1214,16 +1422,26 @@ def retain_formal_assets(root, done):
     if not target.exists():
         owned_directory(root, 'release-assets')
     else:
-        owner = owner_record(root)
-        facts = target.stat()
-        require(owner.get('directories', {}).get('release-assets') == {'device': facts.st_dev, 'inode': facts.st_ino}, 'Formal asset directory identity changed')
+        checked_scope(root, 'release-assets')
     for name, record in done['assets'].items():
         require(Path(name).name == name, 'Unsafe formal asset name')
         file = canonical_path(target / name)
         if not file.exists():
             original = canonical_path(root / 'finalize' / name)
             require(sha256(original) == record['sha256'], 'Final asset changed')
-            shutil.copy2(original, file)
+            temporary = canonical_path(target / ("." + name + ".copy"))
+            if not temporary.exists() or temporary.stat().st_size != record["size"] or sha256(temporary) != record["sha256"]:
+                with original.open("rb") as incoming, temporary.open("wb") as outgoing:
+                    shutil.copyfileobj(incoming, outgoing, 1024 * 1024)
+                    outgoing.flush()
+                    os.fsync(outgoing.fileno())
+            require(temporary.stat().st_size == record["size"] and sha256(temporary) == record["sha256"], "Formal copy differs")
+            os.replace(temporary, file)
+            fd = os.open(target, os.O_RDONLY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
         require(file.stat().st_size == record['size'] and sha256(file) == record['sha256'], 'Preserved formal asset mismatch')
 
 
@@ -1343,75 +1561,142 @@ def cleanup_owned(root, manifest):
 def publish(args):
     manifest_path = canonical_path(args.candidate)
     root = validate_output(manifest_path.parent, ROOT)
-    if (root / "published-manifest.json").exists():
-        # A completed invocation can verify the small retained assets after cleanup.
-        done = read_json(root / "published-manifest.json")
-        require(done["candidate_sha256"] == sha256(manifest_path) and args.confirm_version == done["tag"], "Published release identity differs")
-        info = metadata(ROOT)
-        require(info["version"] == done["tag"][1:] and info["github"] == done["github"], "Current repository changed")
-        check_source(ROOT, done["source"], info["github"])
-        verify_acceptance(args.acceptance, manifest_path, done["source"])
-        remote = github_release(info["github"], done["tag"])
-        require(remote and remote["id"] == done["release_id"] and not remote["draft"], "Published release missing or changed")
-        for name, facts in done["assets"].items():
-            require(sha256(root / "release-assets" / name) == facts["sha256"], "Retained asset changed")
-            matches = [a for a in remote["assets"] if a["name"] == name]
-            require(len(matches) == 1, "Public asset missing")
-            verify_remote_asset(info, done["tag"], name, facts, root, matches[0]["browser_download_url"])
-        if not done.get("cleanup_complete"):
-            cleanup_owned(root, read_json(manifest_path))
-            done["cleanup_complete"] = True
-            atomic_json(root / "published-manifest.json", done)
-        print("Published release verified; no repeated external writes.")
-        return
-    manifest = verify_candidate(manifest_path)
+    owner = owner_record(root)
+    initial_state = canonical_path(root / "progress.json")
+    if initial_state.exists():
+        initial = read_json(initial_state)
+        if initial.get("format") == 2:
+            if initial.get("active"):
+                atomic_json(root / "evidence" / (uuid.uuid4().hex + ".interrupted.json"),
+                            {**initial["active"], "category": "previous-result-unknown", "exit_code": None})
+            stage(root, initial, "preflight")
+    published_path = root / "published-manifest.json"
+    done = published_record(root) if published_path.exists() else None
+    manifest = read_json(manifest_path) if done else verify_candidate(manifest_path)
+    require(owner["id"] == manifest["owner_id"] and owner["source"] == manifest["source"], "Candidate owner changed")
     info = metadata(ROOT)
     require(all(manifest[k] == info[k] for k in info), "Source release metadata changed")
     require(args.confirm_version == "v" + info["version"], "Explicit version confirmation mismatch")
     check_source(ROOT, manifest["source"], info["github"])
     require(tools_snapshot() == manifest["tools"], "Tool environment changed since candidate")
     verify_acceptance(args.acceptance, manifest_path, manifest["source"])
-    state_path = root / "progress.json"
+    state_path = canonical_path(root / "progress.json")
     progress = read_json(state_path)
+    require(progress.get("format") == 2, "Historical progress lacks resume evidence; preserve it for manual reconciliation")
+    require(progress.get("execution") == execution_identity(), "Release execution code or runtime changed")
     require(progress["candidate_sha256"] == sha256(manifest_path), "Progress belongs to another candidate")
-    tag = ensure_tag(ROOT, info, manifest, progress, state_path)
-    assets = release_assets(root / "candidate", info["version"])
-    for kind in ("zip", "dmg"):
-        notarize(root / "candidate" / assets[kind], manifest["notary_profile"], progress, state_path)
-    final = finalize(root, info, manifest)
+    inputs = {"candidate_sha256": sha256(manifest_path), "acceptance_sha256": sha256(args.acceptance),
+              "source": manifest["source"], "owner_id": manifest["owner_id"], "version": info["version"],
+              "tools": manifest["tools"], "execution": progress["execution"]}
+    require(progress.get("inputs", inputs) == inputs, "Publish inputs changed")
+    progress["inputs"] = inputs
+    print("Completed checks: " + ", ".join(key for key, value in progress.get("checks", {}).items() if value["attempts"][-1].get("result")), flush=True)
+    pending = [access + ":" + name for access in ("authenticated", "anonymous") for name in asset_names(info["version"]).values()
+               if not progress.get("checks", {}).get(access + ":" + name, {}).get("attempts", [{}])[-1].get("result")]
+    print("Missing check evidence: " + ", ".join(pending) + f"; recorded failures: {len(progress.get('errors', []))}", flush=True)
+    print(f"Public: {bool(progress.get('public'))}; Provider: {bool(progress.get('provider', {}).get('result'))}; "
+          f"Published record: {bool(done)}; cleanup: {bool(done and done.get('cleanup_complete'))}", flush=True)
+    require(not recover_resources(root), "Owned resources require recovery before continuing")
+    if done:
+        require(done.get("inputs") == inputs and done.get("final_sha256") == sha256(root / "final-manifest.json"), "Published evidence identity changed")
+        require(set(done["checks"]) == set(progress["checks"])
+                and done.get("provider_evidence") == progress["provider"].get("result"), "Published evidence references changed")
+        for key, reference in done["checks"].items():
+            previous = [attempt for attempt in progress["checks"][key]["attempts"] if attempt.get("result") == reference]
+            require(len(previous) == 1, "Published check reference disappeared")
+            path = result_path(root, previous[0])
+            require(reference["path"] == str(path.relative_to(root))
+                    and (not path.exists() or sha256(path) == reference["sha256"]), "Published check evidence changed")
+        final = read_json(root / "final-manifest.json")
+        require(final["assets"] == done["assets"], "Published final assets changed")
+        for folder, expected in (("candidate", manifest["candidate_inventory"]), ("previous", manifest["previous_inventory"]),
+                                 ("finalize", final["inventory"])):
+            if (root / folder).exists():
+                verify_inventory(root / folder, expected)
+        verify_inventory(root / "release-assets", {name: {"size": record["size"], "sha256": record["sha256"],
+            "mode": stat.S_IMODE((root / "release-assets" / name).stat().st_mode)} for name, record in done["assets"].items()})
+        tag = done["tag"]
+        require(git(ROOT, "rev-parse", f"refs/tags/{tag}") == done["tag_object"] == progress["tag_object"], "Published tag changed")
+    else:
+        stage(root, progress, "tag-and-notarization")
+        tag = ensure_tag(ROOT, info, manifest, progress, state_path)
+        assets = release_assets(root / "candidate", info["version"])
+        for kind in ("zip", "dmg"):
+            stage(root, progress, "notarization:" + kind)
+            notarize(root / "candidate" / assets[kind], manifest["notary_profile"], progress, state_path)
+        stage(root, progress, "final")
+        final = finalize(root, info, manifest)
+    digest = sha256(root / "final-manifest.json")
+    require(progress.get("final_sha256", digest) == digest, "Final manifest changed")
+    progress["final_sha256"] = digest
+    atomic_json(state_path, progress)
     check_source(ROOT, manifest["source"], info["github"])
+    stage(root, progress, "remote-tag")
     remote_tag = git(ROOT, "ls-remote", "origin", f"refs/tags/{tag}")
     if remote_tag:
         require(remote_tag.split()[0] == progress["tag_object"], "Remote tag object differs")
     else:
+        require(not done, "Published remote tag disappeared")
         git(ROOT, "push", "origin", f"refs/tags/{tag}:refs/tags/{tag}")
     require(git(ROOT, "ls-remote", "origin", f"refs/tags/{tag}").split()[0] == progress["tag_object"], "Tag push verification failed")
-    release = ensure_release(info, manifest, progress, state_path)
-    upload_assets(root, info, final, release, progress, state_path)
-    if release["draft"]:
-        check_source(ROOT, manifest["source"], info["github"])
-        progress["publish_intent"] = True
+    stage(root, progress, "release-identity")
+    if done:
+        remote = github_release(info["github"], tag)
+        require(remote and remote["id"] == done["release_id"] and not remote["draft"], "Published release missing or changed")
+        marker = f"<!-- release-candidate:{manifest['owner_id']} source:{manifest['source']} -->"
+        require(marker in remote.get("body", "") and remote["tag_name"] == tag
+                and remote["target_commitish"] == manifest["source"] and not remote["prerelease"], "Published release identity changed")
+    else:
+        remote = ensure_release(info, manifest, progress, state_path)
+        upload_assets(root, info, final, remote, progress, state_path)
+        if remote["draft"]:
+            stage(root, progress, "publish-release")
+            check_source(ROOT, manifest["source"], info["github"])
+            progress["publish_intent"] = True
+            atomic_json(state_path, progress)
+            run(["gh", "api", "--method", "PATCH", f"repos/{info['github']}/releases/{remote['id']}", "--input", "-"], input_text='{"draft":false,"make_latest":"true"}')
+        remote = github_release(info["github"], tag)
+        require(remote and not remote["draft"] and remote["id"] == progress["release_id"], "Public release verification failed")
+        progress["public"] = True
         atomic_json(state_path, progress)
-        run(["gh", "api", "--method", "PATCH", f"repos/{info['github']}/releases/{release['id']}", "--input", "-"], input_text='{"draft":false,"make_latest":"true"}')
-    release = github_release(info["github"], tag)
-    require(release and not release["draft"] and release["id"] == progress["release_id"], "Public release verification failed")
-    progress["public"] = True
-    atomic_json(state_path, progress)
+    require(len(remote["assets"]) == 5 and {a["name"] for a in remote["assets"]} == set(final["assets"]), "Public asset set differs")
     for name, facts in final["assets"].items():
-        matches = [a for a in release["assets"] if a["name"] == name]
-        require(len(matches) == 1, "Public asset set differs")
-        verify_remote_asset(info, tag, name, facts, root, matches[0]["browser_download_url"])
-    provider = provider_smoke(root, root / "source", root / "previous/unpacked/Venus.app", root / "finalize", info, public=True)
-    done = {"source": manifest["source"], "tag": tag, "tag_object": progress["tag_object"], "github": info["github"],
-            "release_id": release["id"], "url": release["html_url"], "assets": final["assets"], "provider": provider,
-            "candidate_sha256": sha256(manifest_path), "acceptance_sha256": sha256(args.acceptance)}
-    # Retain formal assets before writing the published record; cleanup failures remain recoverable.
-    retain_formal_assets(root, done)
-    atomic_json(root / "published-manifest.json", done)
-    cleanup_owned(root, manifest)
-    done["cleanup_complete"] = True
-    atomic_json(root / "published-manifest.json", done)
-    print("Published and publicly verified: " + release["html_url"])
+        if done:
+            # Revalidate both evidence identities; authentication never substitutes for public access.
+            check_remote_asset(root, info, remote, name, facts, progress)
+        check_remote_asset(root, info, remote, name, facts, progress, public=True)
+    if done:
+        record = progress["provider"]
+        saved = saved_result(root, record, record["inputs"])
+        require(saved is not None, "Published Provider completion missing")
+        validate_provider_result(root, record, saved)
+        provider = saved["result"]
+        print(f"Reused Provider: {saved['completed_at']}; original process exit: {saved['exit_code']}", flush=True)
+    else:
+        provider = provider_smoke(root, root / "source", root / "previous/unpacked/Venus.app", root / "finalize", info, public=True)
+        progress = read_json(state_path)
+    temporary_scopes = [attempt["scope"] for check in progress["checks"].values() for attempt in check["attempts"]]
+    temporary_scopes.append(progress["provider"]["scope"])
+    cleanup_complete = bool(done and done.get("cleanup_complete") and not any((root / name).exists() for name in temporary_scopes))
+    complete = {"source": manifest["source"], "tag": tag, "tag_object": progress["tag_object"], "github": info["github"],
+                "release_id": remote["id"], "url": remote["html_url"], "assets": final["assets"], "provider": provider,
+                "candidate_sha256": sha256(manifest_path), "acceptance_sha256": sha256(args.acceptance),
+                "inputs": inputs, "final_sha256": digest,
+                "checks": {k: v["attempts"][-1]["result"] for k, v in progress["checks"].items()},
+                "provider_evidence": progress["provider"]["result"], "cleanup_complete": cleanup_complete}
+    if not done:
+        stage(root, progress, "retain-formal-assets")
+        retain_formal_assets(root, complete)
+    atomic_json(published_path, complete)
+    if not done:
+        stage(root, progress, "cleanup")
+        cleanup_owned(root, manifest)
+        complete["cleanup_complete"] = True
+        atomic_json(published_path, complete)
+    require(complete["cleanup_complete"], f"Published and verified; cleanup incomplete. Run: python3.11 scripts/release.py cleanup --root {root} --apply")
+    progress.pop("active", None)
+    atomic_json(state_path, progress)
+    print("Published and verified; cleanup complete: " + remote["html_url"])
 
 
 def main(argv=None):
@@ -1446,12 +1731,30 @@ def main(argv=None):
         return 0
     except (ReleaseError, OSError, ValueError, KeyError, subprocess.SubprocessError, KeyboardInterrupt) as exc:
         # No raw command output: it may contain signed URLs or credentials.
-        message = str(exc) if isinstance(exc, ReleaseError) else type(exc).__name__
+        message = safe_diagnostic(str(exc)) if isinstance(exc, ReleaseError) else type(exc).__name__
         print(f"Release stopped; preserve the working directory. {message}", file=sys.stderr)
         if args.command == "publish":
-            state = args.candidate.parent / "progress.json"
-            if state.is_file() and read_json(state).get("publish_intent"):
-                print("Release may already be public; verification/cleanup is incomplete. Do not rebuild, delete or re-publish it.", file=sys.stderr)
+            try:
+                root = canonical_path(args.candidate.parent)
+                owner_record(root)
+                state = canonical_path(root / "progress.json")
+                progress = read_json(state)
+                if progress.get("format") == 2:
+                    error = {**progress.get("active", {"stage": "preflight"}),
+                             "failed_at": datetime.now(UTC).isoformat(), "message": message,
+                             "category": getattr(exc, "category", "timeout" if isinstance(exc, subprocess.TimeoutExpired) else "unknown"),
+                             "exit_code": getattr(exc, "exit_code", None)}
+                    target = root / "evidence" / (uuid.uuid4().hex + ".error.json")
+                    atomic_json(target, error)
+                    progress.setdefault("errors", []).append({"path": str(target.relative_to(root)), "sha256": sha256(target)})
+                    progress.pop("active", None)
+                    atomic_json(state, progress)
+                if (root / "published-manifest.json").exists():
+                    print(f"Published record retained. If only cleanup remains: python3.11 scripts/release.py cleanup --root {root} --apply", file=sys.stderr)
+                elif progress.get("publish_intent"):
+                    print("Release may already be public; verification is incomplete. Preserve its evidence.", file=sys.stderr)
+            except (ReleaseError, OSError, ValueError, KeyError):
+                print("Could not safely save diagnostics; preserve existing evidence.", file=sys.stderr)
         return 1
     finally:
         signal.signal(signal.SIGTERM, previous_handler)

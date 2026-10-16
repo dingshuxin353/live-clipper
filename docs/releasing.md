@@ -66,11 +66,25 @@ Publishing rechecks the candidate and environment, creates an annotated tag, sub
 
 The tool pushes the exact tag and creates a draft Release. All five assets—DMG, ZIP, ZIP blockmap, `latest-mac.yml` and `Venus-<version>-media-sources.tar.gz`—must match before the Release becomes public. Anonymous downloads and the previous release's GitHub updater provider then verify the published ZIP. Native update installation is outside this probe.
 
-## When a step fails
+## Continue an interrupted publication
 
-Keep the release directory and `progress.json`. Re-run with the same arguments only after understanding the failed step. A saved Apple Submission ID is reused; an uncertain submission without an ID stops for reconciliation. A matching existing remote asset is verified, never uploaded with `--clobber`. Unowned tags or Releases are not adopted.
+Keep the release directory and run the same `publish` command with the same candidate, acceptance file and version. The command reports saved checks, missing evidence and cleanup status. It reads the current remote tag, Release and asset identities before reusing results.
 
-An interrupted local build without a frozen candidate requires a new output directory and a full build after the cause is corrected. Preserve the failed directory and its evidence. An interrupted finalize directory is deliberately not repaired automatically. Do not edit a frozen candidate to get past a failed check. If publication succeeded but a later download or cleanup failed, the Release may already be visible: report that state rather than claiming a rollback.
+Each authenticated asset check and each anonymous public check saves its own completion evidence. A later failure preserves earlier checks. Reuse requires the original Release and asset IDs, timestamps, final content hashes and an explicit matching remote digest. If the remote digest is unavailable, the tool repeats only the corresponding content check. An uploaded asset is never replaced with `--clobber`; a lost upload or publication response is reconciled against GitHub before another write.
+
+The previous App's updater saves discovery and download completion separately. A complete ZIP with its original discovery evidence can be verified locally after an interruption. A partial download or one without source evidence must be downloaded again. The probe verifies size, SHA-256 and SHA-512 through Node HTTP transport; it does not install the update. A recovered completion can have an unknown original process exit code.
+
+`progress.json` references atomic evidence files beneath `evidence/`. Completion is saved before temporary downloads are removed. The formal assets are copied through temporary files and atomically renamed after verification, so interrupted copies can continue without repeating network transfers. `published-manifest.json` is saved before cleanup begins.
+
+Once publication and verification have finished, repeating `publish` checks the retained evidence and remote identities. Valid evidence avoids further downloads and external writes. If cleanup is unfinished, the command returns nonzero and prints the existing `cleanup --apply` command; it does not start cleanup again. Use that command after resolving the reported occupancy or ownership problem. A zero exit means publication, verification and cleanup are complete.
+
+### Conditions that stop recovery
+
+A changed candidate, final manifest, acceptance record, execution code, runtime, previous App or completion digest stops automatic reuse. Preserve the evidence and investigate the named mismatch. Unowned tags or Releases are not adopted. A saved Apple Submission ID is reused; an uncertain submission without an ID requires reconciliation before any new submission.
+
+An unfinished build without a frozen candidate requires a new output directory and a full build after its cause is corrected. An interrupted finalize directory without a complete final manifest is preserved for diagnosis. Do not edit frozen inputs or directory ownership to bypass these checks.
+
+Resume evidence is created for new tasks using this tool version. Historical records without that evidence are not automatically converted; their existing cleanup and retention rules still apply. Failure records retain the stage, available exit code and sanitized diagnostic, with separate files for subsequent attempts. An unknown exit remains unknown.
 
 ## Cache and cleanup
 
