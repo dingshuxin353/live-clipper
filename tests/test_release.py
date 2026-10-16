@@ -1196,6 +1196,7 @@ def publish_case(tmp_path, monkeypatch, apple_tools):
                 'notary': {name: {'sha256': manifest['assets'][name]['sha256'], 'id': 'accepted-' + kind, 'state': 'accepted'}
                            for kind, name in release.asset_names(info['version']).items() if kind in ('zip', 'dmg')}}
     release.atomic_json(root / 'progress.json', progress)
+    remote_bytes = {name: (assets / name).read_bytes() for name in manifest['assets']}
     remote = {'release': None, 'tag': None, 'downloads': [], 'writes': [], 'fail_at': 3}
     def command(args, **kwargs):
         args = [str(a) for a in args]
@@ -1210,10 +1211,10 @@ def publish_case(tmp_path, monkeypatch, apple_tools):
                         content = json.dumps({'tag_name': 'v' + info['version']}).encode()
                     else:
                         name = self.path.split('?')[0].rsplit('/', 1)[-1]
-                        if not (final / name).is_file():
+                        if name not in remote_bytes:
                             self.send_error(404)
                             return
-                        content = (final / name).read_bytes()
+                        content = remote_bytes[name]
                         if name.endswith('.zip'):
                             remote['provider_downloads'] = remote.get('provider_downloads', 0) + 1
                             remote['provider_bytes'] = remote.get('provider_bytes', 0) + len(content)
@@ -1278,10 +1279,14 @@ def publish_case(tmp_path, monkeypatch, apple_tools):
                 if remote.get('signal'):
                     import signal
                     if remote.get('full_download'):
-                        shutil.copyfile(final / name, Path(args[args.index('--dir') + 1]) / name)
+                        (Path(args[args.index('--dir') + 1]) / name).write_bytes(remote_bytes[name])
+                        remote['authenticated_bytes'] = remote.get('authenticated_bytes', 0) + len(remote_bytes[name])
+                        release.atomic_json(tmp_path / 'observed-remote.json', remote)
                     os.kill(os.getpid(), getattr(signal, remote['signal']))
                 raise release.ReleaseError('Injected external download failure')
-            shutil.copyfile(final / name, Path(args[args.index('--dir') + 1]) / name)
+            (Path(args[args.index('--dir') + 1]) / name).write_bytes(remote_bytes[name])
+            remote['authenticated_bytes'] = remote.get('authenticated_bytes', 0) + len(remote_bytes[name])
+            release.atomic_json(tmp_path / 'observed-remote.json', remote)
             return ''
         return original_run(args, **kwargs)
     def fetch(url, destination):
@@ -1290,7 +1295,9 @@ def publish_case(tmp_path, monkeypatch, apple_tools):
         release.atomic_json(tmp_path / 'observed-remote.json', remote)
         if len(remote['downloads']) == remote['fail_at']:
             raise release.ReleaseError('Injected external download failure')
-        shutil.copyfile(final / name, destination)
+        destination.write_bytes(remote_bytes[name])
+        remote['anonymous_bytes'] = remote.get('anonymous_bytes', 0) + len(remote_bytes[name])
+        release.atomic_json(tmp_path / 'observed-remote.json', remote)
     monkeypatch.setattr(release, 'run', command)
     monkeypatch.setattr(release, 'download', fetch)
     args = ['publish', '--candidate', str(root / 'candidate-manifest.json'), '--acceptance', str(root / 'acceptance.json'),
@@ -1589,3 +1596,21 @@ def test_resume_unknown_transfer_directory_is_preserved(publish_case):
     before = list(remote['downloads'])
     assert release.main(args) == 1
     assert remote['downloads'] == before and keep.read_text() == 'preserve'
+
+
+@pytest.mark.skipif(not os.environ.get('VENUS_RELEASE_TEST_PREVIOUS_ZIP'), reason='Retained updater fixture required')
+def test_published_supplementary_check_can_resume_after_failure(publish_case):
+    root, remote, args = publish_case
+    remote['fail_at'] = 0
+    assert release.main(args) == 0
+    asset = remote['release']['assets'][0]
+    original_digest = asset['digest']
+    asset['digest'] = None
+    remote['fail_at'] = len(remote['downloads']) + 1
+    assert release.main(args) == 1
+    assert release.read_json(root / 'published-manifest.json')['cleanup_complete']
+    asset['digest'] = original_digest
+    remote['fail_at'] = 0
+    assert release.main(args) == 0
+    assert remote['provider_downloads'] == 1
+    assert remote['writes'].count('publish') == 1

@@ -1599,8 +1599,14 @@ def publish(args):
     require(not recover_resources(root), "Owned resources require recovery before continuing")
     if done:
         require(done.get("inputs") == inputs and done.get("final_sha256") == sha256(root / "final-manifest.json"), "Published evidence identity changed")
-        require(done.get("checks") == {k: v["attempts"][-1].get("result") for k, v in progress["checks"].items()}
+        require(set(done["checks"]) == set(progress["checks"])
                 and done.get("provider_evidence") == progress["provider"].get("result"), "Published evidence references changed")
+        for key, reference in done["checks"].items():
+            previous = [attempt for attempt in progress["checks"][key]["attempts"] if attempt.get("result") == reference]
+            require(len(previous) == 1, "Published check reference disappeared")
+            path = result_path(root, previous[0])
+            require(reference["path"] == str(path.relative_to(root))
+                    and (not path.exists() or sha256(path) == reference["sha256"]), "Published check evidence changed")
         final = read_json(root / "final-manifest.json")
         require(final["assets"] == done["assets"], "Published final assets changed")
         for folder, expected in (("candidate", manifest["candidate_inventory"]), ("previous", manifest["previous_inventory"]),
@@ -1669,12 +1675,15 @@ def publish(args):
     else:
         provider = provider_smoke(root, root / "source", root / "previous/unpacked/Venus.app", root / "finalize", info, public=True)
         progress = read_json(state_path)
+    temporary_scopes = [attempt["scope"] for check in progress["checks"].values() for attempt in check["attempts"]]
+    temporary_scopes.append(progress["provider"]["scope"])
+    cleanup_complete = bool(done and done.get("cleanup_complete") and not any((root / name).exists() for name in temporary_scopes))
     complete = {"source": manifest["source"], "tag": tag, "tag_object": progress["tag_object"], "github": info["github"],
                 "release_id": remote["id"], "url": remote["html_url"], "assets": final["assets"], "provider": provider,
                 "candidate_sha256": sha256(manifest_path), "acceptance_sha256": sha256(args.acceptance),
                 "inputs": inputs, "final_sha256": digest,
                 "checks": {k: v["attempts"][-1]["result"] for k, v in progress["checks"].items()},
-                "provider_evidence": progress["provider"]["result"], "cleanup_complete": bool(done and done.get("cleanup_complete"))}
+                "provider_evidence": progress["provider"]["result"], "cleanup_complete": cleanup_complete}
     if not done:
         stage(root, progress, "retain-formal-assets")
         retain_formal_assets(root, complete)
