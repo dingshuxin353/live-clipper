@@ -1464,7 +1464,7 @@ def prune_media_cache(cache, keep_versions, *, apply=True):
     for item in result['items']:
         require(isinstance(item, dict) and {'key', 'path', 'version', 'bytes_before', 'action', 'reason'} <= item.keys()
                 and isinstance(item['path'], str) and isinstance(item['reason'], str)
-                and item['action'] in {'keep', 'delete', 'deleted', 'absent', 'refused', 'unknown', 'pending'}
+                and isinstance(item['action'], str) and item['action'] in {'keep', 'delete', 'deleted', 'absent', 'refused', 'unknown', 'pending'}
                 and (item['bytes_before'] is None or type(item['bytes_before']) is int and item['bytes_before'] >= 0),
                 'Incomplete media cache item')
     return result

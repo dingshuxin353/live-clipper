@@ -1889,7 +1889,7 @@ fs.renameSync = function(from, to) {
     assert release.read_json(cache / 'media/entries.json') == {}
 
 
-@pytest.mark.parametrize('response', ['nonzero', 'invalid_json', 'missing_fields', 'invalid_item'])
+@pytest.mark.parametrize('response', ['nonzero', 'invalid_json', 'missing_fields', 'invalid_item', 'invalid_action'])
 def test_cleanup_reports_node_protocol_failure_without_deleting_media(tmp_path, response):
     root, cache, key = media_cleanup_case(tmp_path)
     injection = tmp_path / 'protocol.cjs'
@@ -1898,6 +1898,7 @@ def test_cleanup_reports_node_protocol_failure_without_deleting_media(tmp_path, 
         'invalid_json': "console.log('not json'); process.exit(0);",
         'missing_fields': "console.log('{}'); process.exit(0);",
         'invalid_item': "const r = JSON.parse(require('node:fs').readFileSync(0, 'utf8')); console.log(JSON.stringify({...r, complete:true, items:[{}]})); process.exit(0);",
+        'invalid_action': "const r = JSON.parse(require('node:fs').readFileSync(0, 'utf8')); console.log(JSON.stringify({...r, complete:true, items:[{key:null,path:r.root,version:null,bytes_before:0,action:[],reason:''}]})); process.exit(0);",
     }[response]
     injection.write_text(body)
     before = release.inventory(cache / 'media')
