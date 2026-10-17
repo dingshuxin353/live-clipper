@@ -20,6 +20,16 @@ from .first_run_state import (
     decide_startup,
     normalize_first_run_draft,
 )
+from .project_domain import normalize_utc
+from .project_migration import (
+    LegacySourceError,
+    MigrationError,
+    build_migration_plan,
+    inspect_legacy_state,
+    migration_completion_consistent,
+    migration_plan_payload,
+    migration_session_payload,
+)
 from .project_storage import MigrationSession, _migration_session, database_path
 
 LEGACY_METADATA_FILES = ("runs.json", "service.json", "scheduler.json", "scheduler_runs.json", "events.jsonl")
@@ -309,6 +319,94 @@ class StartupInspection:
     decision: StartupDecision
     detection: StartupDetection
     facts: _DatabaseFacts
+    config_path: Path
+    service_dir: Path
+
+    @property
+    def entry(self) -> dict[str, Any]:
+        return {
+            "mode": self.decision.entry,
+            "onboarding": self.decision.onboarding,
+            "reason_code": self.decision.reason_code,
+            "evidence_codes": list(self.detection.evidence_codes),
+        }
+
+    @property
+    def restriction(self) -> str | None:
+        if self.decision.entry in {"migration_required", "diagnostic_required"}:
+            return self.decision.entry
+        return None
+
+    def migration_snapshot(self) -> dict[str, Any]:
+        facts = self.facts
+        if facts.unreadable:
+            raise MigrationError("diagnostic_required", "无法读取升级状态，请记录问题编号以便排查。")
+        session = facts.migration_record
+        report = ({**session.report, "acknowledged_at": session.acknowledged_at} if session and session.report else None)
+        if session is not None:
+            incomplete = facts.data_mode == "projects" and facts.resource_migration_state != "completed"
+            if incomplete:
+                entry = "executing" if session.state == "validating" and session.stage == "resources" else "incomplete"
+                report = None
+            elif session.state.startswith("completed_"):
+                entry = "completed"
+            elif session.state == "failed_rolled_back":
+                entry = "failed"
+            elif session.state == "diagnostic_required":
+                entry = "diagnostic"
+            else:
+                entry = "executing"
+            source = {
+                "detected": True,
+                "checked_at": session.updated_at,
+                "display_summary": {"metadata_file_count": len(session.source_manifest)},
+            }
+            plan = None
+            if session.state.startswith("completed_"):
+                consistent = migration_completion_consistent(facts.data_mode, facts.project_ids, session)
+                if not consistent:
+                    entry = "diagnostic"
+        else:
+            try:
+                inspection = inspect_legacy_state(self.service_dir, config_path=self.config_path)
+            except LegacySourceError as exc:
+                raise MigrationError(exc.code, "无法读取旧版数据，请记录问题编号以便排查。", status=409) from exc
+            plan_object = build_migration_plan(inspection, backup_root=self.service_dir.parent / "migration-backups")
+            entry = "review" if not plan_object.requires_user_choices else "inspect"
+            source = {
+                "detected": True,
+                "checked_at": normalize_utc(),
+                "display_summary": {
+                    "metadata_file_count": len(inspection.source_manifest),
+                    "history_count": len(inspection.runs),
+                },
+            }
+            plan = migration_plan_payload(plan_object)
+        payload = {
+            "ok": True,
+            "entry": entry,
+            "source": source,
+            "plan": plan,
+            "session": migration_session_payload(session) if session else None,
+            "report": report,
+        }
+        assert "source_manifest" not in json.dumps(payload, ensure_ascii=False)
+        return payload
+
+    def migration_summary(self) -> dict[str, Any] | None:
+        if self.decision.entry not in {"migration_required", "diagnostic_required", "workbench"}:
+            return None
+        if self.facts.unreadable:
+            return {"entry": "diagnostic", "session": None, "report": None}
+        if not self.restriction and not self.detection.resource_migration_incomplete:
+            session = self.facts.migration_record
+            if session is None or not session.state.startswith("completed_") or session.acknowledged_at is not None:
+                return None
+        try:
+            snapshot = self.migration_snapshot()
+        except MigrationError:
+            return {"entry": "diagnostic", "session": None, "report": None}
+        return {"entry": snapshot["entry"], "session": snapshot["session"], "report": snapshot["report"]}
 
 
 def inspect_startup_state(
@@ -321,7 +419,9 @@ def inspect_startup_state(
         existing_project_ids=facts.project_ids,
         migration_sessions=facts.migration_sessions,
     )
-    return StartupInspection(decision, detection, facts)
+    return StartupInspection(
+        decision, detection, facts, Path(config_path).expanduser().resolve(), Path(service_dir).expanduser().resolve(),
+    )
 
 
 def detect_first_run_environment(

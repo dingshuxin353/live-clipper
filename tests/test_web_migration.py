@@ -169,7 +169,31 @@ def test_restricted_real_http_executes_then_switches_to_project_api(tmp_path, mo
             assert completed["session"]["migration_id"] == migration_id
             assert len(readers) == 1
             assert all(reader.cleared_before_close for reader in readers)
-        _, startup = request("GET", "/api/onboarding")
+        from live_clipper import first_run_detection
+        from live_clipper.onboarding_coordinator import OnboardingCoordinator
+
+        with monkeypatch.context() as observation:
+            facts_reads, resource_reads = [], []
+            original_read = first_run_detection._read_database_facts
+            original_resources = OnboardingCoordinator._resource_summary
+
+            def read(path):
+                facts = original_read(path)
+                facts_reads.append(facts)
+                return facts
+
+            def resources(self, draft):
+                before = len(facts_reads)
+                result = original_resources(self, draft)
+                resource_reads.append(len(facts_reads) - before)
+                return result
+
+            observation.setattr(first_run_detection, '_read_database_facts', read)
+            observation.setattr(OnboardingCoordinator, '_resource_summary', resources)
+            _, startup = request("GET", "/api/onboarding")
+            # The resource repository retains its own current-state safety check.
+            assert resource_reads == [1]
+            assert len(facts_reads) - sum(resource_reads) == 1
         assert startup["entry"]["mode"] == "workbench"
         assert startup["migration"]["entry"] == "completed"
         assert startup["migration"]["session"]["migration_id"] == migration_id
@@ -528,3 +552,46 @@ def test_app_history_preserves_inspection_then_lock_order(tmp_path, monkeypatch,
         'elapsed_including_event_pause': elapsed, 'database_errors': [type(error).__name__ for error in errors],
         'recovered_status': recovered_status,
     }, indent=2))
+
+
+@pytest.mark.parametrize('source', ['ready', 'choices_required', 'unsafe'])
+def test_legacy_preflight_and_startup_summary_preserve_safe_views(tmp_path, monkeypatch, source):
+    from live_clipper import first_run_detection
+
+    paths = _paths(tmp_path)
+    if source == 'choices_required':
+        paths.config_path.write_text('[recording_source.default]\nsource_dir = ""\noutput_root = ""\n')
+    elif source == 'unsafe':
+        (paths.service_dir / 'runs.json').rename(tmp_path / 'original-runs.json')
+        (paths.service_dir / 'runs.json').symlink_to(tmp_path / 'original-runs.json')
+    plans = []
+    original_plan = first_run_detection.build_migration_plan
+
+    def plan(*args, **kwargs):
+        value = original_plan(*args, **kwargs)
+        plans.append(value)
+        return value
+
+    monkeypatch.setattr(first_run_detection, 'build_migration_plan', plan)
+    inspection = web._startup_inspection(paths)
+    assert inspection.entry['mode'] == 'migration_required' and not plans
+    status, _, full = handle_api_request('GET', '/api/migration', paths, startup=inspection)
+    # Reading the onboarding summary must not create a migration execution owner.
+    monkeypatch.setattr(web.migration_coordinator.MigrationCoordinator, '__init__',
+                        lambda *args, **kwargs: pytest.fail('startup read constructed migration executor'))
+    status_page, _, page = handle_api_request('GET', '/api/onboarding', paths, startup=inspection)
+    assert status_page == 200
+    if source == 'unsafe':
+        assert status == 409
+        assert full['error_code'] == 'legacy_source_unsafe'
+        assert page['migration'] == {'entry': 'diagnostic', 'session': None, 'report': None}
+    else:
+        expected = 'review' if source == 'ready' else 'inspect'
+        assert status == 200 and full['entry'] == expected
+        assert set(full) == {'ok', 'entry', 'source', 'plan', 'session', 'report'}
+        assert full['source']['detected'] and full['plan']
+        assert bool(full['plan']['required_choices']) is (source == 'choices_required')
+        assert page['migration'] == {key: full[key] for key in ('entry', 'session', 'report')}
+    for payload in (full, page):
+        serialized = json.dumps(payload)
+        assert all(secret not in serialized for secret in ('source_manifest', 'secret-asr', 'secret-ai', 'target_path'))

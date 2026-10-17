@@ -342,13 +342,14 @@ def test_failed_read_and_cancelled_read_close_connection(tmp_path, monkeypatch):
     _assert_readers_closed(readers)
 
 
-def test_http_startup_uses_one_snapshot_for_entry_and_migration(tmp_path, monkeypatch):
+@pytest.mark.parametrize('route', ['/api/onboarding', '/api/migration'])
+def test_http_startup_uses_one_snapshot_for_entry_and_migration(tmp_path, monkeypatch, route):
     import json
     from http.server import ThreadingHTTPServer
     from threading import Thread
     from urllib.request import urlopen
 
-    from live_clipper import first_run_detection, migration_coordinator
+    from live_clipper import first_run_detection
     from live_clipper.web import LiveClipperRequestHandler, WebPaths
 
     with ProjectRepository(tmp_path) as repository:
@@ -371,8 +372,6 @@ def test_http_startup_uses_one_snapshot_for_entry_and_migration(tmp_path, monkey
         return facts
 
     monkeypatch.setattr(first_run_detection, '_read_database_facts', commit_after_snapshot)
-    monkeypatch.setattr(migration_coordinator, '_read_database_facts',
-                        lambda path: pytest.fail('startup summary must not open another database snapshot'))
     class Handler(LiveClipperRequestHandler):
         paths = WebPaths(service_dir=tmp_path, config_path=tmp_path/'missing.toml',
                          input_dir=tmp_path/'in', output_root=tmp_path/'out')
@@ -381,17 +380,28 @@ def test_http_startup_uses_one_snapshot_for_entry_and_migration(tmp_path, monkey
     server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
     thread = Thread(target=server.serve_forever)
     thread.start()
+    keeper = sqlite3.connect(database_path(tmp_path))
     try:
-        with urlopen(f'http://127.0.0.1:{server.server_port}/api/onboarding', timeout=5) as response:
+        assert keeper.execute('PRAGMA journal_mode').fetchone()[0] == 'wal'
+        with urlopen(f'http://127.0.0.1:{server.server_port}{route}', timeout=5) as response:
             payload = json.load(response)
-        assert payload['entry']['reason_code'] == 'migration_resume'
-        assert payload['migration']['session']['state'] == 'backing_up'
+        if route == '/api/onboarding':
+            assert payload['entry']['reason_code'] == 'migration_resume'
+            payload = payload['migration']
+        assert payload['entry'] == 'executing'
+        assert payload['session']['state'] == 'backing_up'
+        assert database_path(tmp_path).with_name(database_path(tmp_path).name + '-wal').exists()
         assert len(reads) == 1
-        with urlopen(f'http://127.0.0.1:{server.server_port}/api/onboarding', timeout=5) as response:
+        with urlopen(f'http://127.0.0.1:{server.server_port}{route}', timeout=5) as response:
             payload = json.load(response)
-        assert payload['entry']['reason_code'] == 'migration_retry'
-        assert payload['migration']['session']['state'] == 'failed_rolled_back'
+        if route == '/api/onboarding':
+            assert payload['entry']['reason_code'] == 'migration_retry'
+            payload = payload['migration']
+        assert payload['entry'] == 'failed'
+        assert payload['session']['state'] == 'failed_rolled_back'
+        assert len(reads) == 2
     finally:
         server.shutdown()
         server.server_close()
         thread.join(5)
+        keeper.close()

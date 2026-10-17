@@ -40,7 +40,7 @@ def _filesystem_facts(root):
     return facts
 
 
-def test_restricted_startup_web_allows_only_shell_and_onboarding_without_writes(tmp_path):
+def test_restricted_startup_web_allows_only_shell_and_onboarding_without_writes(tmp_path, monkeypatch):
     home = tmp_path / "legacy-home"
     service_dir = home / "work" / "service"
     service_dir.mkdir(parents=True)
@@ -63,6 +63,13 @@ def test_restricted_startup_web_allows_only_shell_and_onboarding_without_writes(
         access_token = "test-token"
         restricted_startup = "migration_required"
 
+    from live_clipper.onboarding_coordinator import OnboardingCoordinator
+
+    def forbidden(*args, **kwargs):
+        pytest.fail('restricted onboarding accessed settings, resources, environment or recovery')
+
+    for method in ('settings', '_resource_summary', '_environment_summary', '_repo'):
+        monkeypatch.setattr(OnboardingCoordinator, method, forbidden)
     before = _filesystem_facts(home)
     server = ThreadingHTTPServer(("127.0.0.1", 0), RestrictedHandler)
     thread = Thread(target=server.serve_forever, daemon=True)
