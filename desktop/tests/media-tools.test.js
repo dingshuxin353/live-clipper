@@ -288,3 +288,46 @@ for (const populated of [false, true]) {
     assert.deepEqual([snapshot(media), snapshot(archives)], before);
   });
 }
+
+test("registration rejects invalid or linked indexes before creating shared entries", (t) => {
+  const { desktop, manifest } = cacheFixture(t);
+  t.mock.method(childProcess, "execFileSync", (_, args) => {
+    assert.ok(args.includes("--identity"));
+    return JSON.stringify(manifest.identity);
+  });
+  for (const kind of ["broken", "array", "symlink"]) {
+    const root = fs.realpathSync(temporary(t));
+    const index = path.join(root, "entries.json");
+    const external = path.join(fs.realpathSync(temporary(t)), "sentinel");
+    fs.writeFileSync(external, "{}\n");
+    if (kind === "symlink") fs.symlinkSync(external, index);
+    else fs.writeFileSync(index, kind === "array" ? "[]" : "{");
+    const before = fs.readdirSync(root);
+    process.env.VENUS_RELEASE_MEDIA_CACHE = root;
+    assert.throws(() => prepareTools(desktop));
+    assert.deepEqual(fs.readdirSync(root), before);
+    assert.equal(fs.readFileSync(external, "utf8"), "{}\n");
+  }
+});
+
+test("incomplete shared copies remain unregistered and cannot be adopted", (t) => {
+  const { desktop, manifest } = cacheFixture(t);
+  const root = fs.realpathSync(temporary(t));
+  process.env.VENUS_RELEASE_MEDIA_CACHE = root;
+  t.mock.method(childProcess, "execFileSync", (_, args) => {
+    assert.ok(args.includes("--identity"));
+    return JSON.stringify(manifest.identity);
+  });
+  const copy = fs.cpSync;
+  const interrupted = t.mock.method(fs, "cpSync", (from, to, options) => {
+    copy(from, to, options);
+    throw new Error("test copy interruption");
+  });
+  assert.throws(() => prepareTools(desktop), /copy interruption/);
+  interrupted.mock.restore();
+  assert.equal(fs.existsSync(path.join(root, "entries.json")), false);
+  const names = fs.readdirSync(root);
+  assert.throws(() => prepareTools(desktop), /ownership mismatch/);
+  assert.deepEqual(fs.readdirSync(root), names);
+  assert.equal(fs.existsSync(path.join(root, "entries.json")), false);
+});

@@ -808,7 +808,7 @@ def test_candidate_uses_preflight_identities(tmp_path, monkeypatch, boundary):
     monkeypatch.setattr(release, 'github_release', lambda *_: None)
     monkeypatch.setattr(release, 'tools_snapshot', lambda: {'python_identity': {'executable': '/selected/bin/python3.11'}})
     monkeypatch.setattr(release, 'space_preflight', lambda *_: {})
-    monkeypatch.setattr(release, 'prune_media_cache', lambda *_: None)
+    monkeypatch.setattr(release, 'prune_media_cache', lambda *_: {'complete': True})
     monkeypatch.setattr(release, 'cleanup_plan', lambda *_: {})
     monkeypatch.setattr(release, 'cache_keep_versions', lambda *_: [])
     monkeypatch.setattr(release, 'previous_app', lambda *_: tmp_path / 'previous.app')
@@ -1618,3 +1618,351 @@ def test_published_supplementary_check_can_resume_after_failure(publish_case):
     assert release.main(args) == 0
     assert remote['provider_downloads'] == 1
     assert remote['writes'].count('publish') == 1
+
+
+def prepare_media_fixture(desktop, cache, version='1.0.1', flavor='default'):
+    """Exercise prepareTools with tiny test tools and an identity-only test builder."""
+    desktop.mkdir(parents=True)
+    identity = {'version': version, 'inputs': {'fixture': flavor}}
+    scripts = desktop / 'scripts'
+    scripts.mkdir()
+    (scripts / 'build-media-tools.py').write_text(
+        'import sys\nassert sys.argv[1:] == ["--identity"], "unexpected build"\nprint(' + repr(json.dumps(identity)) + ')\n')
+    directory = desktop / 'vendor/media-tools/darwin-arm64'
+    (directory / 'licenses').mkdir(parents=True)
+    manifest = {'identity': identity, 'outputs': {}, 'tools': {}}
+    for name in ('ffmpeg', 'ffprobe'):
+        version_line = name + ' version 9.0.1 fixture\n'
+        file = directory / name
+        file.write_text('#!/bin/sh\nif [ "$1" = "-L" ]; then echo "GNU General Public License version 2"; else echo "' + version_line.strip() + '"; fi\n')
+        file.chmod(0o755)
+        manifest['tools'][name] = {'version': version_line}
+    for name in ('media-sources.tar.gz', 'licenses/SOURCE.md', 'licenses/COMPONENTS.md', 'licenses/GPL-2.0.txt', 'licenses/CORRESPONDING-SOURCE.md'):
+        (directory / name).write_text('isolated test fixture')
+    for file in directory.rglob('*'):
+        if file.is_file():
+            manifest['outputs'][str(file.relative_to(directory))] = {'size': file.stat().st_size, 'sha256': release.sha256(file)}
+    (directory / 'build-manifest.json').write_text(json.dumps(manifest))
+    env = {key: value for key, value in os.environ.items() if key not in ('VENUS_RELEASE_MEDIA_CACHE', 'VENUS_RELEASE_ARCHIVE_CACHE', 'NODE_OPTIONS')}
+    env['VENUS_RELEASE_MEDIA_CACHE'] = str(cache / 'media')
+    result = subprocess.run(['node', '-e', 'require(process.argv[1]).prepareTools(process.argv[2])',
+                             str(Path(__file__).parents[1] / 'desktop/scripts/prepare-media-tools.js'), str(desktop)],
+                            env=env, capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0, result.stderr
+    return next(key for key, facts in release.read_json(cache / 'media/entries.json').items() if facts['version'] == version)
+
+
+def media_cleanup_case(tmp_path):
+    root = tmp_path / 'release'
+    owner = release.create_root(root, release.ROOT, 'a' * 40)
+    release.atomic_json(root / 'candidate-manifest.json', {'source': owner['source'], 'owner_id': owner['id']})
+    assets = release.owned_directory(root, 'release-assets')
+    for name in release.asset_names('1.0.3').values():
+        (assets / name).write_text('isolated formal asset fixture')
+    release.atomic_json(root / 'published-manifest.json', {
+        'source': owner['source'], 'tag': 'v1.0.3', 'github': 'test/repo', 'release_id': 3,
+        'candidate_sha256': release.sha256(root / 'candidate-manifest.json'), 'assets': release.asset_records(assets, '1.0.3'),
+    })
+    cache = release.prepare_download_cache(tmp_path, release.ROOT)
+    key = prepare_media_fixture(tmp_path / 'fixture-desktop', cache)
+    return root, cache, key
+
+
+def test_cleanup_media_preview_then_apply_through_real_node(tmp_path):
+    root, cache, key = media_cleanup_case(tmp_path)
+    index_before = (cache / 'media/entries.json').read_bytes()
+    entry = cache / 'media' / key
+    before = release.inventory(entry)
+    plan = release.cleanup(root)
+    item = next(item for item in plan['media_cache']['items'] if item['key'] == key)
+    assert item['action'] == 'delete' and item['version'] == '1.0.1' and item['bytes_before'] > 0
+    assert (cache / 'media/entries.json').read_bytes() == index_before
+    assert release.inventory(entry) == before
+    report = release.cleanup(root, apply=True)
+    assert report['cleanup_complete']
+    assert next(item for item in report['cache']['media']['items'] if item['key'] == key)['action'] == 'deleted'
+    assert not entry.exists() and release.read_json(cache / 'media/entries.json') == {}
+    assert release.cleanup(root, apply=True)['cleanup_complete']
+
+
+def media_cleanup_command(root, *, apply=False, env=None):
+    args = [sys.executable, str(Path(__file__).parents[1] / 'scripts/release.py'), 'cleanup', '--root', str(root)]
+    if apply:
+        args.append('--apply')
+    process = subprocess.run(args, capture_output=True, text=True, env=env, timeout=30)
+    return process.returncode, json.loads(process.stdout)
+
+
+def test_media_cleanup_keeps_two_releases_and_active_versions_and_unknowns(tmp_path):
+    root, cache, expired = media_cleanup_case(tmp_path)
+    for version in ('1.0.1', '1.0.2'):
+        older = tmp_path / version
+        owner = release.create_root(older, release.ROOT, 'a' * 40)
+        release.atomic_json(older / 'candidate-manifest.json', {'source': owner['source'], 'owner_id': owner['id']})
+        assets = release.owned_directory(older, 'release-assets')
+        for name in release.asset_names(version).values():
+            (assets / name).write_text(version)
+        records = release.asset_records(assets, version)
+        release.atomic_json(older / 'published-manifest.json', {
+            'source': owner['source'], 'tag': 'v' + version, 'github': 'test/repo', 'release_id': version,
+            'candidate_sha256': release.sha256(older / 'candidate-manifest.json'), 'assets': records,
+        })
+        if version == '1.0.1':
+            # This historical release has already completed public recovery and local cleanup.
+            release.atomic_json(older / 'public-recovery.json', {'release_id': version, 'assets': records})
+            shutil.rmtree(assets)
+    active = tmp_path / 'active'
+    owner = release.create_root(active, release.ROOT, 'a' * 40)
+    release.atomic_json(active / 'owner.json', {**owner, 'version': '1.0.4'})
+    for version, flavor in [('1.0.2', 'a'), ('1.0.2', 'b'), ('1.0.3', 'a'), ('1.0.4', 'a')]:
+        prepare_media_fixture(tmp_path / ('fixture-' + version + flavor), cache, version, flavor)
+    unknown = cache / 'media' / ('f' * 64)
+    unknown.mkdir()
+    (unknown / 'keep').write_text('unregistered')
+    before = release.inventory(cache / 'media')
+    original_index = (cache / 'media/entries.json').read_bytes()
+    code, plan = media_cleanup_command(root)
+    assert code == 0
+    assert release.inventory(cache / 'media') == before
+    assert (cache / 'media/entries.json').read_bytes() == original_index
+    items = plan['media_cache']['items']
+    assert len([item for item in items if item['action'] == 'keep']) == 4
+    assert next(item for item in items if item['key'] == expired)['action'] == 'delete'
+    assert next(item for item in items if item['path'] == str(unknown))['action'] == 'unknown'
+    retained = {key: release.inventory(cache / 'media' / key) for key in release.read_json(cache / 'media/entries.json') if key != expired}
+    code, report = media_cleanup_command(root, apply=True)
+    assert code == 0 and report['cleanup_complete']
+    assert len(release.read_json(cache / 'media/entries.json')) == 4
+    for key, facts in retained.items():
+        assert release.inventory(cache / 'media' / key) == facts
+    assert (unknown / 'keep').read_text() == 'unregistered'
+    (tmp_path / 'media-retention-report.json').write_text(json.dumps(report, indent=2))
+
+
+@pytest.mark.parametrize('fault', ['device', 'replaced', 'entry_link', 'index_link', 'root_link', 'escape', 'bad_index', 'bad_entry', 'index_fifo'])
+def test_media_cleanup_rejects_unsafe_ownership_and_preserves_external_files(tmp_path, fault):
+    root, cache, key = media_cleanup_case(tmp_path)
+    entry = cache / 'media' / key
+    index = cache / 'media/entries.json'
+    external = tmp_path / 'external'
+    external.mkdir()
+    (external / 'sentinel').write_text('keep original')
+    if fault == 'device':
+        records = release.read_json(index)
+        records[key]['device'] += 1
+        release.atomic_json(index, records)
+    elif fault in ('replaced', 'entry_link'):
+        entry.rename(tmp_path / 'original-entry')
+        if fault == 'replaced':
+            entry.mkdir()
+            (entry / 'replacement').write_text('not owned')
+        else:
+            entry.symlink_to(external, target_is_directory=True)
+    elif fault == 'index_link':
+        index.rename(external / 'entries.json')
+        index.symlink_to(external / 'entries.json')
+    elif fault == 'root_link':
+        (cache / 'media').rename(tmp_path / 'original-media')
+        (cache / 'media').symlink_to(tmp_path / 'original-media', target_is_directory=True)
+    elif fault == 'escape':
+        (entry / 'escaped').symlink_to(external, target_is_directory=True)
+    elif fault == 'bad_index':
+        index.write_text('{')
+    elif fault == 'index_fifo':
+        index.unlink()
+        os.mkfifo(index)
+    else:
+        records = release.read_json(index)
+        records[key]['inode'] = 'invalid'
+        release.atomic_json(index, records)
+    original_index = index.read_bytes() if fault != 'index_fifo' else index.lstat().st_ino
+    code, plan = media_cleanup_command(root)
+    assert code == 1 and not plan['media_cache']['complete']
+    code, report = media_cleanup_command(root, apply=True)
+    assert code == 1 and not report['cleanup_complete']
+    assert (index.read_bytes() if fault != 'index_fifo' else index.lstat().st_ino) == original_index
+    assert entry.exists() and (external / 'sentinel').read_text() == 'keep original'
+
+
+def test_media_cleanup_refuses_real_occupancy_but_saves_other_progress(tmp_path):
+    import select
+
+    root, cache, key = media_cleanup_case(tmp_path)
+    free_key = prepare_media_fixture(tmp_path / 'other-desktop', cache, '1.0.0')
+    file = cache / 'media' / key / 'vendor/media-tools/darwin-arm64/ffprobe'
+    holder = subprocess.Popen([sys.executable, '-c',
+        'import sys; f=open(sys.argv[1]); print("ready", flush=True); sys.stdin.read()', str(file)],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    try:
+        assert select.select([holder.stdout], [], [], 5)[0] and holder.stdout.readline().strip() == 'ready'
+        code, report = media_cleanup_command(root, apply=True)
+        assert code == 1 and not report['cleanup_complete']
+        items = {item['key']: item for item in report['cache']['media']['items']}
+        assert items[key]['action'] == 'refused' and 'occupied' in items[key]['reason']
+        assert items[free_key]['action'] == 'deleted' and items[free_key]['index_saved']
+        assert set(release.read_json(cache / 'media/entries.json')) == {key}
+    finally:
+        holder.communicate(timeout=5)
+        assert holder.returncode == 0
+    code, report = media_cleanup_command(root, apply=True)
+    assert code == 0 and report['cleanup_complete']
+    assert [item['key'] for item in report['cache']['media']['items']] == [key]
+    assert release.read_json(cache / 'media/entries.json') == {}
+
+
+@pytest.mark.parametrize('boundary', ['before', 'partial', 'deleted', 'replaced'])
+def test_media_cleanup_new_process_recovers_after_real_node_termination(tmp_path, boundary):
+    import select
+    import signal
+
+    root, cache, key = media_cleanup_case(tmp_path)
+    entry = cache / 'media' / key
+    index_before = (cache / 'media/entries.json').read_bytes()
+    fifo = tmp_path / 'checkpoint'
+    os.mkfifo(fifo)
+    fd = os.open(fifo, os.O_RDWR | os.O_NONBLOCK)
+    injection = tmp_path / 'interrupt.cjs'
+    injection.write_text('''const fs = require('node:fs');
+const original = fs.rmSync;
+fs.rmSync = function(file, options) {
+  if (file === TARGET) {
+    if (BOUNDARY === 'partial') fs.unlinkSync(file + '/vendor/media-tools/darwin-arm64/ffprobe');
+    if (['deleted', 'replaced'].includes(BOUNDARY)) original(file, options);
+    fs.writeFileSync(FIFO, String(process.pid));
+    process.kill(process.pid, 'SIGSTOP');
+  }
+  return original(file, options);
+};
+'''.replace('TARGET', json.dumps(str(entry))).replace('BOUNDARY', json.dumps(boundary)).replace('FIFO', json.dumps(str(fifo))))
+    env = {**os.environ, 'NODE_OPTIONS': '--require=' + str(injection)}
+    process = subprocess.Popen([sys.executable, str(Path(__file__).parents[1] / 'scripts/release.py'),
+        'cleanup', '--root', str(root), '--apply'], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    node_pid = None
+    try:
+        assert select.select([fd], [], [], 10)[0]
+        node_pid = int(os.read(fd, 128))
+        os.kill(node_pid, signal.SIGKILL)
+        stdout, stderr = process.communicate(timeout=10)
+        assert process.returncode == 1, (stdout, stderr)
+        assert not json.loads(stdout)['cleanup_complete']
+    finally:
+        os.close(fd)
+        if process.poll() is None:
+            if node_pid:
+                os.kill(node_pid, signal.SIGKILL)
+            process.kill()
+            process.communicate(timeout=5)
+    assert (cache / 'media/entries.json').read_bytes() == index_before
+    if boundary == 'replaced':
+        entry.mkdir()
+        (entry / 'sentinel').write_text('replacement')
+    code, report = media_cleanup_command(root, apply=True)
+    if boundary == 'replaced':
+        assert code == 1 and not report['cleanup_complete']
+        assert (entry / 'sentinel').read_text() == 'replacement'
+        assert (cache / 'media/entries.json').read_bytes() == index_before
+    else:
+        assert code == 0 and report['cleanup_complete']
+        assert not entry.exists() and release.read_json(cache / 'media/entries.json') == {}
+
+
+def test_media_cleanup_stops_after_index_save_failure_then_retries(tmp_path):
+    root, cache, first = media_cleanup_case(tmp_path)
+    second = prepare_media_fixture(tmp_path / 'second-desktop', cache, '1.0.0')
+    injection = tmp_path / 'fail-index.cjs'
+    injection.write_text('''const fs = require('node:fs');
+const rename = fs.renameSync;
+fs.renameSync = function(from, to) {
+  if (to === INDEX) throw new Error('test index save failure');
+  return rename(from, to);
+};
+'''.replace('INDEX', json.dumps(str(cache / 'media/entries.json'))))
+    code, report = media_cleanup_command(root, apply=True, env={**os.environ, 'NODE_OPTIONS': '--require=' + str(injection)})
+    assert code == 1 and not report['cleanup_complete']
+    items = report['cache']['media']['items']
+    assert items[0]['key'] == first and items[0]['action'] == 'deleted' and not items[0]['index_saved']
+    assert items[1]['key'] == second and items[1]['action'] == 'pending'
+    assert (cache / 'media' / second).is_dir()
+    assert set(release.read_json(cache / 'media/entries.json')) == {first, second}
+    code, report = media_cleanup_command(root, apply=True)
+    assert code == 0 and report['cleanup_complete']
+    assert release.read_json(cache / 'media/entries.json') == {}
+
+
+@pytest.mark.parametrize('response', ['nonzero', 'invalid_json', 'missing_fields', 'invalid_item'])
+def test_cleanup_reports_node_protocol_failure_without_deleting_media(tmp_path, response):
+    root, cache, key = media_cleanup_case(tmp_path)
+    injection = tmp_path / 'protocol.cjs'
+    body = {
+        'nonzero': "console.error('test command failure'); process.exit(7);",
+        'invalid_json': "console.log('not json'); process.exit(0);",
+        'missing_fields': "console.log('{}'); process.exit(0);",
+        'invalid_item': "const r = JSON.parse(require('node:fs').readFileSync(0, 'utf8')); console.log(JSON.stringify({...r, complete:true, items:[{}]})); process.exit(0);",
+    }[response]
+    injection.write_text(body)
+    before = release.inventory(cache / 'media')
+    code, report = media_cleanup_command(root, apply=True, env={**os.environ, 'NODE_OPTIONS': '--require=' + str(injection)})
+    assert code == 1 and not report['cleanup_complete'] and report['cache']['reason']
+    assert release.inventory(cache / 'media') == before
+    assert (cache / 'media' / key).is_dir()
+
+
+def test_cleanup_requires_available_real_occupancy_checker(tmp_path):
+    root, cache, key = media_cleanup_case(tmp_path)
+    bin_dir = tmp_path / 'restricted-bin'
+    bin_dir.mkdir()
+    for tool in ('node', 'git'):
+        (bin_dir / tool).symlink_to(shutil.which(tool))
+    code, report = media_cleanup_command(root, apply=True, env={**os.environ, 'PATH': str(bin_dir)})
+    assert code == 1 and not report['cleanup_complete']
+    assert 'occupancy check failed' in report['cache']['media']['items'][0]['reason']
+    assert (cache / 'media' / key).is_dir()
+
+
+@pytest.mark.skipif(sys.platform != 'darwin', reason='Real macOS mounted media cache boundary')
+def test_media_cleanup_refuses_real_mount_without_detaching_it(tmp_path):
+    root, cache, key = media_cleanup_case(tmp_path)
+    data = tmp_path / 'image-data'
+    data.mkdir()
+    (data / 'sentinel').write_text('mounted original')
+    image = tmp_path / 'test.dmg'
+    subprocess.run(['hdiutil', 'create', '-srcfolder', str(data), '-format', 'UDZO', str(image)], check=True, capture_output=True)
+    mount = cache / 'media' / key / 'mounted'
+    mount.mkdir()
+    subprocess.run(['hdiutil', 'attach', '-nobrowse', '-readonly', '-mountpoint', str(mount), str(image)], check=True, capture_output=True)
+    try:
+        assert os.path.ismount(mount)
+        code, report = media_cleanup_command(root, apply=True)
+        assert code == 1 and not report['cleanup_complete']
+        assert 'Mounted' in report['cache']['media']['items'][0]['reason']
+        assert os.path.ismount(mount) and (mount / 'sentinel').read_text() == 'mounted original'
+    finally:
+        subprocess.run(['hdiutil', 'detach', str(mount)], check=True, capture_output=True)
+    assert not os.path.ismount(mount)
+
+
+def test_media_cleanup_partial_delete_error_keeps_registration_and_continues(tmp_path):
+    root, cache, first = media_cleanup_case(tmp_path)
+    second = prepare_media_fixture(tmp_path / 'second-desktop', cache, '1.0.0')
+    entry = cache / 'media' / first
+    injection = tmp_path / 'partial.cjs'
+    injection.write_text('''const fs = require('node:fs');
+const remove = fs.rmSync;
+fs.rmSync = function(file, options) {
+  if (file === TARGET) {
+    fs.unlinkSync(file + '/vendor/media-tools/darwin-arm64/ffprobe');
+    throw new Error('test partial deletion failure');
+  }
+  return remove(file, options);
+};
+'''.replace('TARGET', json.dumps(str(entry))))
+    code, report = media_cleanup_command(root, apply=True, env={**os.environ, 'NODE_OPTIONS': '--require=' + str(injection)})
+    assert code == 1 and not report['cleanup_complete']
+    items = {item['key']: item for item in report['cache']['media']['items']}
+    assert items[first]['action'] == 'refused' and 'partial deletion failure' in items[first]['reason']
+    assert items[second]['action'] == 'deleted' and items[second]['index_saved']
+    assert set(release.read_json(cache / 'media/entries.json')) == {first}
+    assert entry.is_dir() and not (entry / 'vendor/media-tools/darwin-arm64/ffprobe').exists()
+    code, report = media_cleanup_command(root, apply=True)
+    assert code == 0 and report['cleanup_complete']
+    assert not entry.exists() and release.read_json(cache / 'media/entries.json') == {}

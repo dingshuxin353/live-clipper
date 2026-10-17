@@ -1041,7 +1041,9 @@ def candidate(args):
     owned_directory(output, 'build-environment')
     python = tools["python_identity"]["executable"]
     env = isolated_env(output / "build-environment", cache=cache, python=python)
-    prune_media_cache(cache, cache_keep_versions(cleanup_plan(output)))
+    media = prune_media_cache(cache, cache_keep_versions(cleanup_plan(output)))
+    atomic_json(evidence / 'media-cache-cleanup.json', media)
+    require(media['complete'], 'Media cache cleanup incomplete; see media-cache-cleanup.json')
     limit_download_cache(cache, python=python)
 
     def step(name, command, **kwargs):
@@ -1445,26 +1447,27 @@ def retain_formal_assets(root, done):
         require(file.stat().st_size == record['size'] and sha256(file) == record['sha256'], 'Preserved formal asset mismatch')
 
 
-def prune_media_cache(cache, keep_versions):
+def prune_media_cache(cache, keep_versions, *, apply=True):
+    canonical_path(cache)
     require(read_json(canonical_path(cache / 'owner.json')) == {'format': 1, 'repo': str(ROOT.resolve()), 'kind': 'venus-download-cache'}, 'Cache ownership mismatch')
-    index = canonical_path(cache / 'media/entries.json')
-    if not index.exists():
-        return
-    entries = read_json(index)
-    for key, facts in list(entries.items()):
-        require(re.fullmatch(r'[0-9a-f]{64}', key), 'Unsafe media cache key')
-        if facts['version'] in keep_versions:
-            continue
-        path = canonical_path(cache / 'media' / key)
-        if path.exists():
-            current = path.stat()
-            require(current.st_dev == facts['device'] and current.st_ino == facts['inode'], 'Media cache identity changed')
-            require(not any(os.path.ismount(p) or not p.resolve().is_relative_to(path) for p in (path, *path.rglob('*'))), 'Unsafe media cache tree')
-            occupied = subprocess.run(['lsof', '-t', '+D', str(path)], capture_output=True, text=True)
-            require(occupied.returncode == 1 and not occupied.stdout and not occupied.stderr, 'Media cache occupied')
-            shutil.rmtree(path)
-        del entries[key]
-    atomic_json(index, entries)
+    request = {'root': str(cache / 'media'), 'keep_versions': sorted(keep_versions), 'operation': 'apply' if apply else 'preview'}
+    script = Path(__file__).resolve().parents[1] / 'desktop/scripts/prepare-media-tools.js'
+    process = subprocess.run(['node', str(script)], input=json.dumps(request), capture_output=True, text=True)
+    require(process.returncode == 0, 'Media cache command failed: ' + safe_diagnostic(process.stderr.strip()))
+    try:
+        result = json.loads(process.stdout)
+    except ValueError as exc:
+        raise ReleaseError('Invalid media cache command JSON') from exc
+    require(isinstance(result, dict) and result.get('root') == request['root']
+            and result.get('operation') == request['operation'] and isinstance(result.get('complete'), bool)
+            and isinstance(result.get('items'), list), 'Incomplete media cache result')
+    for item in result['items']:
+        require(isinstance(item, dict) and {'key', 'path', 'version', 'bytes_before', 'action', 'reason'} <= item.keys()
+                and isinstance(item['path'], str) and isinstance(item['reason'], str)
+                and item['action'] in {'keep', 'delete', 'deleted', 'absent', 'refused', 'unknown', 'pending'}
+                and (item['bytes_before'] is None or type(item['bytes_before']) is int and item['bytes_before'] >= 0),
+                'Incomplete media cache item')
+    return result
 
 
 def cache_keep_versions(plan):
@@ -1482,10 +1485,16 @@ def cache_keep_versions(plan):
 def cleanup(root, apply=False):
     root = validate_output(root, ROOT)
     plan = cleanup_plan(root)
+    cache = root.parent / 'download-cache'
     if not apply:
+        if cache.exists() or cache.is_symlink():
+            try:
+                plan['media_cache'] = prune_media_cache(cache, cache_keep_versions(plan), apply=False)
+            except (ReleaseError, OSError, ValueError) as exc:
+                plan['media_cache'] = {'complete': False, 'items': [], 'reason': str(exc)}
         print(json.dumps(plan, indent=2))
         return plan
-    before = space_snapshot(root)
+    before = space_snapshot(root, cache)
     results = []
     recovery = recover_resources(root)
     for item in plan['releases']:
@@ -1529,16 +1538,15 @@ def cleanup(root, apply=False):
                 atomic_json(path / 'published-manifest.json', done)
         except (ReleaseError, OSError, ValueError, KeyError) as exc:
             results.append({'root': str(path), 'complete': False, 'reason': str(exc)})
-    cache = root.parent / 'download-cache'
-    if cache.exists():
+    cache_report = {}
+    if cache.exists() or cache.is_symlink():
         try:
-            prune_media_cache(cache, cache_keep_versions(plan))
-            cache_report = limit_download_cache(cache)
+            cache_report['media'] = prune_media_cache(cache, cache_keep_versions(plan))
+            require(cache_report['media']['complete'], 'Media cache cleanup incomplete')
+            cache_report.update(limit_download_cache(cache))
         except (ReleaseError, OSError, ValueError) as exc:
-            cache_report = {'reason': str(exc)}
-    else:
-        cache_report = {}
-    report = {**plan, 'before': before, 'after': space_snapshot(root), 'results': results,
+            cache_report['reason'] = str(exc)
+    report = {**plan, 'before': before, 'after': space_snapshot(root, cache), 'results': results,
               'resource_issues': recovery, 'cache': cache_report,
               'cleanup_complete': str(root) not in plan['preserved_unresolved'] and not recovery and all(r['complete'] for r in results) and 'reason' not in cache_report,
               'accounting': 'Logical file sizes and observed volume free space; APFS snapshots/clones mean these are not guaranteed physically reclaimed bytes',
@@ -1724,7 +1732,7 @@ def main(argv=None):
         with exclusive_lock(common):
             if args.command == 'cleanup':
                 report = cleanup(args.root, args.apply)
-                if args.apply and not report['cleanup_complete']:
+                if (args.apply and not report['cleanup_complete']) or not report.get('media_cache', {}).get('complete', True):
                     return 1
             else:
                 (candidate if args.command == "candidate" else publish)(args)
