@@ -290,6 +290,7 @@ def test_transient_ai_failure_records_bounded_retry_without_raw_error(tmp_path):
     assert issue.issue_code == "ai_review_failed"
     assert issue.status == "retrying"
     assert issue.automatic_attempt_count == 1
+    assert not repository.list_recovery_attempts(issue.issue_id)
     assert datetime.fromisoformat(issue.next_retry_at.replace("Z", "+00:00")).timestamp() - current.timestamp() == 30
     assert "sk-secret" not in json.dumps(issue.__dict__)
 

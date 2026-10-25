@@ -3066,6 +3066,7 @@ class ProjectRepository:
         detail: Mapping[str, Any] | None = None,
         recovery_capability: str | None = None,
         safe_checkpoint: str | None = None,
+        operational_overrides: Mapping[str, Any] | None = None,
         occurred_at: str | None = None,
     ) -> Issue:
         if status not in {"retrying", "action_required", "checking", "ready_to_recover", "recovering", "resolved"}:
@@ -3089,6 +3090,7 @@ class ProjectRepository:
                 raise ValueError("invalid issue status transition")
             self.connection.execute(
                 """UPDATE issues SET status = ?, recovery_capability = ?, safe_checkpoint = ?,
+                     operational_overrides_json = ?,
                      issue_revision = issue_revision + 1, updated_at = ?,
                      resolved_at = CASE WHEN ? = 'resolved' THEN ? ELSE NULL END
                    WHERE issue_id = ?""",
@@ -3100,6 +3102,7 @@ class ProjectRepository:
                     sanitize_persisted_text(safe_checkpoint)
                     if safe_checkpoint is not None
                     else current["safe_checkpoint"],
+                    stable_json(operational_overrides) if operational_overrides is not None else current["operational_overrides_json"],
                     timestamp,
                     status,
                     timestamp,
@@ -3154,87 +3157,121 @@ class ProjectRepository:
         assert issue is not None
         return issue
 
-    def register_recovery_attempt(
+    def find_recovery_attempt(self, issue_id: str, request_id: str) -> RecoveryAttempt | None:
+        row = _one(self.connection.execute(
+            "SELECT * FROM recovery_attempts WHERE issue_id = ? AND request_id = ?", (issue_id, request_id),
+        ))
+        return self._recovery_from_row(row) if row else None
+
+    def accept_recovery(
         self,
         issue_id: str,
         *,
+        expected_issue_revision: int,
         request_id: str,
-        attempt_type: str,
         requested_by: str,
-        run_id: str | None = None,
-        output_id: str | None = None,
-        material_id: str | None = None,
-        reuse_stages: Sequence[str] = (),
-        redo_stages: Sequence[str] = (),
-        operational_overrides: Mapping[str, Any] | None = None,
-        attempt_id: str | None = None,
-        requested_at: str | None = None,
+        attempt_type: str,
     ) -> RecoveryAttempt:
-        if attempt_type not in {"continue_run", "retry_output", "retry_material", "operational_repair"}:
+        if attempt_type not in {"continue_run", "retry_output", "retry_material"}:
             raise ValueError("invalid recovery attempt type")
-        issue = self.get_issue(issue_id)
-        if issue is None:
-            raise KeyError(issue_id)
-        timestamp = normalize_utc(requested_at)
-        normalized = {
-            "attempt_type": attempt_type,
-            "run_id": run_id,
-            "output_id": output_id,
-            "material_id": material_id,
-            "requested_by": sanitize_persisted_text(requested_by),
-            "reuse_stages_json": stable_json(list(reuse_stages)),
-            "redo_stages_json": stable_json(list(redo_stages)),
-            "operational_overrides_json": stable_json(_safe_payload(operational_overrides or {})),
-        }
         with self.transaction():
-            existing = _one(
-                self.connection.execute(
-                    "SELECT * FROM recovery_attempts WHERE issue_id = ? AND request_id = ?",
-                    (issue_id, request_id),
-                )
-            )
+            issue = self.get_issue(issue_id)
+            if issue is None:
+                raise KeyError(issue_id)
+            output_id = issue.output_id if attempt_type != "continue_run" else None
+            material_id = issue.material_id if attempt_type == "retry_material" else None
+            existing = self.find_recovery_attempt(issue_id, request_id)
             if existing is not None:
-                for field, value in normalized.items():
-                    if existing[field] != value:
-                        raise RequestConflictError("recovery_request_conflict")
-                attempt_id = str(existing["attempt_id"])
-            else:
-                attempt_id = attempt_id or new_id()
-                self.connection.execute(
-                    """INSERT INTO recovery_attempts(
-                         attempt_id, issue_id, request_id, attempt_type, run_id, output_id,
-                         material_id, requested_by, reuse_stages_json, redo_stages_json,
-                         operational_overrides_json, status, requested_at
-                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'requested', ?)""",
-                    (
-                        attempt_id,
-                        issue_id,
-                        request_id,
-                        normalized["attempt_type"],
-                        normalized["run_id"],
-                        normalized["output_id"],
-                        normalized["material_id"],
-                        normalized["requested_by"],
-                        normalized["reuse_stages_json"],
-                        normalized["redo_stages_json"],
-                        normalized["operational_overrides_json"],
-                        timestamp,
-                    ),
+                expected = (attempt_type, issue.run_id, output_id, material_id, sanitize_persisted_text(requested_by))
+                actual = (existing.attempt_type, existing.run_id, existing.output_id, existing.material_id, existing.requested_by)
+                if actual != expected:
+                    raise RequestConflictError("recovery_request_conflict")
+                return existing
+            if issue.issue_revision != expected_issue_revision:
+                raise RevisionConflictError("issue_revision_conflict")
+            if issue.status != "ready_to_recover":
+                raise ValueError("issue_not_ready_to_recover")
+            run = self.get_run(str(issue.run_id))
+            if run is None or run.project_id != issue.project_id:
+                raise ValueError("recovery run does not belong to issue")
+            if attempt_type != "continue_run":
+                output = self.get_run_output(str(output_id))
+                if output is None or output.run_id != run.run_id:
+                    raise ValueError("recovery output does not belong to run")
+            if attempt_type == "retry_material":
+                material = self.get_output_material(str(output_id))
+                if material is None or material.material_id != material_id:
+                    raise ValueError("recovery material does not belong to output")
+            timestamp = normalize_utc()
+            attempt_id = new_id()
+            overrides = issue.operational_overrides
+            self.connection.execute(
+                """INSERT INTO recovery_attempts(
+                     attempt_id, issue_id, request_id, attempt_type, run_id, output_id,
+                     material_id, requested_by, reuse_stages_json, redo_stages_json,
+                     operational_overrides_json, status, requested_at, accepted_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'accepted', ?, ?)""",
+                (
+                    attempt_id,
+                    issue.issue_id,
+                    request_id,
+                    attempt_type,
+                    issue.run_id,
+                    output_id,
+                    material_id,
+                    sanitize_persisted_text(requested_by),
+                    stable_json(issue.reuse_stages),
+                    stable_json(issue.redo_stages),
+                    stable_json(overrides),
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            self.connection.execute(
+                """UPDATE issues SET status = 'recovering', total_attempt_count = total_attempt_count + 1,
+                     operational_overrides_json = ?, issue_revision = issue_revision + 1, updated_at = ?
+                   WHERE issue_id = ?""",
+                (stable_json(overrides), timestamp, issue.issue_id),
+            )
+            self.connection.execute(
+                "INSERT INTO issue_events(issue_id, event_type, occurred_at, detail_json) VALUES (?, 'recovery_accepted', ?, ?)",
+                (issue.issue_id, timestamp, stable_json({"attempt_id": attempt_id, "attempt_type": attempt_type})),
+            )
+            if attempt_type == "continue_run":
+                redo_stage = issue.redo_stages[0] if issue.redo_stages else "read_source"
+                cursor = self.connection.execute(
+                    """UPDATE runs SET status = 'queued', current_stage = ?, queued_at = ?, completed_at = NULL,
+                         updated_at = ?, error_code = NULL, error_summary = NULL WHERE run_id = ?""",
+                    (redo_stage, timestamp, timestamp, issue.run_id),
                 )
+                if cursor.rowcount != 1:
+                    raise KeyError(str(issue.run_id))
                 self.connection.execute(
-                    "UPDATE issues SET total_attempt_count = total_attempt_count + 1, updated_at = ? WHERE issue_id = ?",
-                    (timestamp, issue_id),
+                    "INSERT INTO run_stage_events(run_id, stage, event_type, occurred_at, detail_json) VALUES (?, ?, 'recovery_queued', ?, ?)",
+                    (issue.run_id, redo_stage, timestamp, stable_json({"attempt_id": attempt_id})),
                 )
-                self.connection.execute(
-                    """INSERT INTO issue_events(issue_id, event_type, occurred_at, detail_json)
-                       VALUES (?, 'recovery_requested', ?, ?)""",
-                    (
-                        issue_id,
-                        timestamp,
-                        stable_json({"attempt_id": attempt_id, "attempt_type": attempt_type}),
-                    ),
+            elif attempt_type == "retry_output":
+                cursor = self.connection.execute(
+                    """UPDATE run_outputs SET status = 'pending', error_code = NULL, error_summary = NULL,
+                         updated_at = ? WHERE output_id = ? AND run_id = ?""",
+                    (timestamp, output_id, issue.run_id),
                 )
-        result = self.get_recovery_attempt(str(attempt_id))
+                if cursor.rowcount != 1:
+                    raise KeyError(str(output_id))
+            elif attempt_type == "retry_material":
+                cursor = self.connection.execute(
+                    """UPDATE output_materials SET status = 'pending', updated_at = ?
+                       WHERE material_id = ? AND output_id = ?""",
+                    (timestamp, material_id, output_id),
+                )
+                if cursor.rowcount != 1:
+                    raise KeyError(str(material_id))
+            self.connection.execute(
+                """INSERT INTO workspace_events(event_type, project_id, run_id, occurred_at, payload_json)
+                   VALUES ('recovery_accepted', ?, ?, ?, ?)""",
+                (run.project_id, issue.run_id, timestamp, stable_json({"attempt_id": attempt_id, "type": attempt_type})),
+            )
+        result = self.get_recovery_attempt(attempt_id)
         assert result is not None
         return result
 
@@ -3243,62 +3280,6 @@ class ProjectRepository:
             self.connection.execute("SELECT * FROM recovery_attempts WHERE attempt_id = ?", (attempt_id,))
         )
         return self._recovery_from_row(row) if row else None
-
-    def update_recovery_attempt(
-        self,
-        attempt_id: str,
-        *,
-        status: str,
-        result: Mapping[str, Any] | None = None,
-        occurred_at: str | None = None,
-    ) -> RecoveryAttempt:
-        if status not in {"accepted", "running", "completed", "failed"}:
-            raise ValueError("invalid recovery status transition")
-        timestamp = normalize_utc(occurred_at)
-        time_field = {
-            "accepted": "accepted_at",
-            "running": "started_at",
-            "completed": "completed_at",
-            "failed": "failed_at",
-        }[status]
-        with self.transaction():
-            current = _one(
-                self.connection.execute("SELECT status FROM recovery_attempts WHERE attempt_id = ?", (attempt_id,))
-            )
-            if current is None:
-                raise KeyError(attempt_id)
-            allowed_transitions = {
-                "requested": {"accepted", "failed"},
-                "accepted": {"running", "completed", "failed"},
-                "running": {"completed", "failed"},
-                "completed": set(),
-                "failed": set(),
-            }
-            if status not in allowed_transitions[str(current["status"])]:
-                raise ValueError("invalid recovery status transition")
-            cursor = self.connection.execute(
-                f"""UPDATE recovery_attempts SET status = ?, {time_field} = ?, result_json = ?
-                    WHERE attempt_id = ?""",  # noqa: S608
-                (status, timestamp, stable_json(_safe_payload(result or {})), attempt_id),
-            )
-            assert cursor.rowcount == 1
-            attempt_row = _one(
-                self.connection.execute("SELECT issue_id FROM recovery_attempts WHERE attempt_id = ?", (attempt_id,))
-            )
-            assert attempt_row is not None
-            self.connection.execute(
-                """INSERT INTO issue_events(issue_id, event_type, occurred_at, detail_json)
-                   VALUES (?, ?, ?, ?)""",
-                (
-                    attempt_row["issue_id"],
-                    f"recovery_{status}",
-                    timestamp,
-                    stable_json({"attempt_id": attempt_id}),
-                ),
-            )
-        updated = self.get_recovery_attempt(attempt_id)
-        assert updated is not None
-        return updated
 
     def list_recovery_attempts(self, issue_id: str) -> list[RecoveryAttempt]:
         rows = _dicts(

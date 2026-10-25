@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from live_clipper.project_domain import default_project_config, project_config_v2
-from live_clipper.project_result_domain import RequestConflictError, RevisionConflictError
+from live_clipper.project_result_domain import RevisionConflictError
 from live_clipper.project_storage import SCHEMA_V1, ProjectRepository, connect_database, initialize_schema
 
 
@@ -332,7 +332,7 @@ def test_selected_review_output_projection_seen_cas_and_material_revision(tmp_pa
     assert repo.get_run_result(run.run_id).seen_result_revision == 1
 
 
-def test_issue_dedupe_revision_events_and_recovery_request_id(tmp_path):
+def test_issue_dedupe_revision_and_events(tmp_path):
     repo = ProjectRepository(tmp_path)
     project, run = _run(repo, tmp_path)
     first = repo.discover_issue(
@@ -370,35 +370,11 @@ def test_issue_dedupe_revision_events_and_recovery_request_id(tmp_path):
             status="ready_to_recover",
             event_type="stale",
         )
-    attempt = repo.register_recovery_attempt(
-        first.issue_id,
-        request_id="request-1",
-        attempt_type="continue_run",
-        requested_by="user",
-        run_id=run.run_id,
-        reuse_stages=["transcribe"],
-        redo_stages=["review"],
-    )
-    repeated = repo.register_recovery_attempt(
-        first.issue_id,
-        request_id="request-1",
-        attempt_type="continue_run",
-        requested_by="user",
-        run_id=run.run_id,
-        reuse_stages=["transcribe"],
-        redo_stages=["review"],
-    )
-    assert checking.issue_revision == 3 and attempt.attempt_id == repeated.attempt_id
-    with pytest.raises(RequestConflictError):
-        repo.register_recovery_attempt(
-            first.issue_id,
-            request_id="request-1",
-            attempt_type="operational_repair",
-            requested_by="user",
-        )
+    assert checking.issue_revision == 3
+    assert repo.list_issue_events(first.issue_id)[-1].event_type == "recheck_started"
 
 
-def test_concurrent_issue_and_recovery_identity_are_singletons(tmp_path):
+def test_concurrent_issue_identity_is_singleton(tmp_path):
     setup = ProjectRepository(tmp_path)
     project, run = _run(setup, tmp_path)
 
@@ -416,21 +392,6 @@ def test_concurrent_issue_and_recovery_identity_are_singletons(tmp_path):
     with ThreadPoolExecutor(max_workers=2) as pool:
         issue_ids = list(pool.map(lambda _index: discover(), range(2)))
     assert len(set(issue_ids)) == 1
-    issue_id = issue_ids[0]
-
-    def recover():
-        with ProjectRepository(tmp_path) as repo:
-            return repo.register_recovery_attempt(
-                issue_id,
-                request_id="same-request",
-                attempt_type="continue_run",
-                requested_by="system",
-                run_id=run.run_id,
-            ).attempt_id
-
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        attempt_ids = list(pool.map(lambda _index: recover(), range(2)))
-    assert len(set(attempt_ids)) == 1
 
 
 def test_concurrent_review_attempt_and_verified_registration_reuse_identity(tmp_path):
