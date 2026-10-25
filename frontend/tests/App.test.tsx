@@ -174,7 +174,9 @@ describe("Venus 1.0 core workbench", () => {
     const button = await screen.findByRole("button", { name: "手动扫描" }); fireEvent.click(button);
     expect(await screen.findByRole("button", { name: "扫描中…" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "扫描中…" }));
-    expect(calls.filter(([path]) => path === "/api/projects/project-1/scans")).toHaveLength(1); finish();
+    expect(calls.filter(([path]) => path === "/api/projects/project-1/scans")).toHaveLength(1);
+    expect(JSON.parse(String(calls.find(([path]) => path === "/api/projects/project-1/scans")![1]?.body))).toEqual({ request_id: expect.stringMatching(/^project-scan-/), scope: 'new', selected_relative_paths: [] });
+    finish();
   });
 
   it("submits only selected and selectable source files", async () => {

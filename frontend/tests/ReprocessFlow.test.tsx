@@ -1,6 +1,9 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 
 import { App } from "../src/App";
+import { ReprocessControls } from "../src/ReprocessDialogs";
+import { projectApi } from "../src/project-api";
 import { PROJECT, RUN, installFetchMock, jsonResponse } from "./helpers";
 
 const ORIGIN = {
@@ -56,6 +59,8 @@ function mocks(overrides: Record<string, unknown> = {}) {
   });
 }
 
+afterEach(() => { sessionStorage.removeItem('venus.reprocess.request.run-origin'); sessionStorage.removeItem('venus.reprocess.request.run-other'); });
+
 describe("Spec T reprocess and version flow", () => {
   beforeEach(() => route("/projects/project-1/runs/run-origin"));
 
@@ -70,12 +75,14 @@ describe("Spec T reprocess and version flow", () => {
     for (const phase of ["读取录像", "语音识别", "内容分析", "整理候选片段", "片段筛选", "生成成片"]) expect(dialog).toHaveTextContent(phase);
     expect(dialog).toHaveTextContent("处理时会复制一份录像，不会修改原文件。");
     const start = within(dialog).getByRole("button", { name: "开始重新处理" });
-    fireEvent.click(start);
+    fireEvent.click(start); fireEvent.click(start);
     await waitFor(() => expect(calls.filter(([path]) => path === "/api/runs/run-origin/reprocess")).toHaveLength(1));
     const body = JSON.parse(String(calls.find(([path]) => path === "/api/runs/run-origin/reprocess")?.[1]?.body));
     expect(body).toEqual({ request_id: expect.stringMatching(/^run-reprocess-/), expected_preflight_revision: "revision-1" });
-    expect(window.location.pathname).toBe("/projects/project-1/runs/run-new");
-    expect(start).toBeDisabled();
+    await waitFor(() => {
+      expect(window.location.pathname).toBe("/projects/project-1/runs/run-new");
+      expect(start).not.toBeInTheDocument();
+    });
     fireEvent.click(start);
     expect(calls.filter(([path]) => path === "/api/runs/run-origin/reprocess")).toHaveLength(1);
   });
@@ -207,16 +214,71 @@ it('replays the original preflight after remount even when current checks have c
   route('/projects/project-1/runs/run-origin?reprocess=1');
   sessionStorage.setItem('venus.reprocess.request.run-origin', JSON.stringify({ id: 'original-request', revision: 'original-revision' }));
   const calls = mocks({
-    '/api/runs/run-origin/reprocess-preflight': { ...PREFLIGHT, can_reprocess: false, preflight_revision: 'changed-revision', blockers: [{ code: 'source_missing', action: 'source_repair', related_id: ORIGIN.run_id }] },
+    '/api/runs/run-origin/reprocess-preflight': { ...PREFLIGHT, active_run: VERSIONS.versions[1], can_reprocess: false, preflight_revision: 'changed-revision', blockers: [{ code: 'source_missing', action: 'source_repair', related_id: ORIGIN.run_id }] },
     '/api/runs/run-origin/reprocess': { ok: true, run: { ...VERSIONS.versions[1], run_id: 'run-confirmed' }, created: false, reuse_reason: 'idempotent_request' },
   });
   render(<App />);
   const dialog = await screen.findByRole('alertdialog', { name: '重新处理这段录像' });
+  expect(calls.some(([path]) => path === '/api/runs/run-origin/reprocess')).toBe(false);
   expect(within(dialog).getByRole('button', { name: '取消' })).toBeDisabled();
   fireEvent.click(within(dialog).getByRole('button', { name: '继续本次操作' }));
   await waitFor(() => expect(window.location.pathname).toBe('/projects/project-1/runs/run-confirmed'));
   const sent = calls.find(([path]) => path === '/api/runs/run-origin/reprocess');
   expect(JSON.parse(String(sent?.[1]?.body))).toEqual({ request_id: 'original-request', expected_preflight_revision: 'original-revision' });
+});
+
+it('does not turn every 409 rejection into a changed-preflight confirmation', async () => {
+  route('/projects/project-1/runs/run-origin?reprocess=1');
+  const calls = mocks({ '/api/runs/run-origin/reprocess': () => jsonResponse({ ok: false, error: { code: 'revision_conflict', message: '明确拒绝' } }, 409) });
+  render(<App />);
+  const dialog = await screen.findByRole('dialog', { name: '重新处理这段录像' });
+  fireEvent.click(within(dialog).getByRole('button', { name: '开始重新处理' }));
+  await within(dialog).findByText('明确拒绝');
+  expect(screen.queryByRole('button', { name: '已核对，继续' })).not.toBeInTheDocument();
+  expect(calls.filter(([path]) => path.endsWith('/reprocess-preflight'))).toHaveLength(1);
+  expect(sessionStorage.getItem('venus.reprocess.request.run-origin')).toBeNull();
+});
+
+it('keeps a new run untouched when the old reprocess response arrives', async () => {
+  route('/projects/project-1/runs/run-origin?reprocess=1');
+  let complete!: (response: Response) => void;
+  const key = 'venus.reprocess.request.run-other';
+  const record = JSON.stringify({ id: 'other-request', revision: 'other-revision' });
+  sessionStorage.setItem(key, record);
+  mocks({ '/api/runs/run-origin/reprocess': () => new Promise<Response>(resolve => { complete = resolve; }),
+    '/api/runs/run-other': { ok: true, run: { ...ORIGIN, run_id: 'run-other', source_name: 'other.mp4' }, stage_events: [] },
+    '/api/runs/run-other/reprocess-preflight': { ...PREFLIGHT, run: { ...PREFLIGHT.run, run_id: 'run-other' } } });
+  render(<App />);
+  fireEvent.click(within(await screen.findByRole('dialog', { name: '重新处理这段录像' })).getByRole('button', { name: '开始重新处理' }));
+  await waitFor(() => expect(complete).toBeDefined());
+  await act(async () => { window.history.pushState({}, '', '/projects/project-1/runs/run-other?reprocess=1'); window.dispatchEvent(new PopStateEvent('popstate')); });
+  await screen.findByRole('button', { name: '继续本次操作' });
+  await act(async () => complete(await jsonResponse({ ok: true, run: { run_id: 'wrong-run' } })));
+  expect(window.location.pathname).toBe('/projects/project-1/runs/run-other');
+  expect(sessionStorage.getItem(key)).toBe(record);
+  expect(screen.getByRole('button', { name: '继续本次操作' })).toBeEnabled();
+});
+
+it('ignores an old preflight after switching away and back to the same run', async () => {
+  let reads = 0; let complete!: (response: Response) => void;
+  const calls = mocks({ '/api/runs/run-origin/reprocess-preflight': () => ++reads === 1
+    ? new Promise<Response>(resolve => { complete = resolve; }) : jsonResponse({ ...PREFLIGHT, preflight_revision: 'new-revision' }),
+    '/api/runs/run-other/reprocess-preflight': { ...PREFLIGHT, run: { ...PREFLIGHT.run, run_id: 'run-other' } },
+    '/api/runs/run-origin/reprocess': { ok: true, run: { run_id: 'run-created' } } });
+  const run = (await projectApi.run('run-origin')).run;
+  const project = (await projectApi.project('project-1')).project;
+  const page = (current = run) => <MemoryRouter initialEntries={['/projects/project-1/runs/run-origin?reprocess=1']}><ReprocessControls run={current} project={project} /></MemoryRouter>;
+  const view = render(page());
+  await waitFor(() => expect(complete).toBeDefined());
+  view.rerender(page({ ...run, run_id: 'run-other' }));
+  await screen.findByRole('dialog', { name: '重新处理这段录像' });
+  view.rerender(page());
+  await waitFor(() => expect(reads).toBe(2));
+  await screen.findByRole('button', { name: '开始重新处理' });
+  await act(async () => complete(await jsonResponse({ ...PREFLIGHT, preflight_revision: 'old-revision', next_processing_sequence: 99 })));
+  fireEvent.click(screen.getByRole('button', { name: '开始重新处理' }));
+  await waitFor(() => expect(calls.filter(([path]) => path.endsWith('/reprocess'))).toHaveLength(1));
+  expect(JSON.parse(String(calls.find(([path]) => path.endsWith('/reprocess'))![1]?.body)).expected_preflight_revision).toBe('new-revision');
 });
 
 it('reads nested historical configuration and ignores metadata-only differences', async () => {
