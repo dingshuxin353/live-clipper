@@ -3,6 +3,7 @@
 import importlib.util
 import json
 import os
+import select
 import shutil
 import subprocess
 import sys
@@ -514,8 +515,14 @@ def test_real_process_timeout_and_recovery_leave_no_owned_service(tmp_path, monk
     with pytest.raises(subprocess.TimeoutExpired):
         release.run([sys.executable, '-c', 'import signal; signal.pause()'], cwd=scope, env=env, timeout=0.2)
     assert release.resource_state(root)['processes'] == []
-    process = subprocess.Popen([sys.executable, '-c', 'import signal; signal.pause()'], cwd=scope, start_new_session=True)
+    process = subprocess.Popen(
+        [sys.executable, '-c', 'import signal; print("ready", flush=True); signal.pause()'],
+        cwd=scope, start_new_session=True, stdout=subprocess.PIPE, text=True,
+    )
     try:
+        # A framework launcher may replace its executable before the child is ready.
+        assert select.select([process.stdout], [], [], 5)[0], 'Owned child did not become ready'
+        assert process.stdout.readline().strip() == 'ready'
         release.remember_process(root, process, scope)
         assert release.recover_resources(root) == []
         process.wait(timeout=2)
@@ -524,6 +531,7 @@ def test_real_process_timeout_and_recovery_leave_no_owned_service(tmp_path, monk
         if process.poll() is None:
             process.terminate()
             process.wait(timeout=2)
+        process.stdout.close()
 
 
 def test_cleanup_retains_two_versions_resolves_failure_and_retries(tmp_path, monkeypatch):
