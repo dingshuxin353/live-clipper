@@ -1,6 +1,9 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 
 import { App } from "../src/App";
+import { ReprocessControls } from "../src/ReprocessDialogs";
+import { projectApi } from "../src/project-api";
 import { PROJECT, RUN, installFetchMock, jsonResponse } from "./helpers";
 
 const ORIGIN = {
@@ -56,9 +59,10 @@ function mocks(overrides: Record<string, unknown> = {}) {
   });
 }
 
+afterEach(() => { sessionStorage.removeItem('venus.reprocess.request.run-origin'); sessionStorage.removeItem('venus.reprocess.request.run-other'); });
+
 describe("Spec T reprocess and version flow", () => {
   beforeEach(() => route("/projects/project-1/runs/run-origin"));
-  afterEach(() => { sessionStorage.removeItem('venus.reprocess.request.run-origin'); sessionStorage.removeItem('venus.reprocess.request.run-other'); });
 
   it("shows the terminal entry and submits the frozen two-field contract once", async () => {
     const calls = mocks({
@@ -251,6 +255,28 @@ it('keeps a new run untouched when the old reprocess response arrives', async ()
   expect(window.location.pathname).toBe('/projects/project-1/runs/run-other');
   expect(sessionStorage.getItem(key)).toBe(record);
   expect(screen.getByRole('button', { name: '继续本次操作' })).toBeEnabled();
+});
+
+it('ignores an old preflight after switching away and back to the same run', async () => {
+  let reads = 0; let complete!: (response: Response) => void;
+  const calls = mocks({ '/api/runs/run-origin/reprocess-preflight': () => ++reads === 1
+    ? new Promise<Response>(resolve => { complete = resolve; }) : jsonResponse({ ...PREFLIGHT, preflight_revision: 'new-revision' }),
+    '/api/runs/run-other/reprocess-preflight': { ...PREFLIGHT, run: { ...PREFLIGHT.run, run_id: 'run-other' } },
+    '/api/runs/run-origin/reprocess': { ok: true, run: { run_id: 'run-created' } } });
+  const run = (await projectApi.run('run-origin')).run;
+  const project = (await projectApi.project('project-1')).project;
+  const page = (current = run) => <MemoryRouter initialEntries={['/projects/project-1/runs/run-origin?reprocess=1']}><ReprocessControls run={current} project={project} /></MemoryRouter>;
+  const view = render(page());
+  await waitFor(() => expect(complete).toBeDefined());
+  view.rerender(page({ ...run, run_id: 'run-other' }));
+  await screen.findByRole('dialog', { name: '重新处理这段录像' });
+  view.rerender(page());
+  await waitFor(() => expect(reads).toBe(2));
+  await screen.findByRole('button', { name: '开始重新处理' });
+  await act(async () => complete(await jsonResponse({ ...PREFLIGHT, preflight_revision: 'old-revision', next_processing_sequence: 99 })));
+  fireEvent.click(screen.getByRole('button', { name: '开始重新处理' }));
+  await waitFor(() => expect(calls.filter(([path]) => path.endsWith('/reprocess'))).toHaveLength(1));
+  expect(JSON.parse(String(calls.find(([path]) => path.endsWith('/reprocess'))![1]?.body)).expected_preflight_revision).toBe('new-revision');
 });
 
 it('reads nested historical configuration and ignores metadata-only differences', async () => {

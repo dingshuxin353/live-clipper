@@ -60,8 +60,11 @@ export function ReprocessControls({ run, project }: { run: Run; project: Project
     if (!response.run?.run_id) throw new Error('Missing reprocess result');
     return response;
   });
-  const source = useRef<string | null>(run.run_id); source.current = run.run_id;
-  useEffect(() => { source.current = run.run_id; return () => { source.current = null; }; }, [run.run_id]);
+  const source = useRef({ runId: run.run_id, active: true });
+  if (source.current.runId !== run.run_id) source.current = { runId: run.run_id, active: true };
+  const scope = source.current;
+  const isCurrentSource = () => source.current === scope && scope.active;
+  useEffect(() => { scope.active = true; return () => { scope.active = false; }; }, [scope]);
   const params = new URLSearchParams(location.search); const terminal = run.status === "completed" || run.status === "failed"; const reprocessRequested = params.get("reprocess") === "1"; const repairReturn = params.get("reprocessAfterRepair") === "1"; const issueOpen = params.has("issue");
   const resumable = run.status === "failed" && Boolean(run.active_issue_summary?.available_actions.includes("continue_run"));
   const setQuery = useCallback((mutate: (next: URLSearchParams) => void) => { const next = new URLSearchParams(location.search); mutate(next); navigate({ pathname: location.pathname, search: next.toString() }, { replace: true }); }, [location.pathname, location.search, navigate]);
@@ -70,12 +73,12 @@ export function ReprocessControls({ run, project }: { run: Run; project: Project
     if (loading) return; setLoading(true); if (!reconfirm) setError("");
     try {
       const next = await projectApi.reprocessPreflight(run.run_id);
-      if (source.current !== run.run_id) return;
+      if (!isCurrentSource()) return;
       if (next.active_run && !operation.blocked) { navigate(`/projects/${project.project_id}/runs/${next.active_run.run_id}`); return; }
       setPreflight(next);
-    } catch (reason) { if (source.current === run.run_id) { setError((reason as Error).message); setQuery((next) => next.delete("reprocess")); } }
-    finally { if (source.current === run.run_id) setLoading(false); }
-  }, [loading, navigate, operation.blocked, project.project_id, reconfirm, run.run_id, setQuery]);
+    } catch (reason) { if (isCurrentSource()) { setError((reason as Error).message); setQuery((next) => next.delete("reprocess")); } }
+    finally { if (isCurrentSource()) setLoading(false); }
+  }, [loading, navigate, operation.blocked, project.project_id, reconfirm, run.run_id, scope, setQuery]);
 
   useEffect(() => { if (!repairReturn || issueOpen) return; setQuery((next) => { next.delete("reprocessAfterRepair"); next.set("reprocess", "1"); }); }, [issueOpen, repairReturn, setQuery]);
   useEffect(() => { if (!reprocessRequested) setPreflight(null); }, [reprocessRequested]);
