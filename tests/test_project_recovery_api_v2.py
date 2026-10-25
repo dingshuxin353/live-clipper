@@ -18,7 +18,8 @@ from live_clipper.web import LiveClipperRequestHandler, WebPaths
 
 def recovery_fixture(tmp_path, action="continue"):
     repository, api, project, run, *_ = result_api_fixture(tmp_path)
-    repository.transition_run(run.run_id, status="failed", stage="render", event_type="failed")
+    repository.transition_run(run.run_id, status="failed", stage="render", event_type="failed",
+                              error_code="render_failed", error_summary="render failed")
     target = {}
     if action == "retry-output":
         repository.update_output_and_reproject_result("output-1", status="missing", error_code="output_missing")
@@ -97,6 +98,33 @@ def test_recovery_request_cannot_change_action(tmp_path):
     assert status == 409 and result["error"]["code"] == "request_id_conflict"
     assert repository.get_issue(issue.issue_id) == current
     assert len(repository.list_recovery_attempts(issue.issue_id)) == 1
+
+
+def test_unsupported_continue_keeps_existing_error_contract(tmp_path):
+    repository, api, project, *_ = result_api_fixture(tmp_path)
+    issue = repository.discover_issue(
+        issue_code="invalid_target", category="process", scope_type="project", project_id=project.project_id,
+        issue_group_key="project", recovery_capability="continue_run", status="ready_to_recover",
+    )
+    status, response = api.handle("POST", f"/api/issues/{issue.issue_id}/continue", body={
+        "request_id": "invalid", "expected_issue_revision": issue.issue_revision,
+    })
+    assert status == 409 and response["error"]["code"] == "issue_not_ready"
+    assert repository.get_issue(issue.issue_id) == issue and not repository.list_recovery_attempts(issue.issue_id)
+
+
+def test_recovery_without_redo_stages_queues_source_read(tmp_path):
+    repository, api, run, _issue = recovery_fixture(tmp_path)
+    issue = repository.discover_issue(
+        issue_code="processing_interrupted", category="process", scope_type="run", project_id=run.project_id,
+        run_id=run.run_id, issue_group_key="empty-redo", recovery_capability="continue_run", status="ready_to_recover",
+    )
+    status, accepted = api.handle("POST", f"/api/issues/{issue.issue_id}/continue", body={
+        "request_id": "read-source", "expected_issue_revision": issue.issue_revision,
+    })
+    assert status == 200 and accepted["rerun_stages"] == []
+    assert repository.get_run(run.run_id).current_stage == "read_source"
+    assert repository.list_stage_events(run.run_id)[-1].stage == "read_source"
 
 
 def test_continue_is_blocked_until_recheck_then_requeues_same_run(tmp_path):

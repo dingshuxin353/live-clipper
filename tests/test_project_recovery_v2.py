@@ -55,16 +55,18 @@ def test_recheck_only_changes_issue_state_and_does_not_start_processing(tmp_path
     assert not repository.list_recovery_attempts(issue.issue_id)
 
 
-def test_recheck_final_save_failure_preserves_checking_without_new_overrides(tmp_path):
+@pytest.mark.parametrize("event", ["recheck_succeeded", "resolved"])
+def test_recheck_final_save_failure_preserves_checking_without_new_overrides(tmp_path, event):
     repository, _project, run, issue = _failed_output_issue(tmp_path)
     output = tmp_path / "replacement-output"
     output.mkdir()
-    repository.connection.execute("""CREATE TEMP TRIGGER fail_recheck BEFORE INSERT ON issue_events
-        WHEN NEW.event_type = 'recheck_succeeded'
+    repository.connection.execute(f"""CREATE TEMP TRIGGER fail_recheck BEFORE INSERT ON issue_events
+        WHEN NEW.event_type = '{event}'
         BEGIN SELECT RAISE(ABORT, 'test final save failure'); END""")
 
     with pytest.raises(sqlite3.IntegrityError, match="test final save failure"):
         recheck_issue(repository, issue.issue_id, expected_issue_revision=issue.issue_revision,
+                      checker=lambda _issue: {"ok": True, "resolve_issue": event == "resolved"},
                       operational_overrides={"output_directory": str(output)})
 
     current = repository.get_issue(issue.issue_id)
