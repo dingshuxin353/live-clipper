@@ -776,17 +776,17 @@ class ProjectResultAPI:
             expected = _integer(payload["expected_issue_revision"], "expected_issue_revision")
             operation = {"issue_id": issue_id, "action": action, "expected_issue_revision": expected}
             scope = f"issue.{action}:{issue_id}"
-            existing = self.repository.get_idempotency_key(scope, request_id)
-            if existing is not None and self._idempotent(scope, request_id, operation, existing["object_id"]):
-                if existing["object_type"] == "run":
-                    return {"ok": True, "run_id": existing["object_id"], "reused": True, "reuse_reason": "active_run"}
-                attempt = next(item for item in self.repository.list_recovery_attempts(issue_id) if item.attempt_id == existing["object_id"])
-                return {"ok": True, **self.recovery_attempt_dto(attempt)}
-            issue = self._issue(issue_id)
-            if issue.issue_revision != expected:
-                raise ResultAPIError("revision_conflict", "问题状态已更新，请重新检查。", current=self.issue_dto(issue))
             try:
                 with self.repository.transaction():
+                    existing = self.repository.get_idempotency_key(scope, request_id)
+                    if existing is not None and self._idempotent(scope, request_id, operation, existing["object_id"]):
+                        if existing["object_type"] == "run":
+                            return {"ok": True, "run_id": existing["object_id"], "reused": True, "reuse_reason": "active_run"}
+                        attempt = next(item for item in self.repository.list_recovery_attempts(issue_id) if item.attempt_id == existing["object_id"])
+                        return {"ok": True, **self.recovery_attempt_dto(attempt)}
+                    issue = self._issue(issue_id)
+                    if issue.issue_revision != expected:
+                        raise ResultAPIError("revision_conflict", "问题状态已更新，请重新检查。", current=self.issue_dto(issue))
                     if action == "continue":
                         attempt = continue_run(self.repository, issue_id, expected_issue_revision=expected, request_id=request_id, requested_by="web")
                     elif action == "retry-output":
@@ -794,6 +794,8 @@ class ProjectResultAPI:
                     else:
                         attempt = retry_material(self.repository, issue_id, expected_issue_revision=expected, request_id=request_id, requested_by="web")
                     self._save_idempotency(scope, request_id, operation, "run" if isinstance(attempt, Run) else "recovery_attempt", attempt.run_id if isinstance(attempt, Run) else attempt.attempt_id)
+            except (RevisionConflictError, RequestConflictError):
+                raise
             except ValueError as exc:
                 code = str(exc)
                 if "not_ready" in code:
