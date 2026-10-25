@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import { App } from "../src/App";
 import { PathField, StatusPill } from "../src/workbench-shared";
@@ -330,4 +330,76 @@ it('does not save queued or departing edits after a conflict and shows all serve
   render(<App />); await screen.findByRole('button', { name: '保留我的修改并保存' });
   expect(writes).toBe(1); expect(screen.getByLabelText('视频描述')).toHaveValue('排队的新内容');
   fireEvent.click(screen.getByRole('button', { name: '保留我的修改并保存' })); await screen.findByText('已保存');
+});
+
+describe('pending issue operations', () => {
+  const key = 'venus.issue-request.issue-pending';
+  const actions = [
+    ['recheck', '重新检查', 'recheck'], ['select_source', '重新选择原始录像', 'source'],
+    ['select_recovery_output', '重新选择成片保存位置', 'recovery-output'],
+    ['continue_run', '继续处理', 'continue'], ['retry_output', '重新生成此成片', 'retry-output'],
+    ['retry_material', '重新生成发布文案', 'retry-material'],
+  ] as const;
+  function issue(action: string) {
+    return { issue_id: 'issue-pending', issue_code: 'source_missing', group_key: 'pending', status: 'action_required',
+      impact_level: 'blocking', title: '原录像需要检查', summary: '请检查录像', next_step: '重新检查', issue_revision: 4,
+      available_actions: [action], category: 'recording', scope: { type: 'run', project_id: 'project-1', run_id: 'run-result', output_id: null, material_id: null },
+      impact: '处理暂停', preserved_content: '结果已保留', safe_checkpoint: 'read_source', reuse_stages: [], redo_stages: ['read_source'],
+      automatic_attempt_count: 0, total_attempt_count: 0, next_retry_at: null, retry_exhausted: false,
+      diagnostic: { diagnostic_id: null, summary: null }, occurred_at: '2026-09-01T00:00:00Z', updated_at: '2026-09-01T00:00:00Z', resolved_at: null, events: [] };
+  }
+  function mockIssue(action: string, overrides: Record<string, unknown> = {}) {
+    return resultMocks({ '/api/issues/issue-pending': { ok: true, issue: issue(action) }, ...overrides });
+  }
+  async function openIssue() {
+    route('/projects/project-1/runs/run-result?view=result&issue=issue-pending'); render(<App />);
+    return screen.findByRole('dialog', { name: '问题详情' });
+  }
+  afterEach(() => { sessionStorage.removeItem(key); vi.restoreAllMocks(); });
+
+  it.each(actions)('preserves the %s request contract', async (action, label, endpoint) => {
+    window.liveClipperShell = {
+      selectIssueSource: vi.fn(async () => ({ selectionToken: 'source-grant', expiresAt: 'later' })),
+      selectRecoveryOutput: vi.fn(async () => ({ selectionToken: 'output-grant', expiresAt: 'later' })),
+    };
+    const path = `/api/issues/issue-pending/${endpoint}`;
+    const calls = mockIssue(action, { [path]: { ok: true, issue: { ...issue(action), status: 'ready_to_recover' }, run_id: 'run-result' } });
+    const drawer = await openIssue();
+    fireEvent.click(await within(drawer).findByRole('button', { name: label }));
+    await waitFor(() => expect(calls.filter(([url]) => url === path)).toHaveLength(1));
+    const body = JSON.parse(String(calls.find(([url]) => url === path)![1]?.body));
+    expect(body).toEqual({ request_id: expect.stringMatching(/^issue-action-/), expected_issue_revision: 4,
+      ...(action === 'select_source' ? { selection_token: 'source-grant' } : action === 'select_recovery_output' ? { selection_token: 'output-grant' } : {}) });
+    await waitFor(() => expect(sessionStorage.getItem(key)).toBeNull());
+  });
+
+  it('prepares file selection once, recovers after cancellation, and replays the saved grant after remount', async () => {
+    let select!: (value: { selectionToken: string; expiresAt: string } | null) => void;
+    const chooser = vi.fn(() => new Promise<{ selectionToken: string; expiresAt: string } | null>(resolve => { select = resolve; }));
+    window.liveClipperShell = { selectIssueSource: chooser };
+    const path = '/api/issues/issue-pending/source';
+    const calls = mockIssue('select_source', { [path]: new Error('response lost') });
+    const drawer = await openIssue();
+    const choose = await within(drawer).findByRole('button', { name: '重新选择原始录像' });
+    act(() => { fireEvent.click(choose); fireEvent.click(choose); });
+    expect(chooser).toHaveBeenCalledTimes(1);
+    await act(async () => select(null));
+    expect(await within(drawer).findByText('已取消选择。')).toBeVisible();
+    expect(calls.some(([url]) => url === path)).toBe(false);
+    fireEvent.click(choose);
+    await act(async () => select({ selectionToken: 'original-grant', expiresAt: 'later' }));
+    await within(drawer).findByRole('button', { name: '继续本次操作' });
+    const original = calls.find(([url]) => url === path)![1]?.body;
+    cleanup();
+    const replay = mockIssue('select_source', {
+      '/api/issues/issue-pending': { ok: true, issue: { ...issue('select_source'), issue_revision: 99 } },
+      [path]: { ok: true, issue: { ...issue('select_source'), status: 'ready_to_recover' } },
+    });
+    const restored = await openIssue();
+    expect(replay.some(([url]) => url === path)).toBe(false);
+    fireEvent.click(await within(restored).findByRole('button', { name: '继续本次操作' }));
+    await waitFor(() => expect(replay.filter(([url]) => url === path)).toHaveLength(1));
+    expect(replay.find(([url]) => url === path)![1]?.body).toBe(original);
+    expect(chooser).toHaveBeenCalledTimes(2);
+  });
 });

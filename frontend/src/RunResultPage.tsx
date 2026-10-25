@@ -10,6 +10,7 @@ import { copyText } from "./copy";
 import { projectApi, requestId } from "./project-api";
 import type { IssueAction, IssueDetail, IssueSummary, OutputMaterial, ProjectSummary, Run, RunOutput, RunResultPayload } from "./project-dto";
 import { ReprocessControls } from "./ReprocessDialogs";
+import { usePendingOperation, type OperationResult } from "./usePendingOperation";
 import { ErrorState, LoadingState, Metric, RUN_LABELS, STAGES, SectionHeading, StatusPill, formatBytes, time } from "./workbench-shared";
 
 const seenRequests = new Map<string, string>();
@@ -157,56 +158,68 @@ function materialText(material: OutputMaterial) { const title = material.titles.
 
 function IssueStrip({ issues, params, setParams }: { issues: IssueSummary[]; params: URLSearchParams; setParams(value: URLSearchParams, options?: { replace?: boolean }): void }) { return <section className="issue-strip"><SectionHeading title="待处理问题" subtitle={`${issues.length} 个问题`} /><div>{issues.map((issue) => <button key={issue.issue_id} onClick={() => { const next = new URLSearchParams(params); next.set("issue", issue.issue_id); setParams(next); }}><strong>{issue.title}</strong><span>{issue.summary}</span><small>{issue.next_step}</small></button>)}</div></section>; }
 
-type IssueRequest = { id: string; revision: number; action: IssueAction; selection?: { kind: "source" | "recovery-output"; token: string } };
-function readIssueRequest(key: string): IssueRequest | null { try { return JSON.parse(sessionStorage.getItem(key) || 'null'); } catch { return null; } }
+type IssueRequest = { id: string; revision: number; action: Exclude<IssueAction, "open_resource_repair" | "copy_diagnostic">; selection?: { kind: "source" | "recovery-output"; token: string } };
+function validIssueRequest(value: unknown): value is IssueRequest {
+  if (!value || typeof value !== "object") return false;
+  const request = value as Record<string, unknown>;
+  if (typeof request.id !== "string" || !request.id || !Number.isSafeInteger(request.revision) || Number(request.revision) < 1) return false;
+  if (["recheck", "continue_run", "retry_output", "retry_material"].includes(String(request.action))) return typeof request.action === "string" && request.selection === undefined;
+  if (request.action !== "select_source" && request.action !== "select_recovery_output") return false;
+  const selection = request.selection as IssueRequest['selection'];
+  return Boolean(selection && selection.kind === (request.action === "select_source" ? "source" : "recovery-output") && typeof selection.token === "string" && selection.token);
+}
 export function IssueDrawer({ issueId, project, onClose, onChanged }: { issueId: string; project: ProjectSummary; onClose(): void; onChanged(): Promise<void> }) {
   const drawerRef = useRef<HTMLElement>(null); const closeRef = useRef(onClose);
-  const [issue, setIssue] = useState<IssueDetail | null>(null); const [error, setError] = useState(""); const [notice, setNotice] = useState(""); const [busy, setBusy] = useState(false); const [repair, setRepair] = useState(false);
+  const [issue, setIssue] = useState<IssueDetail | null>(null); const [error, setError] = useState(""); const [notice, setNotice] = useState(""); const [repair, setRepair] = useState(false);
   const requestKey = `venus.issue-request.${issueId}`;
-  const pending = useRef(readIssueRequest(requestKey)); const [unknown, setUnknown] = useState(Boolean(pending.current));
-  const close = () => { if (!busy && !repair && !pending.current) onClose(); }; closeRef.current = close;
+  const operation = usePendingOperation(requestKey, validIssueRequest, async original => {
+    if (original.action === 'recheck' || original.selection) {
+      const checked = (await projectApi.issueCheck(issueId, original.id, original.revision, original.selection)).issue;
+      if (!checked) throw new Error('Missing issue result');
+      return checked;
+    }
+    const route = ({ continue_run: 'continue', retry_output: 'retry-output', retry_material: 'retry-material' } as const)[original.action as 'continue_run' | 'retry_output' | 'retry_material'];
+    await projectApi.issueRecover(issueId, original.id, route, original.revision);
+    return null;
+  });
+  const close = () => { if (!operation.busy && !repair && !operation.pending) onClose(); }; closeRef.current = close;
   const load = useCallback(async () => { try { setIssue((await projectApi.issue(issueId)).issue); setError(""); } catch (reason) { setError((reason as Error).message); } }, [issueId]);
   useEffect(() => { void load(); }, [load]);
   useEffect(() => { const previous = document.activeElement as HTMLElement | null; drawerRef.current?.querySelector<HTMLElement>("button")?.focus(); const keydown = (event: KeyboardEvent) => { if (event.key === "Escape") { closeRef.current(); return; } if (event.key !== "Tab") return; const items = [...(drawerRef.current?.querySelectorAll<HTMLElement>('button:not([disabled]), a[href], input:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])') ?? [])]; if (!items.length) return; const first = items[0]; const last = items.at(-1)!; if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); } else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); } }; window.addEventListener("keydown", keydown); return () => { window.removeEventListener("keydown", keydown); previous?.focus(); }; }, [issueId]);
-  const act = async (action: IssueAction) => {
-    if (!issue || busy || repair) return;
-    if (!pending.current) {
-      if (action === "open_resource_repair") { setRepair(true); return; }
-      if (action === "copy_diagnostic") { try { await copyText(`${issue.diagnostic.diagnostic_id ?? ""}\n${issue.diagnostic.summary ?? issue.summary}`); setNotice("已复制诊断信息"); } catch (reason) { setError((reason as Error).message); } return; }
-      if (!(action in ACTION_LABELS)) return;
+  const finish = async (result: OperationResult<IssueRequest, IssueDetail | null>) => {
+    if (result.kind === 'unknown') { setError('暂时无法确认本次操作结果，请继续本次操作核对。'); return; }
+    if (result.kind === 'cancelled') { setNotice('已取消选择。'); return; }
+    if (result.kind === 'preparation-error') { setError((result.error as Error).message); return; }
+    if (result.kind !== 'success' && result.kind !== 'rejected') return;
+    if (result.kind === 'success') {
+      setNotice(result.value ? result.value.status === 'ready_to_recover' ? '检查通过，可以继续处理。' : result.value.status === 'resolved' ? '问题已解决。' : '检查已完成，仍有问题需要处理。' : '已提交恢复处理，请查看记录的最新状态。');
+      setError('');
+      try { await load(); if (result.isCurrent()) await onChanged(); }
+      catch { if (result.isCurrent()) setError('操作已完成，但刷新详情失败，请重新读取结果。'); }
+    } else {
+      await load();
+      if (result.isCurrent()) setError((result.error as Error).message);
     }
-    setBusy(true); setError(''); setNotice('');
-    try {
-      if (!pending.current) {
-        let selection: IssueRequest['selection'];
-        if (action === 'select_source' || action === 'select_recovery_output') {
-          const shell = window.liveClipperShell; const select = action === 'select_source' ? shell?.selectIssueSource : shell?.selectRecoveryOutput;
-          if (!select) { setError('请在 Venus 桌面应用中选择文件或文件夹。'); return; }
-          const chosen = await select(issue.issue_id); if (!chosen) { setNotice('已取消选择。'); return; }
-          selection = { kind: action === 'select_source' ? 'source' : 'recovery-output', token: chosen.selectionToken };
-        }
-        pending.current = { id: requestId('issue-action'), revision: issue.issue_revision, action, selection };
-        sessionStorage.setItem(requestKey, JSON.stringify(pending.current));
+  };
+  const act = async (action: IssueAction) => {
+    if (!issue || operation.blocked || repair) return;
+    if (action === 'open_resource_repair') { setRepair(true); return; }
+    if (action === 'copy_diagnostic') { try { await copyText(`${issue.diagnostic.diagnostic_id ?? ""}\n${issue.diagnostic.summary ?? issue.summary}`); setNotice('已复制诊断信息'); } catch (reason) { setError((reason as Error).message); } return; }
+    setError(''); setNotice('');
+    await finish(await operation.start(async () => {
+      let selection: IssueRequest['selection'];
+      if (action === 'select_source' || action === 'select_recovery_output') {
+        const shell = window.liveClipperShell; const select = action === 'select_source' ? shell?.selectIssueSource : shell?.selectRecoveryOutput;
+        if (!select) throw new Error('请在 Venus 桌面应用中选择文件或文件夹。');
+        const chosen = await select(issue.issue_id);
+        if (!chosen) return null;
+        selection = { kind: action === 'select_source' ? 'source' : 'recovery-output', token: chosen.selectionToken };
       }
-      const original = pending.current;
-      if (original.action === 'recheck' || original.selection) {
-        const result = await projectApi.issueCheck(issueId, original.id, original.revision, original.selection);
-        setIssue(result.issue); setNotice(result.issue.status === 'ready_to_recover' ? '检查通过，可以继续处理。' : result.issue.status === 'resolved' ? '问题已解决。' : '检查已完成，仍有问题需要处理。');
-      } else {
-        const route = ({ continue_run: 'continue', retry_output: 'retry-output', retry_material: 'retry-material' } as const)[original.action as 'continue_run' | 'retry_output' | 'retry_material'];
-        await projectApi.issueRecover(issueId, original.id, route, original.revision);
-        setNotice('已提交恢复处理，请查看记录的最新状态。');
-      }
-      pending.current = null; sessionStorage.removeItem(requestKey); setUnknown(false);
-      await load(); await onChanged();
-    } catch (reason) {
-      if (pending.current && (!(reason instanceof ApiError) || reason.outcomeUnknown || reason.code === 'request_id_conflict')) {
-        setUnknown(true); setError('暂时无法确认本次操作结果，请继续本次操作核对。');
-      } else { pending.current = null; sessionStorage.removeItem(requestKey); setUnknown(false); await load(); setError((reason as Error).message); }
-    } finally { setBusy(false); }
+      return { id: requestId('issue-action'), revision: issue.issue_revision, action, selection };
+    }));
   };
   const resourceId = issue?.repair_resource_id;
-  return <div className="issue-drawer-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) close(); }}><aside ref={drawerRef} className="issue-drawer" role="dialog" aria-modal="true" aria-label="问题详情"><header><span className="eyebrow">问题详情</span><button aria-label="关闭" disabled={busy || unknown || repair} onClick={close}><RemixIcon name="close" /></button></header>{notice && <p className="copy-notice" role="status">{notice}</p>}{!issue ? error ? <ErrorState message={error} retry={() => void load()} /> : <LoadingState /> : <><h2>{issue.title}</h2><p>{issue.summary}</p><dl><div><dt>影响</dt><dd>{issue.impact}</dd></div><div><dt>保留的内容</dt><dd>{issue.preserved_content}</dd></div><div><dt>下一步</dt><dd>{issue.next_step}</dd></div></dl><p className="issue-stages">可沿用的步骤：{issue.reuse_stages.length ? stageNames(issue.reuse_stages) : '没有可沿用的步骤'}<br />需要重做的步骤：{issue.redo_stages.length ? stageNames(issue.redo_stages) : '尚未确定需要重做的步骤'}</p>{error && <p className="form-error" role="alert">{error}</p>}<div className="issue-actions">{unknown ? <button className="button primary" disabled={busy} onClick={() => void act(pending.current!.action)}>继续本次操作</button> : issue.available_actions.filter(action => action in ACTION_LABELS).map(action => <button className={action.startsWith("retry") || action === "continue_run" ? "button primary" : "button"} disabled={busy || repair} key={action} onClick={() => void act(action)}>{actionLabel(action)}</button>)}</div><section className="issue-events"><h3>问题处理记录</h3>{issue.events.map((event, index) => <div key={event.issue_event_id ?? event.event_id ?? index}><span>{time(event.occurred_at)}</span><strong>{eventLabel(event.event_type)}</strong></div>)}</section></>}{repair && issue && resourceId && <ResourceRepair issue={issue} resourceId={resourceId} onClose={() => setRepair(false)} onDone={async (message, keepOpen) => { setNotice(message); if (!keepOpen) setRepair(false); await load(); await onChanged(); }} />}</aside></div>;
+  return <div className="issue-drawer-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) close(); }}><aside ref={drawerRef} className="issue-drawer" role="dialog" aria-modal="true" aria-label="问题详情"><header><span className="eyebrow">问题详情</span><button aria-label="关闭" disabled={operation.busy || operation.pending || repair} onClick={close}><RemixIcon name="close" /></button></header>{operation.storageError && <p className="form-error" role="alert">{operation.storageError}<button className="button" onClick={() => void operation.retryStorage().then(finish)}>{operation.storageRetryLabel}</button></p>}{notice && <p className="copy-notice" role="status">{notice}</p>}{!issue ? error ? <ErrorState message={error} retry={() => void load()} /> : <LoadingState /> : <><h2>{issue.title}</h2><p>{issue.summary}</p><dl><div><dt>影响</dt><dd>{issue.impact}</dd></div><div><dt>保留的内容</dt><dd>{issue.preserved_content}</dd></div><div><dt>下一步</dt><dd>{issue.next_step}</dd></div></dl><p className="issue-stages">可沿用的步骤：{issue.reuse_stages.length ? stageNames(issue.reuse_stages) : '没有可沿用的步骤'}<br />需要重做的步骤：{issue.redo_stages.length ? stageNames(issue.redo_stages) : '尚未确定需要重做的步骤'}</p>{error && <p className="form-error" role="alert">{error}</p>}<div className="issue-actions">{operation.pending ? <button className="button primary" disabled={operation.busy} onClick={() => void operation.resume().then(finish)}>继续本次操作</button> : issue.available_actions.filter(action => action in ACTION_LABELS).map(action => <button className={action.startsWith("retry") || action === "continue_run" ? "button primary" : "button"} disabled={operation.blocked || repair} key={action} onClick={() => void act(action)}>{actionLabel(action)}</button>)}</div><section className="issue-events"><h3>问题处理记录</h3>{issue.events.map((event, index) => <div key={event.issue_event_id ?? event.event_id ?? index}><span>{time(event.occurred_at)}</span><strong>{eventLabel(event.event_type)}</strong></div>)}</section></>}{repair && issue && resourceId && <ResourceRepair issue={issue} resourceId={resourceId} onClose={() => setRepair(false)} onDone={async (message, keepOpen) => { setNotice(message); if (!keepOpen) setRepair(false); await load(); await onChanged(); }} />}</aside></div>;
 }
 const ACTION_LABELS: Record<IssueAction, string> = { recheck: "重新检查", open_resource_repair: "修复模型连接", select_source: "重新选择原始录像", select_recovery_output: "重新选择成片保存位置", continue_run: "继续处理", retry_output: "重新生成此成片", retry_material: "重新生成发布文案", copy_diagnostic: "复制诊断信息" };
 function actionLabel(value: string) { const label = ACTION_LABELS[value as IssueAction]; if (!label) console.warn("Venus received an unknown issue action"); return label ?? "暂不支持此操作"; }

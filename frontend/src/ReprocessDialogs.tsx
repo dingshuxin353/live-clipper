@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 
 import { ApiError } from "./api";
+import { usePendingOperation, type OperationResult } from "./usePendingOperation";
 import { DialogFrame } from "./ProjectDialogs";
 import { projectApi, requestId } from "./project-api";
 import type { ProjectSummary, ReprocessBlockerAction, ReprocessPreflight, ReprocessSettingsSummary, ReprocessVersion, ReprocessVersionsPayload, Run } from "./project-dto";
@@ -24,9 +25,11 @@ const BLOCKER_REASONS: Record<string, string> = { run_not_terminal: "这条记�
 function versionLabel(sequence: number) { return `第 ${sequence} 次处理`; }
 type PendingRequest = { id: string; revision: string };
 function requestKey(runId: string) { return `venus.reprocess.request.${runId}`; }
-function getPending(runId: string): PendingRequest | null { try { const pending = JSON.parse(sessionStorage.getItem(requestKey(runId)) || 'null'); return pending && typeof pending.id === 'string' && typeof pending.revision === 'string' ? pending : null; } catch { return null; } }
-function keepPending(runId: string, pending: PendingRequest) { try { sessionStorage.setItem(requestKey(runId), JSON.stringify(pending)); } catch { /* The mounted controller retains the original request. */ } }
-function clearPendingId(runId: string) { try { sessionStorage.removeItem(requestKey(runId)); } catch { /* nothing else to clear */ } }
+function validPending(value: unknown): value is PendingRequest {
+  if (!value || typeof value !== "object") return false;
+  const request = value as Record<string, unknown>;
+  return typeof request.id === "string" && Boolean(request.id) && typeof request.revision === "string" && Boolean(request.revision);
+}
 function value(input: unknown): string {
   if (input === null || input === undefined || input === "") return "未记录";
   if (typeof input !== "object" || Array.isArray(input)) return ENUM_LABELS[String(input)] || String(input);
@@ -51,38 +54,66 @@ export function ReprocessControls({ run, project }: { run: Run; project: Project
   const location = useLocation(); const navigate = useNavigate();
   const [preflight, setPreflight] = useState<ReprocessPreflight | null>(null); const [versions, setVersions] = useState<ReprocessVersionsPayload | null>(null);
   const [compare, setCompare] = useState<ReprocessVersion | null>(null); const [loading, setLoading] = useState(false); const [error, setError] = useState("");
-  const [submitting, setSubmitting] = useState(false); const [uncertain, setUncertain] = useState(Boolean(getPending(run.run_id))); const [reconfirm, setReconfirm] = useState(false);
-  const submittingRef = useRef(false); const requestRef = useRef(getPending(run.run_id));
+  const [reconfirm, setReconfirm] = useState(false);
+  const operation = usePendingOperation(requestKey(run.run_id), validPending, async original => {
+    const response = await projectApi.createReprocess(run.run_id, original.id, original.revision);
+    if (!response.run?.run_id) throw new Error('Missing reprocess result');
+    return response;
+  });
+  const source = useRef<string | null>(run.run_id); source.current = run.run_id;
+  useEffect(() => { source.current = run.run_id; return () => { source.current = null; }; }, [run.run_id]);
   const params = new URLSearchParams(location.search); const terminal = run.status === "completed" || run.status === "failed"; const reprocessRequested = params.get("reprocess") === "1"; const repairReturn = params.get("reprocessAfterRepair") === "1"; const issueOpen = params.has("issue");
   const resumable = run.status === "failed" && Boolean(run.active_issue_summary?.available_actions.includes("continue_run"));
   const setQuery = useCallback((mutate: (next: URLSearchParams) => void) => { const next = new URLSearchParams(location.search); mutate(next); navigate({ pathname: location.pathname, search: next.toString() }, { replace: true }); }, [location.pathname, location.search, navigate]);
   const returnTo = useCallback(() => { const next = new URLSearchParams(location.search); next.delete("issue"); next.delete("reprocessAfterRepair"); next.set("reprocess", "1"); return `${location.pathname}?${next}`; }, [location.pathname, location.search]);
   const loadPreflight = useCallback(async () => {
-    if (loading) return; setLoading(true); setError("");
-    try { const next = await projectApi.reprocessPreflight(run.run_id); if (next.active_run) { navigate(`/projects/${project.project_id}/runs/${next.active_run.run_id}`); return; } setPreflight(next); }
-    catch (reason) { setError((reason as Error).message); setQuery((next) => next.delete("reprocess")); }
-    finally { setLoading(false); }
-  }, [loading, navigate, project.project_id, run.run_id, setQuery]);
+    if (loading) return; setLoading(true); if (!reconfirm) setError("");
+    try {
+      const next = await projectApi.reprocessPreflight(run.run_id);
+      if (source.current !== run.run_id) return;
+      if (next.active_run && !operation.blocked) { navigate(`/projects/${project.project_id}/runs/${next.active_run.run_id}`); return; }
+      setPreflight(next);
+    } catch (reason) { if (source.current === run.run_id) { setError((reason as Error).message); setQuery((next) => next.delete("reprocess")); } }
+    finally { if (source.current === run.run_id) setLoading(false); }
+  }, [loading, navigate, operation.blocked, project.project_id, reconfirm, run.run_id, setQuery]);
 
   useEffect(() => { if (!repairReturn || issueOpen) return; setQuery((next) => { next.delete("reprocessAfterRepair"); next.set("reprocess", "1"); }); }, [issueOpen, repairReturn, setQuery]);
   useEffect(() => { if (!reprocessRequested) setPreflight(null); }, [reprocessRequested]);
   useEffect(() => { if (reprocessRequested && terminal && !preflight && !loading) void loadPreflight(); }, [loadPreflight, loading, preflight, reprocessRequested, terminal]);
-  useEffect(() => { requestRef.current = getPending(run.run_id); setPreflight(null); setVersions(null); setCompare(null); setUncertain(Boolean(requestRef.current)); }, [run.run_id]);
+  useEffect(() => { setPreflight(null); setVersions(null); setCompare(null); setError(""); setReconfirm(false); setLoading(false); }, [run.run_id]);
 
-  const closePreflight = () => { if (submittingRef.current || uncertain) return; setError(""); setReconfirm(false); setQuery((next) => next.delete("reprocess")); };
+  const closePreflight = () => { if (operation.busy || operation.pending) return; setError(""); setReconfirm(false); setQuery((next) => next.delete("reprocess")); };
   const openVersions = async () => { setLoading(true); setError(""); try { setVersions(await projectApi.reprocessVersions(run.run_id)); } catch (reason) { setError((reason as Error).message); } finally { setLoading(false); } };
   const continueRun = () => { if (!run.active_issue_summary) return; setQuery((next) => next.set("issue", run.active_issue_summary!.issue_id)); };
-  const start = async () => {
-    if (!preflight || !requestRef.current && (!preflight.can_reprocess || reconfirm) || submittingRef.current) return;
-    submittingRef.current = true; setSubmitting(true); setError(""); setUncertain(false);
-    const pending = requestRef.current ?? { id: requestId("run-reprocess"), revision: preflight.preflight_revision }; requestRef.current = pending; keepPending(run.run_id, pending);
-    try { const response = await projectApi.createReprocess(run.run_id, pending.id, pending.revision); clearPendingId(run.run_id); requestRef.current = null; navigate(`/projects/${project.project_id}/runs/${response.run.run_id}`); }
-    catch (reason) {
-      const apiError = reason as ApiError; const unknown = apiError.outcomeUnknown || apiError.code === "request_id_conflict";
-      if (unknown) { setUncertain(true); setError("暂时无法确认是否已创建处理记录。点击“继续本次操作”重试，不会重复创建。"); }
-      else { clearPendingId(run.run_id); requestRef.current = null; if (apiError.status === 409) { try { setPreflight(await projectApi.reprocessPreflight(run.run_id)); setReconfirm(true); setError("检查结果有变化，请核对后再开始。"); } catch { setError(apiError.message); } } else setError(apiError.message); }
-      submittingRef.current = false; setSubmitting(false);
+  type ReprocessResponse = Awaited<ReturnType<typeof projectApi.createReprocess>>;
+  const finish = async (result: OperationResult<PendingRequest, ReprocessResponse>) => {
+    if (result.kind === 'unknown') { setError('暂时无法确认是否已创建处理记录。点击“继续本次操作”重试，不会重复创建。'); return; }
+    if (result.kind === 'preparation-error') { setError((result.error as Error).message); return; }
+    if (result.kind === 'success') {
+      if (result.cleared) {
+        try { navigate(`/projects/${project.project_id}/runs/${result.value.run.run_id}`); }
+        catch { setError('已创建处理记录，但打开页面失败，请重新进入剪辑记录查看。'); }
+      }
+      else setError('已创建处理记录，请先清除本地操作记录。');
     }
+    if (result.kind === 'rejected') {
+      const apiError = result.error as ApiError;
+      if (result.cleared && apiError.code === 'preflight_changed') {
+        setReconfirm(true); setLoading(true); setError('检查结果有变化，请核对后再开始。');
+        try {
+          const next = await projectApi.reprocessPreflight(run.run_id);
+          if (result.isCurrent()) setPreflight(next);
+        } catch {
+          if (result.isCurrent()) { setPreflight(null); setError('检查结果已变化，但暂时无法读取新检查，请重新检查。'); }
+        } finally { if (result.isCurrent()) setLoading(false); }
+      } else setError(apiError.message);
+    }
+  };
+  const start = async () => {
+    setError('');
+    if (operation.pending) { await finish(await operation.resume()); return; }
+    if (!preflight || preflight.run.run_id !== run.run_id || !preflight.can_reprocess || reconfirm) return;
+    await finish(await operation.start(() => ({ id: requestId('run-reprocess'), revision: preflight.preflight_revision })));
   };
   const blocker = async (action: ReprocessBlockerAction) => {
     if (!preflight) return;
@@ -97,17 +128,17 @@ export function ReprocessControls({ run, project }: { run: Run; project: Project
       <Button isDisabled={loading} onClick={() => void openVersions()} label={(versionLabel(run.processing_sequence))} />
       {terminal && (resumable ? <><Button onClick={continueRun} label={"继续处理"} variant="primary" /><Button onClick={() => setQuery((next) => next.set("reprocess", "1"))} label={"按当前项目设置重新处理"} /></> : <Button onClick={() => setQuery((next) => next.set("reprocess", "1"))} label={"重新处理"} />)}
     </div>
-    {error && !preflight && <p className="stale-warning" role="alert">{error}</p>}
-    {reprocessRequested && preflight && <ReprocessDialog preflight={preflight} project={project} submitting={submitting} uncertain={uncertain} reconfirm={reconfirm} error={error} close={closePreflight} adjust={() => void blocker("project_settings")} act={(action) => void blocker(action)} confirm={() => { setReconfirm(false); setError(""); }} start={() => void start()} />}
+    {!preflight && <>{error && <p className="stale-warning" role="alert">{error}</p>}{operation.pending && <Button isDisabled={operation.busy} onClick={() => void start()} label="继续本次操作" />}{operation.storageError && <p className="form-error" role="alert">{operation.storageError}<Button onClick={() => void operation.retryStorage().then(finish)} label={operation.storageRetryLabel} /></p>}</>}
+    {reprocessRequested && preflight && <ReprocessDialog preflight={preflight} project={project} submitting={operation.busy} uncertain={operation.pending} operationBlocked={operation.blocked} storageError={operation.storageError} storageRetryLabel={operation.storageRetryLabel} retryStorage={() => void operation.retryStorage().then(finish)} reconfirm={reconfirm} confirming={loading} error={error} close={closePreflight} adjust={() => void blocker("project_settings")} act={(action) => void blocker(action)} confirm={() => { setReconfirm(false); setError(""); }} start={() => void start()} />}
     {versions && !compare && <VersionsDrawer currentRunId={run.run_id} payload={versions} project={project} close={() => setVersions(null)} compare={setCompare} />}
     {versions && compare && <CompareDialog current={versions.versions.find((item) => item.run_id === run.run_id)} other={compare} close={() => setCompare(null)} />}
   </>;
 }
 
-function ReprocessDialog({ preflight, project, submitting, uncertain, reconfirm, error, close, adjust, act, confirm, start }: { preflight: ReprocessPreflight; project: ProjectSummary; submitting: boolean; uncertain: boolean; reconfirm: boolean; error: string; close(): void; adjust(): void; act(action: ReprocessBlockerAction): void; confirm(): void; start(): void }) {
+function ReprocessDialog({ preflight, project, submitting, uncertain, operationBlocked, storageError, storageRetryLabel, retryStorage, reconfirm, confirming, error, close, adjust, act, confirm, start }: { preflight: ReprocessPreflight; project: ProjectSummary; submitting: boolean; uncertain: boolean; operationBlocked: boolean; storageError: string; storageRetryLabel: string; retryStorage(): void; reconfirm: boolean; confirming: boolean; error: string; close(): void; adjust(): void; act(action: ReprocessBlockerAction): void; confirm(): void; start(): void }) {
   const blocked = !preflight.can_reprocess;
-  return <DialogFrame wide closeDisabled={submitting || uncertain} onClose={close} title="重新处理这段录像" description="将按当前项目设置创建新的剪辑记录，从头处理。已有记录、成片和发布文案会保留。调用云端模型或 Claude Code 可能产生费用。" footer={<><Button isDisabled={submitting || uncertain} onClick={close} label={"取消"} /><span className="footer-spacer" />{!blocked && <Button isDisabled={submitting || uncertain} onClick={adjust} label={"调整设置"} />}{reconfirm && <Button onClick={confirm} label={"已核对，继续"} variant="primary" />}<Button isLoading={submitting} isDisabled={submitting || !uncertain && (blocked || reconfirm)} onClick={start} label={(submitting ? "正在创建处理记录…" : uncertain ? "继续本次操作" : "开始重新处理")} variant="primary" /></>}>
-    {error && <p className="form-error" role="alert">{error}</p>}
+  return <DialogFrame wide closeDisabled={submitting || uncertain} onClose={close} title="重新处理这段录像" description="将按当前项目设置创建新的剪辑记录，从头处理。已有记录、成片和发布文案会保留。调用云端模型或 Claude Code 可能产生费用。" footer={<><Button isDisabled={submitting || uncertain} onClick={close} label={"取消"} /><span className="footer-spacer" />{!blocked && <Button isDisabled={submitting || uncertain} onClick={adjust} label={"调整设置"} />}{reconfirm && <Button isDisabled={confirming} onClick={confirm} label={"已核对，继续"} variant="primary" />}<Button isLoading={submitting} isDisabled={submitting || !uncertain && (operationBlocked || blocked || reconfirm)} onClick={start} label={(submitting ? "正在创建处理记录…" : uncertain ? "继续本次操作" : "开始重新处理")} variant="primary" /></>}>
+    {error && <p className="form-error" role="alert">{error}</p>}{storageError && <p className="form-error" role="alert">{storageError}<Button onClick={retryStorage} label={storageRetryLabel} /></p>}
     <section className={`reprocess-readiness ${blocked ? "blocked" : "ready"}`}><strong>{blocked ? "暂时无法重新处理" : "检查通过"}</strong><p>{blocked ? "请先解决以下问题，再点击“重新检查”。" : `将开始${versionLabel(preflight.next_processing_sequence)}。`}</p></section>
     {blocked && <div className="reprocess-blockers">{preflight.blockers.map((item, index) => <p key={index}>{BLOCKER_REASONS[item.code] || (item.action === "asr_settings" || item.action === "ai_settings" ? "所选模型尚未准备好，请在项目设置中检查。" : "项目配置尚未通过检查，请核对目录和处理设置。")}</p>)}{[...new Set([...preflight.blockers.map((item) => item.action === "asr_settings" || item.action === "ai_settings" ? "project_settings" as const : item.action), "recheck" as const])].map((action) => <Button key={action} isDisabled={submitting || uncertain} onClick={() => act(action)} label={(ACTION_LABELS[action])} />)}</div>}
     <div className="reprocess-summary-grid"><section><span>录像</span><h2>{preflight.source.name}</h2><dl><div><dt>所属项目</dt><dd>{project.name}</dd></div><div><dt>当前查看的处理版本</dt><dd>{versionLabel(preflight.run.processing_sequence)}</dd></div><div><dt>录像状态</dt><dd>{preflight.source.state === "ready" ? "原文件可用" : preflight.source.state === "identity_mismatch" ? "录像文件已变化" : "找不到录像或无法读取"}</dd></div></dl><p>处理时会复制一份录像，不会修改原文件。</p></section><section><span>与本次记录所用设置的差异</span>{preflight.changes.some(item => value(item.before) !== value(item.after)) ? <dl>{preflight.changes.filter(item => value(item.before) !== value(item.after)).map((item) => <div key={item.field}><dt>{FIELD_LABELS[item.field]}</dt><dd><small>{value(item.before)}</small><b>改为</b><strong>{value(item.after)}</strong></dd></div>)}</dl> : <p>未发现可比较设置的差异；未记录的信息无法比较。</p>}</section></div>
