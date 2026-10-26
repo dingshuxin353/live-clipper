@@ -80,7 +80,7 @@ class ResourceAPI:
         if len(tail) == 2 and tail[0] == 'cleanup' and method == 'POST':
             return 200, {'ok': True, 'result': self.store.cleanup(tail[1])}
         if len(tail) == 2 and tail[1] == 'prepare' and method == 'POST':
-            from . import asr_models, jobs
+            from . import asr_models, resource_activity
 
             self._strict(body, {'expected_revision'})
             with self.repository.transaction():
@@ -91,22 +91,11 @@ class ResourceAPI:
                     raise ResourceError('incompatible_resource')
                 model = resource['config'].get('model')
                 asr_models.model_entry(model)
-                if asr_models.local_path_for(model) is None:
-                    asr_models.download_capacity(model)
                 source = resource['config'].get('model_source', 'modelscope')
                 service_dir = self.repository.service_dir
                 proposal = {key: resource[key] for key in ('name', 'kind', 'config')}
                 token = self.store.credential(tail[0], resource['revision'])
-                active = jobs.active_job_for(service_dir, model, asr_models.DOWNLOAD_JOB_KIND)
-                if active:
-                    return 202, {'ok': True, 'job': active}
-                import uuid
-
-                from .project_domain import normalize_utc
-
-                task_id = uuid.uuid4().hex
-                self.store.db.execute('INSERT INTO resource_tasks VALUES(?,?,?,?,?,NULL)', (task_id, resource['resource_id'], model, 'running', normalize_utc()))
-                def prepare():
+                def prepare(task_id):
                     try:
                         asr_models.download_model(model, source, token=token)
                         with ProjectRepository(service_dir) as repo:
@@ -128,11 +117,14 @@ class ResourceAPI:
                             code = 'model_download_unavailable'
                         logging.getLogger(__name__).warning('Model preparation failed: task=%s code=%s exception=%s errno=%s', task_id, code, type(exc).__name__, getattr(exc, 'errno', None))
                         return {'ok': False, 'message': '模型准备未完成，已下载的文件已保留。', 'code': code, 'diagnostic_id': task_id}
-                    finally:
-                        with ProjectRepository(service_dir) as repo:
-                            with repo.transaction():
-                                repo.connection.execute("UPDATE resource_tasks SET state='finished',finished_at=? WHERE task_id=?", (normalize_utc(), task_id))
-                job = jobs.start_job(service_dir, kind=asr_models.DOWNLOAD_JOB_KIND, run_id=model, fn=prepare)
+            def check_resource():
+                if self.store.get(resource['resource_id'], resource['revision'])['deleted']:
+                    raise ResourceError('resource_deleted')
+                if asr_models.local_path_for(model) is None:
+                    asr_models.download_capacity(model)
+
+            job = resource_activity.start_preparation(self.repository, resource_id=resource['resource_id'], model=model,
+                check_resource=check_resource, fn=prepare)
             return 202, {'ok': True, 'job': job}
         if tail == ['preview'] and method == 'POST':
             self._strict(body, {'proposal'})

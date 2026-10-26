@@ -579,3 +579,370 @@ def test_resource_preparation_downloads_and_validates_original_revision(tmp_path
         assert current['revision'] == resource['revision']
         assert current['ready']
         assert repo.connection.execute("SELECT count(*) FROM resource_tasks WHERE state='running'").fetchone()[0] == 0
+
+
+def test_preparation_occupation_is_committed_before_download(tmp_path, monkeypatch, small_registry):
+    import sqlite3
+    from threading import Event, Thread
+
+    from live_clipper import transcribe
+    from live_clipper.project_storage import ProjectRepository
+    from live_clipper.resource_store import ResourceStore
+
+    paths = _paths(tmp_path)
+    _, files = small_registry
+    entered, release = Event(), Event()
+    visible_tasks = []
+    with ProjectRepository(paths.service_dir) as repo:
+        resource = ResourceStore(repo).save({'name': '隔离模型', 'kind': 'local_asr', 'config': {
+            'model': MODEL_ID, 'model_source': 'huggingface', 'purposes': ['asr']}}, request_id='prepare')
+
+    def download(**kwargs):
+        with sqlite3.connect(paths.service_dir / 'venus.sqlite3') as db:
+            visible_tasks.append(db.execute("SELECT count(*) FROM resource_tasks WHERE state='running'").fetchone()[0])
+        entered.set()
+        assert release.wait(5)
+        destination = Path(kwargs['local_dir']) / kwargs['filename']
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(files[kwargs['filename']])
+        return str(destination)
+
+    real_start = Thread.start
+
+    def start_and_observe(thread):
+        real_start(thread)
+        assert entered.wait(5)
+
+    monkeypatch.setattr(asr_models, 'hf_hub_download', download)
+    monkeypatch.setattr(transcribe, 'transcribe_audio', lambda *_: {'segments': [{'start': 0, 'end': 1, 'text': '测试'}]})
+    monkeypatch.setattr(Thread, 'start', start_and_observe)
+    job = None
+    try:
+        status, _, payload = handle_api_request('POST', f"/api/resources/{resource['resource_id']}/prepare", paths,
+            body={'expected_revision': 1})
+        assert status == 202
+        job = payload['job']
+        assert visible_tasks == [1]
+    finally:
+        release.set()
+        if job:
+            final = _wait_for_job(paths.service_dir, job['id'])
+            assert final['status'] == 'succeeded', final
+
+
+def test_preparation_deduplicates_and_protects_nested_work_and_original_revision(tmp_path, monkeypatch, small_registry):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier, Event
+
+    from live_clipper import transcribe
+    from live_clipper.project_storage import ProjectRepository
+    from live_clipper.resource_store import ResourceStore
+
+    paths = _paths(tmp_path)
+    _, files = small_registry
+    download_entered, download_release = Event(), Event()
+    check_entered, check_release = Event(), Event()
+    save_entered, save_release = Event(), Event()
+    downloads, checks = [], []
+    proposal = {'name': '原模型', 'kind': 'local_asr', 'config': {
+        'model': MODEL_ID, 'model_source': 'huggingface', 'purposes': ['asr']}}
+    with ProjectRepository(paths.service_dir) as repo:
+        store = ResourceStore(repo)
+        resource = store.save(proposal, credential='original-token', request_id='original')
+        sharing = store.save({**proposal, 'name': '共用模型'}, request_id='sharing')
+
+    def download(**kwargs):
+        downloads.append((kwargs['filename'], kwargs.get('token')))
+        download_entered.set()
+        assert download_release.wait(5)
+        destination = Path(kwargs['local_dir']) / kwargs['filename']
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(files[kwargs['filename']])
+        return str(destination)
+
+    def external_asr(*args):
+        checks.append('asr')
+        check_entered.set()
+        assert check_release.wait(5)
+        return {'segments': [{'start': 0, 'end': 1, 'text': '测试'}]}
+
+    accept = ResourceStore.accept_local_preparation
+
+    def accept_after_observation(store, *args):
+        save_entered.set()
+        assert save_release.wait(5)
+        return accept(store, *args)
+
+    monkeypatch.setattr(asr_models, 'hf_hub_download', download)
+    monkeypatch.setattr(transcribe, 'transcribe_audio', external_asr)
+    monkeypatch.setattr(ResourceStore, 'accept_local_preparation', accept_after_observation)
+    route = f"/api/resources/{resource['resource_id']}/prepare"
+    job = None
+
+    def assert_protected(expected_running):
+        with ProjectRepository(paths.service_dir) as repo:
+            assert repo.connection.execute("SELECT count(*) FROM resource_tasks WHERE state='running'").fetchone()[0] == expected_running
+        for item in (resource, sharing):
+            status, _, payload = handle_api_request('GET', f"/api/resources/{item['resource_id']}/delete-preview", paths)
+            assert status == 200 and not payload['preview']['can_delete']
+            status, _, payload = handle_api_request('DELETE', f"/api/resources/{item['resource_id']}", paths,
+                body={'request_id': 'blocked-' + item['resource_id'], 'expected_revision': 1, 'clean_model': True})
+            assert status == 409 and payload['error']['code'] == 'resource_in_use'
+
+    try:
+        status, _, payload = handle_api_request('POST', route, paths, body={'expected_revision': 1})
+        assert status == 202
+        job = payload['job']
+        assert download_entered.wait(5)
+        barrier = Barrier(4)
+
+        def repeat(_):
+            barrier.wait(5)
+            return handle_api_request('POST', route, paths, body={'expected_revision': 1})
+
+        def no_capacity(_):
+            raise asr_models.ModelPreparationError('insufficient_disk_space', 'controlled capacity change')
+
+        with monkeypatch.context() as changed_capacity:
+            changed_capacity.setattr(asr_models, 'download_capacity', no_capacity)
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                repeated = list(pool.map(repeat, range(4)))
+        assert all(status == 202 and payload['job']['id'] == job['id'] for status, _, payload in repeated)
+        assert_protected(1)
+        download_release.set()
+        assert check_entered.wait(5)
+        assert_protected(2)
+        check_release.set()
+        assert save_entered.wait(5)
+        assert_protected(1)
+        changed = {**proposal, 'config': {**proposal['config'], 'model': 'new-model'}}
+        status, _, payload = handle_api_request('PATCH', f"/api/resources/{resource['resource_id']}", paths,
+            body={'proposal': changed, 'credential': 'new-token', 'request_id': 'edit', 'expected_revision': 1})
+        assert status == 200 and payload['resource']['revision'] == 2
+    finally:
+        download_release.set()
+        check_release.set()
+        save_release.set()
+        if job:
+            final = _wait_for_job(paths.service_dir, job['id'])
+    assert final['status'] == 'succeeded', final
+    assert final['result']['revision'] == 1
+    assert sorted(downloads) == sorted((name, 'original-token') for name in files)
+    assert checks == ['asr']
+    with ProjectRepository(paths.service_dir) as repo:
+        store = ResourceStore(repo)
+        assert repo.connection.execute("SELECT state FROM resource_tasks ORDER BY rowid").fetchall() == [('finished',), ('finished',)]
+        assert store.get(resource['resource_id'], 1)['ready']
+        current = store.get(resource['resource_id'])
+        assert current['revision'] == 2 and current['config']['model'] == 'new-model' and not current['ready']
+        assert store.credential(resource['resource_id'], 1) == 'original-token'
+        assert store.credential(resource['resource_id'], 2) == 'new-token'
+        assert store.delete_preview(sharing['resource_id'])['can_delete']
+
+
+@pytest.mark.parametrize('failure', ['download', 'purpose'])
+def test_failed_preparation_retains_files_and_other_active_validation(tmp_path, monkeypatch, small_registry, failure):
+    import errno
+    from threading import Event, Thread
+
+    from live_clipper import transcribe
+    from live_clipper.project_storage import ProjectRepository
+    from live_clipper.resource_store import ResourceStore
+
+    paths = _paths(tmp_path)
+    _, files = small_registry
+    entered, release = Event(), Event()
+    responses = []
+    cloud = {'name': '云端校验', 'kind': 'cloud_asr', 'config': {
+        'model': MODEL_ID, 'endpoint': 'https://example.test/v1', 'purposes': ['asr']}}
+    local = {'name': '本机准备', 'kind': 'local_asr', 'config': {
+        'model': MODEL_ID, 'model_source': 'huggingface', 'purposes': ['asr']}}
+    with ProjectRepository(paths.service_dir) as repo:
+        store = ResourceStore(repo)
+        cloud_resource = store.save(cloud, credential='private-token', request_id='cloud')
+        resource = store.save(local, request_id='local')
+
+    def external_asr(*args):
+        if args[-1].asr.backend == 'openai':
+            entered.set()
+            assert release.wait(5)
+            return {'segments': [{'start': 0, 'end': 1, 'text': '测试'}]}
+        return {'segments': []}
+
+    def download(**kwargs):
+        if failure == 'download':
+            raise PermissionError(errno.EACCES, 'private-token', '/private/model')
+        destination = Path(kwargs['local_dir']) / kwargs['filename']
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(files[kwargs['filename']])
+        return str(destination)
+
+    monkeypatch.setattr(asr_models, 'hf_hub_download', download)
+    monkeypatch.setattr(transcribe, 'transcribe_audio', external_asr)
+    body = {'proposal': cloud, 'resource_id': cloud_resource['resource_id'], 'revision': 1,
+        'purposes': ['asr'], 'request_id': 'cloud-check'}
+    thread = Thread(target=lambda: responses.append(handle_api_request('POST', '/api/resources/validate', paths, body=body)))
+    thread.start()
+    try:
+        assert entered.wait(5)
+        status, _, payload = handle_api_request('POST', f"/api/resources/{resource['resource_id']}/prepare", paths,
+            body={'expected_revision': 1})
+        assert status == 202
+        final = _wait_for_job(paths.service_dir, payload['job']['id'])
+        assert final['status'] == 'failed'
+        assert final['result']['code'] == ('model_directory_unwritable' if failure == 'download' else 'asr_timestamps_unavailable')
+        assert 'private-token' not in repr(final) and '/private/model' not in repr(final)
+        with ProjectRepository(paths.service_dir) as repo:
+            assert repo.connection.execute("SELECT count(*) FROM resource_tasks WHERE state='running'").fetchone()[0] == 1
+            assert not ResourceStore(repo).get(resource['resource_id'])['ready']
+        preview = handle_api_request('GET', f"/api/resources/{resource['resource_id']}/delete-preview", paths)[2]['preview']
+        assert not preview['can_delete']
+        retained = asr_models.partial_dir(MODEL_ID) if failure == 'download' else asr_models.install_dir(MODEL_ID)
+        assert retained.is_dir() and list(retained.iterdir())
+    finally:
+        release.set()
+        thread.join(5)
+    assert not thread.is_alive() and responses[0][0] == 200
+    with ProjectRepository(paths.service_dir) as repo:
+        assert repo.connection.execute("SELECT count(*) FROM resource_tasks WHERE state='running'").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize('occupation', ['resource_task', 'download_job'])
+def test_delete_rechecks_occupation_after_preview(tmp_path, monkeypatch, small_registry, occupation):
+    from threading import Event, Thread
+
+    from live_clipper import transcribe
+    from live_clipper.project_storage import ProjectRepository
+    from live_clipper.resource_store import ResourceStore
+
+    paths = _paths(tmp_path)
+    _install_with_fake_hf(monkeypatch, small_registry[1])
+    proposal = {'name': '本机模型', 'kind': 'local_asr', 'config': {'model': MODEL_ID, 'purposes': ['asr']}}
+    with ProjectRepository(paths.service_dir) as repo:
+        resource = ResourceStore(repo).save(proposal, request_id='local')
+    route = f"/api/resources/{resource['resource_id']}"
+    preview = handle_api_request('GET', route + '/delete-preview', paths)[2]['preview']
+    assert preview['can_delete'] and preview['model_files']['can_clean']
+    entered, release = Event(), Event()
+
+    def block(*args):
+        entered.set()
+        assert release.wait(5)
+        return {'segments': [{'start': 0, 'end': 1, 'text': '测试'}]} if occupation == 'resource_task' else {'ok': True}
+
+    responses = []
+    thread, job = None, None
+    if occupation == 'resource_task':
+        monkeypatch.setattr(transcribe, 'transcribe_audio', block)
+        body = {'proposal': {'name': '云端检查', 'kind': 'cloud_asr', 'config': {
+            'model': MODEL_ID, 'endpoint': 'https://example.test/v1', 'purposes': ['asr']}},
+            'credential': 'test-only', 'purposes': ['asr'], 'request_id': 'check'}
+        thread = Thread(target=lambda: responses.append(handle_api_request('POST', '/api/resources/validate', paths, body=body)))
+        thread.start()
+    else:
+        job = jobs.start_job(paths.service_dir, kind=asr_models.DOWNLOAD_JOB_KIND, run_id=MODEL_ID, fn=block)
+    try:
+        assert entered.wait(5)
+        with ProjectRepository(paths.service_dir) as repo:
+            assert repo.connection.execute("SELECT count(*) FROM resource_tasks WHERE state='running'").fetchone()[0] == (1 if occupation == 'resource_task' else 0)
+        status, _, payload = handle_api_request('DELETE', route, paths,
+            body={'request_id': 'remove', 'expected_revision': 1, 'clean_model': True})
+        assert status == 409 and payload['error']['code'] == 'resource_in_use'
+        assert asr_models.install_dir(MODEL_ID).is_dir()
+        assert handle_api_request('GET', route, paths)[2]['resource']['deleted'] is False
+    finally:
+        release.set()
+        if thread:
+            thread.join(5)
+            assert not thread.is_alive() and responses[0][0] == 200
+        if job:
+            assert _wait_for_job(paths.service_dir, job['id'])['status'] == 'succeeded'
+    status, _, payload = handle_api_request('DELETE', route, paths,
+        body={'request_id': 'remove', 'expected_revision': 1, 'clean_model': True})
+    assert status == 200 and payload['result']['cleanup_state'] == 'completed'
+    assert not asr_models.install_dir(MODEL_ID).exists()
+
+
+def test_cleanup_rechecks_active_job_and_shared_model_then_resumes_original_operation(tmp_path, monkeypatch, small_registry):
+    import shutil
+    from threading import Event
+
+    from live_clipper.project_storage import ProjectRepository
+    from live_clipper.resource_store import ResourceStore
+
+    paths = _paths(tmp_path)
+    _install_with_fake_hf(monkeypatch, small_registry[1])
+    proposal = {'name': '本机模型', 'kind': 'local_asr', 'config': {'model': MODEL_ID, 'purposes': ['asr']}}
+    with ProjectRepository(paths.service_dir) as repo:
+        resource = ResourceStore(repo).save(proposal, request_id='local')
+    route = f"/api/resources/{resource['resource_id']}"
+    original_rmtree = shutil.rmtree
+
+    def fail_model_cleanup(path, *args, **kwargs):
+        if Path(path) == asr_models.install_dir(MODEL_ID):
+            raise PermissionError('controlled cleanup failure')
+        return original_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, 'rmtree', fail_model_cleanup)
+    status, _, payload = handle_api_request('DELETE', route, paths,
+        body={'request_id': 'remove', 'expected_revision': 1, 'clean_model': True})
+    assert status == 200 and payload['result']['cleanup_errors'] == ['model_cleanup_failed']
+    monkeypatch.setattr(shutil, 'rmtree', original_rmtree)
+    entered, release = Event(), Event()
+
+    def block():
+        entered.set()
+        assert release.wait(5)
+        return {'ok': True}
+
+    job = jobs.start_job(paths.service_dir, kind=asr_models.DOWNLOAD_JOB_KIND, run_id=MODEL_ID, fn=block)
+    try:
+        assert entered.wait(5)
+        result = handle_api_request('POST', '/api/resources/cleanup/remove', paths, body={})[2]['result']
+        assert result['cleanup_errors'] == ['model_cleanup_in_use'] and asr_models.install_dir(MODEL_ID).is_dir()
+    finally:
+        release.set()
+        assert _wait_for_job(paths.service_dir, job['id'])['status'] == 'succeeded'
+    status, _, payload = handle_api_request('POST', '/api/resources', paths, body={'proposal': proposal, 'request_id': 'sharing'})
+    assert status == 201
+    sharing = payload['resource']['resource_id']
+    result = handle_api_request('POST', '/api/resources/cleanup/remove', paths, body={})[2]['result']
+    assert result['cleanup_errors'] == ['model_cleanup_in_use'] and asr_models.install_dir(MODEL_ID).is_dir()
+    assert handle_api_request('DELETE', f'/api/resources/{sharing}', paths,
+        body={'request_id': 'remove-sharing', 'expected_revision': 1})[0] == 200
+    result = handle_api_request('POST', '/api/resources/cleanup/remove', paths, body={})[2]['result']
+    assert result['cleanup_state'] == 'completed' and not result['files_retained']
+    assert not asr_models.install_dir(MODEL_ID).exists()
+    assert handle_api_request('GET', '/api/resources/operations/remove', paths)[2]['result'] == result
+
+
+@pytest.mark.parametrize('unsafe_path', ['model_symlink', 'parent_symlink', 'foreign_manifest'])
+def test_resource_delete_preserves_unmanaged_model_files(tmp_path, monkeypatch, small_registry, unsafe_path):
+    from live_clipper.project_storage import ProjectRepository
+    from live_clipper.resource_store import ResourceStore
+
+    paths = _paths(tmp_path)
+    _install_with_fake_hf(monkeypatch, small_registry[1])
+    model_path = asr_models.install_dir(MODEL_ID)
+    retained = model_path
+    if unsafe_path == 'model_symlink':
+        retained = tmp_path / 'retained-model'
+        model_path.rename(retained)
+        model_path.symlink_to(retained, target_is_directory=True)
+    elif unsafe_path == 'parent_symlink':
+        original_root = asr_models.models_root()
+        retained_root = tmp_path / 'retained-root'
+        original_root.rename(retained_root)
+        original_root.symlink_to(retained_root, target_is_directory=True)
+        retained = retained_root / model_path.name
+    else:
+        (model_path / '_install.json').write_text(json.dumps({'model_id': 'another-model'}))
+    with ProjectRepository(paths.service_dir) as repo:
+        resource = ResourceStore(repo).save({'name': '本机模型', 'kind': 'local_asr', 'config': {
+            'model': MODEL_ID, 'purposes': ['asr']}}, request_id='local')
+    route = f"/api/resources/{resource['resource_id']}"
+    status, _, payload = handle_api_request('DELETE', route, paths,
+        body={'request_id': 'remove', 'expected_revision': 1, 'clean_model': True})
+    assert status == 409 and payload['error']['code'] == 'model_cleanup_unavailable'
+    assert (retained / 'weights.safetensors').read_bytes() == small_registry[1]['weights.safetensors']
+    assert handle_api_request('GET', route, paths)[2]['resource']['deleted'] is False

@@ -20,6 +20,7 @@ from . import (
     mcp_tools,
     migration_coordinator,
     onboarding_coordinator,
+    resource_activity,
     review_automation,
     scheduler,
     service,
@@ -1349,11 +1350,7 @@ def run_web_server(
 ) -> None:
     paths = paths or WebPaths()
     if restricted_startup is None:
-        jobs.sweep_interrupted(paths.service_dir)
-        if database_path(paths.service_dir).exists():
-            with ProjectRepository(paths.service_dir) as repository:
-                with repository.transaction():
-                    repository.connection.execute("UPDATE resource_tasks SET state='interrupted',finished_at=datetime('now') WHERE state='running'")
+        resource_activity.recover_interrupted(paths.service_dir)
     elif restricted_startup == "migration_required":
         migration_coordinator.MigrationCoordinator(
             service_dir=paths.service_dir,

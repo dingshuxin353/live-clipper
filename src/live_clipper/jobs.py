@@ -104,12 +104,15 @@ def _run(service_dir: Path, job_id: str, fn: Callable[[], dict[str, Any]]) -> No
     )
 
 
-def start_job(service_dir: Path, *, kind: str, run_id: str, fn: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+def start_job(service_dir: Path, *, kind: str, run_id: str, fn: Callable[[], dict[str, Any]],
+              before_start: Callable[[], None] | None = None) -> dict[str, Any]:
     """启动一个后台任务。若同一 (run_id, kind) 已有 running 任务，返回它，不重复启动。"""
     with _LOCK:
         existing = active_job_for(service_dir, run_id, kind)
         if existing is not None:
             return existing
+        if before_start is not None:
+            before_start()
         job = {
             "id": uuid.uuid4().hex,
             "kind": kind,
@@ -123,8 +126,12 @@ def start_job(service_dir: Path, *, kind: str, run_id: str, fn: Callable[[], dic
         jobs = _load_jobs(service_dir)
         jobs.append(job)
         _atomic_write_jobs(service_dir, jobs)
-    thread = threading.Thread(target=_run, args=(service_dir, job["id"], fn), daemon=True)
-    thread.start()
+    try:
+        thread = threading.Thread(target=_run, args=(service_dir, job["id"], fn), daemon=True)
+        thread.start()
+    except Exception:
+        _finalize(service_dir, job["id"], status="failed", result=None, error="后台任务未能启动。")
+        raise
     return job
 
 
