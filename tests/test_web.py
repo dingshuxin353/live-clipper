@@ -160,6 +160,7 @@ def test_restricted_startup_web_allows_only_shell_and_onboarding_without_writes(
             ("GET", "/api/config", None),
             ("POST", "/api/service/start", b"{}"),
             ("POST", "/api/onboarding/start", b"{}"),
+            ("DELETE", "/api/resources/blocked", b"not-json"),
         ]:
             request = Request(f"{base}{route}", headers=headers, method=method, data=data)
             if data is not None:
@@ -1024,3 +1025,35 @@ def test_app_accepts_three_bursts_of_twelve_new_connections(tmp_path):
         (tmp_path / 'backend.log').write_text(''.join(lines))
         assert not reader.is_alive()
         assert report['exit_code'] == 0 and report['port_closed']
+
+
+def test_normal_server_resource_delete_preserves_body_auth_and_request_identity(tmp_path):
+    service_dir = tmp_path / 'service'
+    proposal = {'name': '删除回归', 'kind': 'cloud_asr', 'config': {
+        'model': 'test-model', 'endpoint': 'https://example.test/v1', 'purposes': ['asr']}}
+    with _resource_server(tmp_path / 'server', service_dir) as (port, _process, _events):
+        status, payload = _resource_request(port, '/api/resources', method='POST',
+            body={'proposal': proposal, 'credential': 'test-only', 'request_id': 'add'})
+        assert status == 201
+        route = '/api/resources/' + payload['resource']['resource_id']
+        assert _resource_request(port, route + '/delete-preview')[1]['preview']['can_delete']
+        for headers in [{}, {'Authorization': 'Bearer wrong-token'}, {'Cookie': 'lc_token=wrong-token'}]:
+            request = Request(f'http://127.0.0.1:{port}{route}', method='DELETE', data=b'not-json', headers=headers)
+            with pytest.raises(HTTPError) as rejected:
+                urlopen(request, timeout=5)
+            assert rejected.value.code == 401
+            assert json.loads(rejected.value.read())['error_code'] == 'unauthorized'
+        body = {'request_id': 'remove', 'expected_revision': 1}
+        status, payload = _resource_request(port, route, method='DELETE', body={**body, 'expected_revision': 2})
+        assert status == 409 and payload['error']['code'] == 'revision_conflict'
+        assert not _resource_request(port, route)[1]['resource']['deleted']
+        request = Request(f'http://127.0.0.1:{port}{route}', method='DELETE', data=json.dumps(body).encode(),
+            headers={'Cookie': 'lc_token=test-token', 'Content-Type': 'application/json'})
+        with urlopen(request, timeout=5) as response:
+            assert response.status == 200
+            result = json.loads(response.read())['result']
+        assert result['deleted'] and result['cleanup_state'] == 'completed'
+        assert _resource_request(port, route, method='DELETE', body=body)[1]['result'] == result
+        assert _resource_request(port, '/api/resources/operations/remove')[1]['result'] == result
+        assert _resource_request(port, route)[1]['resource']['deleted']
+        assert not list((service_dir / 'resource-credentials').glob('*.env'))

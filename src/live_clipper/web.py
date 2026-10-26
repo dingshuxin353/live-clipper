@@ -1168,6 +1168,9 @@ class LiveClipperRequestHandler(BaseHTTPRequestHandler):
     def do_PATCH(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         self._serve_api("PATCH")
 
+    def do_DELETE(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        self._serve_api("DELETE")
+
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
         return
 
@@ -1188,7 +1191,7 @@ class LiveClipperRequestHandler(BaseHTTPRequestHandler):
                 or parsed_path.startswith("/api/migration/")
             ):
                 body_payload: dict[str, Any] | None = None
-                if method in {"POST", "PATCH"}:
+                if method in {"POST", "PATCH", "DELETE"}:
                     raw_length = self.headers.get("Content-Length")
                     length = int(raw_length) if raw_length else 0
                     if length:
@@ -1229,7 +1232,7 @@ class LiveClipperRequestHandler(BaseHTTPRequestHandler):
             # in-process API; closing this HTTP/1.0 request avoids leaving an
             # unread body on a keep-alive connection.
             self.close_connection = True
-        elif method in {"POST", "PATCH"}:
+        elif method in {"POST", "PATCH", "DELETE"}:
             raw_length = self.headers.get("Content-Length")
             length = int(raw_length) if raw_length else 0
             if length:
