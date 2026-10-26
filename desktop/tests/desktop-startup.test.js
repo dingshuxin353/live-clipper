@@ -79,7 +79,7 @@ test("production startup shares page, tray and automatic updates and prepares th
   `;
   vm.runInNewContext(fs.readFileSync(source, "utf8"), {
     __dirname: path.dirname(source), URL, console,
-    process: { env: { LIVE_CLIPPER_HOME: root }, platform: process.platform, arch: process.arch, stdout: { write() {} }, stderr: { write() {} } },
+    process: { env: { LIVE_CLIPPER_HOME: path.join(root, "app-home") }, platform: process.platform, arch: process.arch, stdout: { write() {} }, stderr: { write() {} } },
     setTimeout: (fn, delay) => { const timer = { fn, delay }; timers.add(timer); return timer; }, clearTimeout: timer => timers.delete(timer),
     require: name => {
       if (name === "electron") return electron;

@@ -205,7 +205,7 @@ test("real main startup gates packaged mode before any backend setup; developmen
     };
     vm.runInNewContext(fs.readFileSync(mainPath, "utf8"), {
       __dirname: path.dirname(mainPath),
-      process: { env: { LIVE_CLIPPER_HOME: root }, resourcesPath: root },
+      process: { env: { LIVE_CLIPPER_HOME: path.join(root, "app-home") }, resourcesPath: root },
       require: (name) => {
         if (name === "electron") return electron;
         if (name === "net") return { createServer: () => { stages.push("backend setup"); throw new Error("test stop"); } };
