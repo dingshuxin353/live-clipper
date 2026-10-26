@@ -10,6 +10,7 @@ import sys
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from threading import Barrier, Event, Thread
@@ -25,6 +26,71 @@ from live_clipper.project_domain import default_project_config
 from live_clipper.project_service import ProjectManager, open_project_repository
 from live_clipper.utils import write_json
 from live_clipper.web import LiveClipperRequestHandler, WebPaths, build_run_detail, build_runs_index, handle_api_request
+
+
+@contextmanager
+def _resource_server(directory, service_dir, *, setup='', restricted='', expect_ready=True):
+    directory.mkdir(parents=True)
+    env = {key: os.environ[key] for key in ('PATH', 'LANG', 'LC_ALL') if key in os.environ}
+    for key, name in [('HOME', 'home'), ('TMPDIR', 'tmp'), ('XDG_CACHE_HOME', 'cache'), ('LIVE_CLIPPER_HOME', 'app-home')]:
+        path = directory / name
+        path.mkdir()
+        env[key] = str(path)
+    with socket.socket() as reservation:
+        reservation.bind(('127.0.0.1', 0))
+        port = reservation.getsockname()[1]
+    source = Path(__file__).resolve().parents[1] / 'src'
+    script = '''import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from live_clipper.web import WebPaths, run_web_server
+service_dir = Path(sys.argv[2])
+exec(sys.argv[4])
+run_web_server(port=int(sys.argv[3]), access_token='test-token', restricted_startup=sys.argv[5] or None,
+    paths=WebPaths(service_dir=service_dir, config_path=Path('config.toml')))
+'''
+    process = subprocess.Popen([sys.executable, '-I', '-B', '-u', '-c', script, str(source), str(service_dir), str(port), setup, restricted],
+        cwd=directory, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    events = {key: Event() for key in ('ready', 'download', 'validate')}
+    lines = []
+
+    def collect():
+        for line in process.stdout:
+            lines.append(line)
+            for key, marker in [('ready', '[Web] Venus 控制台已启动:'), ('download', 'TEST-DOWNLOAD'), ('validate', 'TEST-VALIDATE')]:
+                if marker in line:
+                    events[key].set()
+
+    reader = Thread(target=collect, daemon=True)
+    reader.start()
+    try:
+        if expect_ready:
+            assert events['ready'].wait(10), ''.join(lines)
+        yield port, process, events
+    finally:
+        if process.poll() is None:
+            process.send_signal(signal.SIGINT)
+        try:
+            process.wait(10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(5)
+        reader.join(5)
+        process.stdout.close()
+        (directory / 'backend.log').write_text(''.join(lines))
+        assert not reader.is_alive()
+
+
+def _resource_request(port, path, *, method='GET', body=None):
+    request = Request(f'http://127.0.0.1:{port}{path}', method=method,
+        headers={'Authorization': 'Bearer test-token', 'Content-Type': 'application/json'},
+        data=json.dumps(body).encode() if body is not None else None)
+    try:
+        response = urlopen(request, timeout=5)
+    except HTTPError as error:
+        response = error
+    with response:
+        return response.status, json.loads(response.read())
 
 
 def _filesystem_facts(root):
@@ -94,6 +160,7 @@ def test_restricted_startup_web_allows_only_shell_and_onboarding_without_writes(
             ("GET", "/api/config", None),
             ("POST", "/api/service/start", b"{}"),
             ("POST", "/api/onboarding/start", b"{}"),
+            ("DELETE", "/api/resources/blocked", b"not-json"),
         ]:
             request = Request(f"{base}{route}", headers=headers, method=method, data=data)
             if data is not None:
@@ -134,6 +201,114 @@ def test_run_web_server_skips_job_recovery_in_restricted_startup(tmp_path, monke
     )
 
     assert calls == [(('127.0.0.1', 43210), "diagnostic_required")]
+
+
+def test_normal_startup_recovers_real_interruption_after_partial_recovery_failure(tmp_path):
+    from live_clipper.project_storage import ProjectRepository
+
+    service_dir = tmp_path / 'service'
+    model = 'mlx-community/whisper-large-v3-turbo'
+    setup = '''from threading import Event
+from live_clipper import asr_models, transcribe
+entry = dict(asr_models.model_entry('mlx-community/whisper-large-v3-turbo'))
+entry['files'] = [{'path': 'config.json', 'bytes': 1, 'sha256': 'unused-before-interruption'}]
+asr_models.REGISTRY = [entry]
+def record_call(marker):
+    with (service_dir / 'external-calls.txt').open('a') as stream:
+        stream.write(marker + '\\n')
+    print(marker, flush=True)
+def download(**kwargs):
+    record_call('TEST-DOWNLOAD')
+    Event().wait()
+def external_asr(*args):
+    if args[-1].asr.model == 'completed':
+        return {'segments': [{'start': 0, 'end': 1, 'text': '测试'}]}
+    record_call('TEST-VALIDATE')
+    Event().wait()
+asr_models.hf_hub_download = download
+transcribe.transcribe_audio = external_asr
+'''
+    cloud = {'name': '云端检查', 'kind': 'cloud_asr', 'config': {
+        'model': 'blocked', 'endpoint': 'https://example.test/v1', 'purposes': ['asr']}}
+    check = {'proposal': cloud, 'credential': 'test-only', 'purposes': ['asr'], 'request_id': 'interrupted-check'}
+    responses = []
+    with _resource_server(tmp_path / 'first', service_dir, setup=setup) as (port, process, events):
+        completed = {**check, 'request_id': 'completed-check', 'proposal': {**cloud, 'config': {**cloud['config'], 'model': 'completed'}}}
+        assert _resource_request(port, '/api/resources/validate', method='POST', body=completed)[0] == 200
+        status, payload = _resource_request(port, '/api/resources', method='POST', body={'request_id': 'local', 'proposal': {
+            'name': '本机模型', 'kind': 'local_asr', 'config': {'model': model, 'model_source': 'huggingface', 'purposes': ['asr']}}})
+        assert status == 201
+        identifier = payload['resource']['resource_id']
+        status, payload = _resource_request(port, f'/api/resources/{identifier}/prepare', method='POST', body={'expected_revision': 1})
+        assert status == 202
+        job_id = payload['job']['id']
+
+        def validate():
+            try:
+                responses.append(_resource_request(port, '/api/resources/validate', method='POST', body=check))
+            except OSError:
+                responses.append('connection-terminated')
+
+        request_thread = Thread(target=validate)
+        request_thread.start()
+        try:
+            assert events['download'].wait(5) and events['validate'].wait(5)
+            with ProjectRepository(service_dir) as repo:
+                assert repo.connection.execute("SELECT count(*) FROM resource_tasks WHERE state='running'").fetchone()[0] == 2
+                finished_before = repo.connection.execute("SELECT * FROM resource_tasks WHERE state='finished'").fetchall()
+            process.kill()
+            assert process.wait(5) != 0
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait(5)
+            request_thread.join(5)
+        assert not request_thread.is_alive() and responses == ['connection-terminated']
+    before_calls = (service_dir / 'external-calls.txt').read_bytes()
+    with ProjectRepository(service_dir) as repo:
+        repo.connection.execute("CREATE TRIGGER recovery_failure BEFORE UPDATE OF state ON resource_tasks WHEN NEW.state='interrupted' BEGIN SELECT RAISE(ABORT,'controlled recovery failure'); END")
+    with _resource_server(tmp_path / 'failed-recovery', service_dir, setup=setup, expect_ready=False) as (port, process, events):
+        assert process.wait(10) != 0 and not events['ready'].is_set()
+        with socket.socket() as probe:
+            assert probe.connect_ex(('127.0.0.1', port)) != 0
+    assert json.loads((service_dir / 'jobs.json').read_text())['jobs'][0]['status'] == 'interrupted'
+    with ProjectRepository(service_dir) as repo:
+        assert repo.connection.execute("SELECT count(*) FROM resource_tasks WHERE state='running'").fetchone()[0] == 2
+        repo.connection.execute('DROP TRIGGER recovery_failure')
+    with _resource_server(tmp_path / 'recovered', service_dir, setup=setup) as (port, _, _events):
+        status, payload = _resource_request(port, '/api/resources/validate', method='POST', body=check)
+        assert status == 409 and payload['error']['code'] == 'validation_result_unknown'
+        assert _resource_request(port, f'/api/resources/{identifier}/delete-preview')[1]['preview']['can_delete']
+        with ProjectRepository(service_dir) as repo:
+            assert repo.connection.execute("SELECT count(*) FROM resource_tasks WHERE state='interrupted'").fetchone()[0] == 2
+            assert repo.connection.execute("SELECT * FROM resource_tasks WHERE state='finished'").fetchall() == finished_before
+            tasks_after = repo.connection.execute('SELECT * FROM resource_tasks ORDER BY rowid').fetchall()
+            operations_after = repo.connection.execute('SELECT * FROM resource_operations ORDER BY rowid').fetchall()
+        jobs_after = (service_dir / 'jobs.json').read_bytes()
+    with _resource_server(tmp_path / 'repeated', service_dir, setup=setup):
+        with ProjectRepository(service_dir) as repo:
+            assert repo.connection.execute('SELECT * FROM resource_tasks ORDER BY rowid').fetchall() == tasks_after
+            assert repo.connection.execute('SELECT * FROM resource_operations ORDER BY rowid').fetchall() == operations_after
+        assert (service_dir / 'jobs.json').read_bytes() == jobs_after
+    assert (service_dir / 'external-calls.txt').read_bytes() == before_calls
+    assert json.loads(jobs_after)['jobs'][0]['id'] == job_id
+
+
+@pytest.mark.parametrize('restricted', ['', 'diagnostic_required'])
+def test_startup_without_database_preserves_mode_specific_job_recovery(tmp_path, restricted):
+    service_dir = tmp_path / 'service'
+    jobs_path = service_dir / 'jobs.json'
+    write_json(jobs_path, {'jobs': [{'id': 'non-resource', 'kind': 'ai_review', 'status': 'running'},
+        {'id': 'finished', 'status': 'succeeded', 'result': {'ok': True}}]})
+    before = jobs_path.read_bytes()
+    with _resource_server(tmp_path / 'startup', service_dir, restricted=restricted):
+        assert not (service_dir / 'venus.sqlite3').exists()
+        if restricted:
+            assert jobs_path.read_bytes() == before
+        else:
+            records = json.loads(jobs_path.read_text())['jobs']
+            assert records[0]['status'] == 'interrupted'
+            assert records[1] == {'id': 'finished', 'status': 'succeeded', 'result': {'ok': True}}
 
 
 def test_build_runs_index_merges_files_state_and_log(tmp_path, monkeypatch):
@@ -850,3 +1025,35 @@ def test_app_accepts_three_bursts_of_twelve_new_connections(tmp_path):
         (tmp_path / 'backend.log').write_text(''.join(lines))
         assert not reader.is_alive()
         assert report['exit_code'] == 0 and report['port_closed']
+
+
+def test_normal_server_resource_delete_preserves_body_auth_and_request_identity(tmp_path):
+    service_dir = tmp_path / 'service'
+    proposal = {'name': '删除回归', 'kind': 'cloud_asr', 'config': {
+        'model': 'test-model', 'endpoint': 'https://example.test/v1', 'purposes': ['asr']}}
+    with _resource_server(tmp_path / 'server', service_dir) as (port, _process, _events):
+        status, payload = _resource_request(port, '/api/resources', method='POST',
+            body={'proposal': proposal, 'credential': 'test-only', 'request_id': 'add'})
+        assert status == 201
+        route = '/api/resources/' + payload['resource']['resource_id']
+        assert _resource_request(port, route + '/delete-preview')[1]['preview']['can_delete']
+        for headers in [{}, {'Authorization': 'Bearer wrong-token'}, {'Cookie': 'lc_token=wrong-token'}]:
+            request = Request(f'http://127.0.0.1:{port}{route}', method='DELETE', data=b'not-json', headers=headers)
+            with pytest.raises(HTTPError) as rejected:
+                urlopen(request, timeout=5)
+            assert rejected.value.code == 401
+            assert json.loads(rejected.value.read())['error_code'] == 'unauthorized'
+        body = {'request_id': 'remove', 'expected_revision': 1}
+        status, payload = _resource_request(port, route, method='DELETE', body={**body, 'expected_revision': 2})
+        assert status == 409 and payload['error']['code'] == 'revision_conflict'
+        assert not _resource_request(port, route)[1]['resource']['deleted']
+        request = Request(f'http://127.0.0.1:{port}{route}', method='DELETE', data=json.dumps(body).encode(),
+            headers={'Cookie': 'lc_token=test-token', 'Content-Type': 'application/json'})
+        with urlopen(request, timeout=5) as response:
+            assert response.status == 200
+            result = json.loads(response.read())['result']
+        assert result['deleted'] and result['cleanup_state'] == 'completed'
+        assert _resource_request(port, route, method='DELETE', body=body)[1]['result'] == result
+        assert _resource_request(port, '/api/resources/operations/remove')[1]['result'] == result
+        assert _resource_request(port, route)[1]['resource']['deleted']
+        assert not list((service_dir / 'resource-credentials').glob('*.env'))

@@ -15,6 +15,7 @@ from dotenv import dotenv_values
 from .onboarding_resources import normalize_api_base
 from .project_domain import normalize_utc
 from .project_storage import ProjectRepository
+from .resource_activity import active_tasks
 
 KINDS = {'local_asr': {'asr'}, 'cloud_asr': {'asr'}, 'ai': {'analysis', 'review'}, 'local_agent': {'review'}}
 SCHEMA = """
@@ -382,16 +383,13 @@ class ResourceStore:
     def delete_preview(self, resource_id: str) -> dict[str, Any]:
         resource = self.get(resource_id)
         refs = self.references(resource_id)
-        tasks = self.db.execute("SELECT task_id FROM resource_tasks WHERE state='running' AND (resource_id=? OR model=?)", (resource_id, resource['config'].get('model'))).fetchall()
+        tasks = active_tasks(self.repository, resource)
         model_files = {'can_clean': False, 'bytes': 0, 'shared': False, 'installed': False}
         if resource['kind'] == 'local_asr':
-            from . import asr_models, jobs
+            from . import asr_models
 
             model = resource['config'].get('model')
             if model in asr_models.registry_ids():
-                active = jobs.active_job_for(self.repository.service_dir, model, asr_models.DOWNLOAD_JOB_KIND)
-                if active:
-                    tasks.append((active['id'],))
                 path = asr_models.install_dir(model)
                 shared = self.db.execute("""SELECT 1 FROM resource_revisions v JOIN resources r ON r.resource_id=v.resource_id
                   WHERE r.deleted_at IS NULL AND r.resource_id<>? AND r.kind='local_asr' AND json_extract(v.config_json,'$.model')=? LIMIT 1""", (resource_id, model)).fetchone()
@@ -404,7 +402,7 @@ class ResourceStore:
                 size = sum(p.stat().st_size for root in (path, asr_models.partial_dir(model)) if managed and root.is_dir() for p in root.rglob('*') if p.is_file() and not p.is_symlink())
                 model_files = {'can_clean': bool(managed and not shared and not tasks and not refs['active_runs']), 'bytes': size,
                                'shared': bool(shared), 'installed': installed}
-        return {**refs, 'tasks': [row[0] for row in tasks], 'model_files': model_files, 'resource': resource,
+        return {**refs, 'tasks': tasks, 'model_files': model_files, 'resource': resource,
                 'can_delete': not refs['projects'] and not refs['active_runs'] and not tasks}
 
     def delete(self, resource_id: str, *, request_id: str, expected_revision: int, acknowledge_failed: bool = False, clean_model: bool = False) -> dict[str, Any]:

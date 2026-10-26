@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import tempfile
 import uuid
+from contextlib import ExitStack
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -10,8 +11,8 @@ from typing import Any
 from .cheap_model_client import CheapModelClient, CheapModelServiceError
 from .config import ASRConfig, LLMConfig, ReviewAutomationConfig, Settings
 from .models import ClipCandidate, CorrectedTranscript, TranscriptWindow
-from .project_domain import normalize_utc
 from .prompt_loader import load_prompt
+from .resource_activity import occupy
 from .resource_store import ResourceError, ResourceStore, encoded, fingerprint, normalize_proposal
 
 TEXT = '整理课程资料时，先按主题分组，再写出每组的一句话摘要。这样能更快找到需要的内容，也能检查有没有遗漏。'
@@ -93,17 +94,17 @@ def validate_resource(store: ResourceStore, proposal: dict[str, Any], *, credent
     task_id = uuid.uuid4().hex
     request_id = request_id or 'local-check-' + task_id
     digest = fingerprint(['validate', proposal, credential, resource_id, revision, purposes])
-    with store.repository.transaction():
-        previous = store._operation(request_id, digest)
-        if previous is not None:
-            if previous.get('validation_id'):
-                return previous
-            raise ResourceError('validation_result_unknown', detail={'request_id': request_id, 'state': previous.get('state')})
-        store._save_operation(request_id, digest, {'operation': 'validate', 'state': 'running'})
-        if resource_id and store.get(resource_id, revision)['deleted']:
-            raise ResourceError('resource_deleted')
-        store.db.execute('INSERT INTO resource_tasks VALUES(?,?,?,?,?,NULL)', (task_id, resource_id, proposal['config'].get('model'), 'running', normalize_utc()))
-    try:
+    with ExitStack() as activity:
+        with store.repository.transaction():
+            previous = store._operation(request_id, digest)
+            if previous is not None:
+                if previous.get('validation_id'):
+                    return previous
+                raise ResourceError('validation_result_unknown', detail={'request_id': request_id, 'state': previous.get('state')})
+            store._save_operation(request_id, digest, {'operation': 'validate', 'state': 'running'})
+            if resource_id and store.get(resource_id, revision)['deleted']:
+                raise ResourceError('resource_deleted')
+            activity.enter_context(occupy(store.repository, resource_id=resource_id, model=proposal['config'].get('model')))
         results = {}
         for purpose in purposes:
             try:
@@ -123,6 +124,3 @@ def validate_resource(store: ResourceStore, proposal: dict[str, Any], *, credent
         with store.repository.transaction():
             store.db.execute('UPDATE resource_operations SET result_json=? WHERE request_id=?', (encoded(result), request_id))
         return result
-    finally:
-        with store.repository.transaction():
-            store.db.execute("UPDATE resource_tasks SET state='finished',finished_at=? WHERE task_id=?", (normalize_utc(), task_id))
