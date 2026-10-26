@@ -5,6 +5,7 @@ import json
 import os
 import select
 import shutil
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -15,6 +16,368 @@ SPEC = importlib.util.spec_from_file_location("release", Path(__file__).parents[
 release = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(release)
 REAL_RUN = release.run
+
+
+def test_explicit_process_owner_preserves_io_fast_exit_and_safe_diagnostics(tmp_path, monkeypatch):
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    monkeypatch.setattr(release, 'ROOT', repo)
+    root = tmp_path / 'release'
+    release.create_root(root, repo, 'a' * 40)
+    scope = release.owned_directory(root, 'probe')
+    environment = release.isolated_env(scope)
+    environment.update(API_KEY='test-only-secret', VENUS_RELEASE_ROOT=str(tmp_path / 'unknown'))
+    log = root / 'evidence/output.log'
+    script = 'import os,sys; print(sys.stdin.read()); print(os.environ["API_KEY"], file=sys.stderr)'
+    assert release.run([sys.executable, '-c', script], cwd=repo, env=environment,
+        release_root=root, input_text='original input', log=log) == 'original input\n'
+    assert 'test-only-secret' not in log.read_text() and '[REDACTED]' in log.read_text()
+    for _ in range(5):
+        assert release.run(['/usr/bin/true'], cwd=repo, env=environment, release_root=root) == ''
+    with pytest.raises(release.ReleaseError) as failed:
+        release.run([sys.executable, '-c', 'import sys; print("failure"); sys.exit(7)'],
+            env=environment, release_root=root)
+    assert failed.value.exit_code == 7 and failed.value.category == 'external-command'
+    assert release.resource_state(root) == {'processes': [], 'mounts': []}
+    assert not (tmp_path / 'unknown').exists()
+
+
+@pytest.mark.parametrize('failure', ['interrupt', 'caller', 'ignore-term'])
+def test_running_process_scope_finishes_on_interruption_and_exception(tmp_path, monkeypatch, failure):
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    monkeypatch.setattr(release, 'ROOT', repo)
+    root = tmp_path / 'release'
+    release.create_root(root, repo, 'a' * 40)
+    scope = release.owned_directory(root, 'probe')
+    ignore = 'signal.signal(signal.SIGTERM, signal.SIG_IGN); ' if failure == 'ignore-term' else ''
+    script = 'import signal; ' + ignore + 'print("ready", flush=True); signal.pause()'
+    error = KeyboardInterrupt if failure == 'interrupt' else RuntimeError
+    with pytest.raises(error):
+        with release.ReleaseProcesses(root).running([sys.executable, '-c', script], cwd=scope,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as process:
+            assert select.select([process.stdout], [], [], 5)[0]
+            assert process.stdout.readline().strip() == 'ready'
+            assert release.resource_state(root)['processes'][0]['pid'] == process.pid
+            raise error('caller stopped')
+    assert process.returncode == (-signal.SIGKILL if failure == 'ignore-term' else -signal.SIGTERM)
+    assert all(pipe.closed for pipe in (process.stdin, process.stdout, process.stderr))
+    assert release.resource_state(root)['processes'] == []
+
+
+@pytest.mark.parametrize('boundary', ['registration', 'removal'])
+def test_process_record_write_failure_preserves_failure_and_cleans_created_process(tmp_path, monkeypatch, boundary):
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    monkeypatch.setattr(release, 'ROOT', repo)
+    root = tmp_path / 'release'
+    release.create_root(root, repo, 'a' * 40)
+    release.atomic_json(root / 'resources.json', {'processes': [], 'mounts': []})
+    save = release.atomic_json
+    observed = []
+
+    def denied(path, value):
+        if Path(path).name == 'resources.json' and bool(value['processes']) == (boundary == 'registration'):
+            if value['processes']:
+                observed.append(value['processes'][-1]['pid'])
+            raise PermissionError('controlled record write failure')
+        return save(path, value)
+
+    monkeypatch.setattr(release, 'atomic_json', denied)
+    expected = PermissionError if boundary == 'registration' else release.ReleaseError
+    with pytest.raises(expected) as failure:
+        with release.ReleaseProcesses(root).running([sys.executable, '-c', 'import signal; signal.pause()'],
+            stdout=subprocess.PIPE) as process:
+            observed.append(process.pid)
+            raise release.ReleaseError('original command failed', category='external-command', exit_code=7)
+    with pytest.raises(ProcessLookupError):
+        os.kill(observed[0], 0)
+    records = release.resource_state(root)['processes']
+    if boundary == 'registration':
+        assert records == []
+    else:
+        assert failure.value.category == 'external-command' and failure.value.exit_code == 7
+        assert 'original command failed' in str(failure.value) and 'cleanup incomplete' in str(failure.value)
+        assert isinstance(failure.value.__cause__, release.ReleaseError)
+        assert records[0]['pid'] == observed[0]
+        monkeypatch.setattr(release, 'atomic_json', save)
+        assert release.recover_resources(root) == []
+        assert release.resource_state(root)['processes'] == []
+
+
+@pytest.mark.parametrize('processable', [1, 0])
+def test_backend_smoke_uses_real_service_scope_and_releases_port(tmp_path, monkeypatch, processable):
+    import socket
+
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    monkeypatch.setattr(release, 'ROOT', repo)
+    root = tmp_path / 'release'
+    release.create_root(root, repo, 'a' * 40)
+    app = tmp_path / 'temporary-service.app'
+    binaries = app / 'Contents/Resources/bin'
+    binaries.mkdir(parents=True)
+    for name in ['ffmpeg', 'ffprobe']:
+        executable = shutil.which(name)
+        assert executable, name + ' is required for the existing synthetic-media check'
+        (binaries / name).symlink_to(executable)
+    backend = app / 'Contents/Resources/backend/live-clipper-backend'
+    backend.parent.mkdir()
+    backend.write_text('#!' + sys.executable + '\n' + '''import json, os, sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+port = int(sys.argv[sys.argv.index('--port') + 1])
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.headers.get('Authorization') != 'Bearer ' + os.environ['LIVE_CLIPPER_WEB_TOKEN']:
+            self.send_error(401)
+            return
+        self.rfile.read(int(self.headers.get('Content-Length', '0')))
+        body = json.dumps({'ok': True, 'processable_files': ''' + str(processable) + '''}).encode()
+        self.send_response(200)
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    do_POST = do_GET
+    def log_message(self, *args):
+        pass
+server = HTTPServer(('127.0.0.1', port), Handler)
+Path('observed-service.json').write_text(json.dumps({'pid': os.getpid(), 'port': port}))
+server.serve_forever()
+''')
+    backend.chmod(0o700)
+    if processable:
+        assert release.backend_smoke(root, app)['scan_preview']['processable_files'] == 1
+    else:
+        with pytest.raises(release.ReleaseError, match='Synthetic recording scan failed'):
+            release.backend_smoke(root, app)
+    facts = release.read_json(root / 'backend-smoke/observed-service.json')
+    with pytest.raises(ProcessLookupError):
+        os.kill(facts['pid'], 0)
+    with socket.socket() as probe:
+        assert probe.connect_ex(('127.0.0.1', facts['port'])) != 0
+    assert release.resource_state(root)['processes'] == []
+
+
+@pytest.mark.parametrize('fault', ['missing', 'changed', 'group', 'not-session-leader', 'group-leader-only', 'query', 'empty-query'])
+def test_history_recovery_keeps_uncertain_real_process_without_signalling(tmp_path, monkeypatch, fault):
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    monkeypatch.setattr(release, 'ROOT', repo)
+    root = tmp_path / 'release'
+    release.create_root(root, repo, 'a' * 40)
+    process = subprocess.Popen([sys.executable, '-c', 'import signal; print("ready", flush=True); signal.pause()'],
+        start_new_session=fault not in {'not-session-leader', 'group-leader-only'},
+        process_group=0 if fault == 'group-leader-only' else None, stdout=subprocess.PIPE, text=True)
+    try:
+        assert select.select([process.stdout], [], [], 5)[0]
+        assert process.stdout.readline().strip() == 'ready'
+        release.remember_process(root, process, tmp_path)
+        state = release.resource_state(root)
+        assert state['processes'][0]['identity'] == subprocess.check_output(
+            ['ps', '-p', str(process.pid), '-o', 'lstart=', '-o', 'command='], text=True).strip()
+        if fault == 'missing':
+            state['processes'][0]['identity'] = None
+        elif fault == 'changed':
+            state['processes'][0]['identity'] = 'old process'
+        elif fault == 'group':
+            state['processes'][0]['pgid'] = process.pid + 1
+        release.atomic_json(root / 'resources.json', state)
+        before = (root / 'resources.json').read_bytes()
+        original_run = subprocess.run
+
+        def identity_query(args, **kwargs):
+            if fault in {'query', 'empty-query'} and args[0] == 'ps':
+                return subprocess.CompletedProcess(args, 2 if fault == 'query' else 0, '', '')
+            return original_run(args, **kwargs)
+
+        monkeypatch.setattr(release.subprocess, 'run', identity_query)
+        monkeypatch.setattr(release.os, 'killpg', lambda *_: pytest.fail('Uncertain process must not be signalled'))
+        assert release.recover_resources(root)
+        assert (root / 'resources.json').read_bytes() == before
+        assert process.poll() is None
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(5)
+        process.stdout.close()
+
+
+def test_recovery_after_real_manager_termination_and_repeat_is_safe(tmp_path, monkeypatch):
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    monkeypatch.setattr(release, 'ROOT', repo)
+    root = tmp_path / 'release'
+    release.create_root(root, repo, 'a' * 40)
+    script = '''import importlib.util, json, signal, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location('release', sys.argv[1])
+release = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(release)
+release.ROOT = Path(sys.argv[3])
+with release.ReleaseProcesses(Path(sys.argv[2])).running(['/bin/sleep', '120']) as child:
+    print(json.dumps(release.resource_state(Path(sys.argv[2]))['processes'][0]), flush=True)
+    signal.pause()
+'''
+    manager = subprocess.Popen([sys.executable, '-I', '-B', '-u', '-c', script,
+        str(Path(release.__file__).resolve()), str(root), str(repo)], stdout=subprocess.PIPE,
+        text=True, start_new_session=True)
+    record = None
+    real_killpg = os.killpg
+    signals = []
+    try:
+        assert select.select([manager.stdout], [], [], 5)[0]
+        record = json.loads(manager.stdout.readline())
+        assert release.process_identity(record['pid']) == record['identity']
+        manager.kill()
+        assert manager.wait(5) == -signal.SIGKILL
+        assert release.process_identity(record['pid']) == record['identity']
+
+        def track_signal(pgid, signum):
+            signals.append((pgid, signum))
+            return real_killpg(pgid, signum)
+
+        monkeypatch.setattr(release.os, 'killpg', track_signal)
+        assert release.recover_resources(root) == []
+        assert release.process_identity(record['pid']) is None
+        finished = (root / 'resources.json').read_bytes()
+        assert release.recover_resources(root) == []
+        assert (root / 'resources.json').read_bytes() == finished
+        assert signals == [(record['pgid'], signal.SIGTERM)]
+    finally:
+        if manager.poll() is None:
+            manager.kill()
+            manager.wait(5)
+        manager.stdout.close()
+        if record and release.process_identity(record['pid']) == record['identity']:
+            real_killpg(record['pgid'], signal.SIGKILL)
+
+
+def test_exited_process_port_is_retained_without_ending_other_listener(tmp_path, monkeypatch):
+    import socket
+
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    monkeypatch.setattr(release, 'ROOT', repo)
+    root = tmp_path / 'release'
+    release.create_root(root, repo, 'a' * 40)
+    with socket.socket() as other_listener:
+        other_listener.bind(('127.0.0.1', 0))
+        other_listener.listen()
+        port = other_listener.getsockname()[1]
+        with pytest.raises(release.ReleaseError, match='port still occupied'):
+            with release.ReleaseProcesses(root).running(['/usr/bin/true'], port=port) as process:
+                process.wait(5)
+        recorded = release.resource_state(root)['processes']
+        assert recorded[0]['port'] == port
+        monkeypatch.setattr(release.os, 'killpg', lambda *_: pytest.fail('Other listener must not be signalled'))
+        assert release.recover_resources(root) == [{'port': port, 'reason': 'port occupied; owner not signalled'}]
+        assert release.resource_state(root)['processes'] == recorded
+        with socket.create_connection(('127.0.0.1', port), timeout=2):
+            pass
+    assert release.recover_resources(root) == []
+    assert release.resource_state(root)['processes'] == []
+
+
+def test_real_cleanup_preview_and_apply_preserve_unresolved_release(tmp_path):
+    parent = tmp_path / 'releases'
+    parent.mkdir()
+    root = parent / 'release'
+    release.create_root(root, release.ROOT, 'a' * 40)
+    unknown = parent / 'unknown'
+    unknown.mkdir()
+    (unknown / 'user-file').write_text('preserve')
+    process = subprocess.Popen(['/bin/sleep', '120'], start_new_session=True)
+    try:
+        release.remember_process(root, process, tmp_path)
+        before = (root / 'resources.json').read_bytes()
+        env = release.isolated_env(tmp_path / 'cli-environment')
+        command = [sys.executable, str(Path(release.__file__).resolve()), 'cleanup', '--root', str(root)]
+        preview = subprocess.run(command, env=env, text=True, capture_output=True, timeout=20)
+        assert preview.returncode == 0, preview.stderr
+        assert (root / 'resources.json').read_bytes() == before and process.poll() is None
+        applied = subprocess.run([*command, '--apply'], env=env, text=True, capture_output=True, timeout=20)
+        assert applied.returncode == 1, applied.stderr
+        assert process.wait(5) == -signal.SIGTERM
+        report = release.read_json(root / 'cleanup-report.json')
+        assert not report['cleanup_complete'] and str(root) in report['preserved_unresolved']
+        assert report['resource_issues'] == []
+        assert release.resource_state(root)['processes'] == []
+        assert (unknown / 'user-file').read_text() == 'preserve'
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(5)
+
+
+def test_history_recovery_does_not_escalate_term_to_kill(tmp_path, monkeypatch):
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    monkeypatch.setattr(release, 'ROOT', repo)
+    root = tmp_path / 'release'
+    release.create_root(root, repo, 'a' * 40)
+    process = subprocess.Popen([sys.executable, '-c',
+        'import signal; signal.signal(signal.SIGTERM, signal.SIG_IGN); print("ready", flush=True); signal.pause()'],
+        start_new_session=True, stdout=subprocess.PIPE, text=True)
+    real_killpg = os.killpg
+    signals = []
+    try:
+        assert select.select([process.stdout], [], [], 5)[0]
+        assert process.stdout.readline().strip() == 'ready'
+        release.remember_process(root, process, tmp_path)
+
+        def track(pgid, signum):
+            signals.append(signum)
+            return real_killpg(pgid, signum)
+
+        monkeypatch.setattr(release.os, 'killpg', track)
+        assert release.recover_resources(root) == [{'pid': process.pid, 'reason': 'owned process did not exit gracefully'}]
+        assert signals == [signal.SIGTERM] and process.poll() is None
+        assert release.resource_state(root)['processes'][0]['pid'] == process.pid
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(5)
+        process.stdout.close()
+
+
+def test_only_explicit_validated_owner_controls_registration(tmp_path, monkeypatch):
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    monkeypatch.setattr(release, 'ROOT', repo)
+    root = tmp_path / 'release'
+    release.create_root(root, repo, 'a' * 40)
+    release.atomic_json(root / 'resources.json', {'processes': [], 'mounts': []})
+    script = 'import json,sys; from pathlib import Path; root=Path(sys.stdin.read()); print(len(json.loads((root/"resources.json").read_text())["processes"]))'
+    environment = release.isolated_env(tmp_path / 'environment')
+    environment['VENUS_RELEASE_ROOT'] = str(root)
+    assert release.run([sys.executable, '-c', script], cwd=repo, env=environment, input_text=str(root)).strip() == '0'
+    environment['VENUS_RELEASE_ROOT'] = str(tmp_path / 'unknown')
+    assert release.run([sys.executable, '-c', script], cwd=repo, env=environment,
+        input_text=str(root), release_root=root).strip() == '1'
+    assert release.resource_state(root)['processes'] == []
+    marker = tmp_path / 'must-not-start'
+    with pytest.raises((release.ReleaseError, OSError)):
+        release.run([sys.executable, '-c', 'from pathlib import Path; Path(' + repr(str(marker)) + ').touch()'],
+            env=environment, release_root=tmp_path / 'unknown')
+    assert not marker.exists() and not (tmp_path / 'unknown').exists()
+
+
+def test_process_scope_removes_only_its_own_record(tmp_path, monkeypatch):
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    monkeypatch.setattr(release, 'ROOT', repo)
+    root = tmp_path / 'release'
+    release.create_root(root, repo, 'a' * 40)
+    with release.ReleaseProcesses(root).running(['/bin/sleep', '120']) as process:
+        state = release.resource_state(root)
+        previous = {**state['processes'][0], 'identity': 'previous process identity'}
+        state['processes'].append(previous)
+        release.atomic_json(root / 'resources.json', state)
+    assert process.poll() is not None
+    assert release.resource_state(root)['processes'] == [previous]
+    assert release.recover_resources(root) == []
+    assert release.resource_state(root)['processes'] == []
 
 
 def test_signature_runtime_is_parsed_from_codesign_flags():
@@ -513,7 +876,7 @@ def test_real_process_timeout_and_recovery_leave_no_owned_service(tmp_path, monk
     scope = release.owned_directory(root, 'probe')
     env = release.isolated_env(scope)
     with pytest.raises(subprocess.TimeoutExpired):
-        release.run([sys.executable, '-c', 'import signal; signal.pause()'], cwd=scope, env=env, timeout=0.2)
+        release.run([sys.executable, '-c', 'import signal; signal.pause()'], cwd=scope, env=env, timeout=0.2, release_root=root)
     assert release.resource_state(root)['processes'] == []
     process = subprocess.Popen(
         [sys.executable, '-c', 'import signal; print("ready", flush=True); signal.pause()'],
@@ -766,23 +1129,23 @@ def test_resolved_python_creates_working_copied_venv_and_media_environment(tmp_p
     release.create_root(inner, release.ROOT, 'a' * 40)
     scope = release.owned_directory(inner, 'environment')
     environment = release.isolated_env(scope, python=identity['executable'])
-    assert environment['VENUS_RELEASE_ROOT'] == str(inner.resolve())
+    assert 'VENUS_RELEASE_ROOT' not in environment
     environment['PIP_NO_INDEX'] = '1'
     assert Path(shutil.which('python3.11', path=environment['PATH'])).resolve() == real
     target = release.owned_directory(inner, 'copied')
-    release.run([identity['executable'], '-I', '-m', 'venv', '--copies', target], env=environment)
+    release.run([identity['executable'], '-I', '-m', 'venv', '--copies', target], env=environment, release_root=inner)
     python = target / 'bin/python'
     assert not python.is_symlink()
     facts = json.loads(release.run([python, '-I', '-c',
         'import encodings,ssl,sqlite3,venv,sys,sysconfig,json; '
         'print(json.dumps({"prefix":sys.prefix,"base_prefix":sys.base_prefix,"stdlib":sysconfig.get_path("stdlib")}))'],
-        env=environment))
+        env=environment, release_root=inner))
     assert Path(facts['prefix']).resolve() == target.resolve()
     assert facts['base_prefix'] == identity['base_prefix']
     assert facts['stdlib'] == identity['stdlib']
-    assert str(target) in release.run([python, '-I', '-m', 'pip', '--version'], env=environment)
+    assert str(target) in release.run([python, '-I', '-m', 'pip', '--version'], env=environment, release_root=inner)
     media = json.loads(release.run(['python3.11', '-I', '-c',
-        'import sys,json; print(json.dumps({"executable":sys.executable,"base_prefix":sys.base_prefix}))'], env=environment))
+        'import sys,json; print(json.dumps({"executable":sys.executable,"base_prefix":sys.base_prefix}))'], env=environment, release_root=inner))
     assert media['executable'] == identity['executable']
     assert media['base_prefix'] == identity['base_prefix']
     monkeypatch.setenv('PATH', str(target / 'bin') + os.pathsep + os.environ['PATH'])
