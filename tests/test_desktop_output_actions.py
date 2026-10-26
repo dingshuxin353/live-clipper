@@ -20,24 +20,6 @@ def test_preload_exposes_only_named_output_selection_and_clipboard_methods():
         assert forbidden not in preload
 
 
-def test_main_process_authenticates_new_ipc_and_uses_backend_client_factories():
-    main = (ROOT / "desktop" / "main.js").read_text(encoding="utf-8")
-
-    assert "function assertTrustedRenderer(event)" in main
-    assert "event.sender !== mainWindow.webContents" in main
-    assert "isInternalAppUrl(event.senderFrame?.url, backendPort)" in main
-    assert "createOutputActions({ client: backendClient, shell, runtime })" in main
-    assert "createFileSelections({" in main
-    for channel in [
-        "lc:open-output",
-        "lc:reveal-output",
-        "lc:select-issue-source",
-        "lc:select-recovery-output",
-        "lc:write-clipboard-text",
-    ]:
-        assert f'ipcMain.handle("{channel}"' in main
-
-
 def test_output_and_selection_operations_use_ids_and_private_bearer_routes():
     backend = (ROOT / "desktop" / "backend-client.js").read_text(encoding="utf-8")
     runtime = (ROOT / "desktop" / "runtime-state.js").read_text(encoding="utf-8")

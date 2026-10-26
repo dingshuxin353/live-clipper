@@ -3,7 +3,9 @@ const test = require('node:test');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const vm = require('node:vm');
+const { EventEmitter } = require('node:events');
+const { registerDesktopCapabilities } = require('../desktop-capabilities');
+const { createUpdateFlow } = require('../update-flow');
 const { createDataDirectoryActions, createRuntimeState } = require('../runtime-state');
 
 test('known data directories resolve in their owning process and never create missing targets', async () => {
@@ -22,23 +24,41 @@ test('known data directories resolve in their owning process and never create mi
   } finally { fs.rmSync(home, { recursive: true }); }
 });
 
-// Exercise the actual registered IPC handlers and shared updater, without a network or installer.
+// Native dialogs, update transport and installer are controlled external boundaries.
 function desktopHarness() {
-  const handlers = {}; const events = {}; const messages = []; const order = [];
-  let nextDialog; let response = 1; let checks = 0; let nextCheck = async () => ({ updateInfo: { version: '1.0.2' } });
-  const updater = { on: (name, fn) => { events[name] = fn; }, checkForUpdates: () => { checks++; return nextCheck(); }, quitAndInstall: () => order.push('install') };
-  const electron = {
-    app: { getPath: () => '/isolated', setPath() {}, getVersion: () => '1.0.2', isPackaged: true, requestSingleInstanceLock: () => true, whenReady: () => new Promise(() => {}), on() {} },
-    shell: { openExternal: async () => { throw new Error("private-browser-error"); } },
-    ipcMain: { handle: (name, fn) => { handlers[name] = fn; } },
-    dialog: { showMessageBox: async (parent, options) => { messages.push(options); return nextDialog ? nextDialog(parent, options) : { response }; }, showErrorBox: (...args) => messages.push(args) },
+  const handlers = {}; const messages = []; const order = [];
+  const runtime = createRuntimeState(); runtime.setStartup({ entry: { mode: 'workbench' } });
+  let window = { webContents: {} };
+  let nextDialog; let response = 1; let checks = 0;
+  let nextCheck = async () => ({ updateInfo: { version: '1.0.2' } });
+  let prepare = async () => { order.push('stop'); return runtime.beginQuit(); };
+  let install = () => order.push('install');
+  let latest = '2.0.0';
+  const updater = new EventEmitter();
+  updater.checkForUpdates = () => { checks++; return nextCheck(); };
+  updater.quitAndInstall = () => install();
+  const app = { getVersion: () => '1.0.2', isPackaged: true, quit() {} };
+  const dialog = { showMessageBox: async (parent, options) => { messages.push(options); return nextDialog ? nextDialog(parent, options) : { response }; }, showErrorBox: (...args) => messages.push(args) };
+  const flow = createUpdateFlow({ app, dialog, runtime, getWindow: () => window,
+    shell: { openExternal: async () => { throw new Error('private-browser-error'); } },
+    getUpdater: () => updater, prepareForQuit: () => prepare(), markExiting: () => order.push('mark'),
+    https: { get: (url, options, callback) => {
+      assert.equal(url, 'https://api.github.com/repos/dingshuxin353/live-clipper/releases/latest');
+      assert.equal(options.timeout, 8000);
+      const request = new EventEmitter(); request.destroy = () => {};
+      queueMicrotask(() => { const result = new EventEmitter(); result.statusCode = 200; callback(result); result.emit('data', JSON.stringify({ tag_name: latest })); result.emit('end'); });
+      return request;
+    } },
+  });
+  registerDesktopCapabilities({ ipcMain: { handle: (name, fn) => { handlers[name] = fn; } }, app, dialog,
+    runtime, getWindow: () => window, getPort: () => 12345, appHome: '/isolated/home', client: {}, clipboard: {}, shell: {}, checkForUpdates: flow.checkForUpdates });
+  const trusted = { sender: window.webContents, senderFrame: { url: 'http://127.0.0.1:12345/settings' } };
+  return { handlers, trusted, updater, runtime, messages, order, flow, app, checks: () => checks,
+    window: () => window, setWindow: value => { window = value; },
+    setDialog: fn => { nextDialog = fn; }, setResponse: value => { response = value; }, setCheck: fn => { nextCheck = fn; },
+    setPrepare: fn => { prepare = fn; }, setInstall: fn => { install = fn; }, setLatest: value => { latest = value; },
+    downloaded: () => { runtime.setStartup({ entry: { mode: 'onboarding' } }); updater.emit('update-downloaded'); runtime.setStartup({ entry: { mode: 'workbench' } }); },
   };
-  const fakeFs = { ...fs, existsSync: () => true, realpathSync: value => value, mkdirSync() {} };
-  const context = vm.createContext({ require: name => name === 'electron' ? electron : name === 'electron-updater' ? { autoUpdater: updater } : name === 'fs' ? fakeFs : name.startsWith('./') ? require(`../${name.slice(2)}`) : require(name), process: { env: { LIVE_CLIPPER_HOME: '/isolated/home' }, platform: 'darwin', arch: 'arm64' }, URL, console, setTimeout, clearTimeout, __dirname: path.resolve(__dirname, '..') });
-  vm.runInContext(fs.readFileSync(path.join(__dirname, '../main.js'), 'utf8'), context);
-  vm.runInContext('backendPort = 12345; mainWindow = { webContents: {} }; runtime.setStartup({ entry: { mode: "workbench" } }); backendClient = { stopService: async () => order.push("stop") };', Object.assign(context, { order }));
-  const trusted = vm.runInContext('({ sender: mainWindow.webContents, senderFrame: { url: "http://127.0.0.1:12345/settings" } })', context);
-  return { handlers, trusted, events, messages, order, context, checks: () => checks, setDialog: fn => { nextDialog = fn; }, setResponse: value => { response = value; }, setCheck: fn => { nextCheck = fn; } };
 }
 
 test('desktop info IPC uses app version and rejects untrusted renderers', () => {
@@ -50,34 +70,37 @@ test('desktop info IPC uses app version and rejects untrusted renderers', () => 
   }
 });
 
-test('IPC and tray update flow share in-flight work, failures retry, downloaded update requires confirmation before safe quit', async () => {
+test('IPC and other update callers share in-flight work, failures retry, and confirmed installation prepares quit', async () => {
   const h = desktopHarness(); let finish;
   h.setCheck(() => new Promise(resolve => { finish = resolve; }));
-  const silent = vm.runInContext('checkForUpdates(false)', h.context);
+  const silent = h.flow.checkForUpdates(false);
   const first = h.handlers['lc:check-for-updates'](h.trusted);
-  const second = vm.runInContext('checkForUpdates(true)', h.context);
+  const second = h.flow.checkForUpdates(true);
   assert.equal(first, second); assert.equal(h.checks(), 1);
   finish({ updateInfo: { version: '1.0.2' } }); await silent; await first;
   assert.equal(h.messages[0].message, '未发现新版本');
   h.setCheck(async () => { throw new Error('private error'); });
-  assert.equal((await h.handlers['lc:check-for-updates'](h.trusted)).ok, false);
+  assert.equal((await h.handlers['lc:check-for-updates'](h.trusted)).code, 'check');
   h.setCheck(async () => ({ updateInfo: {} }));
-  assert.equal((await h.handlers['lc:check-for-updates'](h.trusted)).ok, false);
+  assert.equal((await h.handlers['lc:check-for-updates'](h.trusted)).code, 'check');
   assert.equal(h.messages.filter(m => m.message === '未发现新版本').length, 1);
-  vm.runInContext('updateDownloaded = true', h.context);
+  h.downloaded();
   await h.handlers['lc:check-for-updates'](h.trusted);
-  assert.equal(JSON.stringify(h.messages.at(-1).buttons), JSON.stringify(['重启并安装', '稍后']));
+  assert.deepEqual(h.messages.at(-1).buttons, ['重启并安装', '稍后']);
   assert.deepEqual(h.order, []);
   h.setResponse(0); await h.handlers['lc:check-for-updates'](h.trusted);
-  assert.deepEqual(h.order, ['stop', 'install']);
-  assert.equal((await h.handlers['lc:check-for-updates'](h.trusted)).ok, false);
+  assert.deepEqual(h.order, ['stop', 'mark', 'install']);
+  assert.equal((await h.handlers['lc:check-for-updates'](h.trusted)).code, 'restricted');
+  for (const name of ['update-available', 'update-downloaded', 'error']) assert.equal(h.updater.listenerCount(name), 1);
+  assert.equal(h.updater.autoDownload, true);
+  assert.equal(h.updater.autoInstallOnAppQuit, false);
 });
 
-for (const latest of ['1.0.2', '1.0.1']) test(`no-update ${latest} owns its native dialog and releases IPC for a second check after dismissal`, async () => {
+for (const latest of ['1.0.2', '1.0.1']) test(`no-update ${latest} owns its native dialog and releases IPC after dismissal`, async () => {
   const h = desktopHarness(); let dismiss;
   h.setCheck(async () => ({ updateInfo: { version: latest } }));
   h.setDialog((parent, options) => {
-    assert.equal(parent, vm.runInContext('mainWindow', h.context));
+    assert.equal(parent, h.window());
     assert.equal(options.message, '未发现新版本');
     return new Promise(resolve => { dismiss = () => resolve({ response: 0 }); });
   });
@@ -95,28 +118,81 @@ for (const latest of ['1.0.2', '1.0.1']) test(`no-update ${latest} owns its nati
   dismiss(); assert.equal((await second).ok, true);
 });
 
-test('update errors retain the failed operation and never treat rejected installation as success', async () => {
+test('update events preserve download errors and prepare/install failures without exposing external details', async () => {
   const h = desktopHarness();
   await h.handlers['lc:check-for-updates'](h.trusted);
-  h.events['update-available'](); h.events.error(new Error('private-url/key'));
+  h.updater.emit('update-available'); h.updater.emit('error', new Error('private-url/key'));
   assert.match(h.messages.at(-1)[1], /下载失败/);
   assert.doesNotMatch(JSON.stringify(h.messages), /private-url/);
-  vm.runInContext('updateDownloaded = true; prepareForQuit = async () => false', h.context);
-  h.setResponse(0);
+  h.downloaded(); h.setPrepare(async () => false); h.setResponse(0);
   assert.equal((await h.handlers['lc:check-for-updates'](h.trusted)).code, 'prepare');
   assert.deepEqual(h.order, []);
-  vm.runInContext('prepareForQuit = async () => true; updater.quitAndInstall = () => { throw new Error("secret"); }', h.context);
+  h.setPrepare(async () => { throw new Error('private prepare'); });
+  assert.equal((await h.handlers['lc:check-for-updates'](h.trusted)).code, 'prepare');
+  h.setPrepare(async () => true); h.setInstall(() => { throw new Error('secret'); });
   assert.equal((await h.handlers['lc:check-for-updates'](h.trusted)).code, 'install');
+  assert.deepEqual(h.order, ['mark']);
   assert.match(h.messages.at(-1)[1], /后台处理已停止/);
-  assert.doesNotMatch(JSON.stringify(h.messages), /secret/);
-  vm.runInContext('runtime.setStartup({ entry: { mode: "onboarding" } })', h.context);
-  assert.equal((await vm.runInContext('installDownloadedUpdate()', h.context)).code, 'restricted');
+  assert.doesNotMatch(JSON.stringify(h.messages), /secret|private prepare/);
+  h.runtime.setStartup({ entry: { mode: 'onboarding' } });
+  assert.equal((await h.handlers['lc:check-for-updates'](h.trusted)).code, 'restricted');
 });
 
-test('manual update page errors are not reported as update check failures', async () => {
-  const h = desktopHarness(); h.setResponse(0);
-  const result = await vm.runInContext('app.isPackaged = false; showUpdateResult({ ok: true, latest: "2.0.0" })', h.context);
+test('development download-page errors keep their own phase through the production IPC', async () => {
+  const h = desktopHarness(); h.setResponse(0); h.app.isPackaged = false;
+  const result = await h.handlers['lc:check-for-updates'](h.trusted);
   assert.equal(result.code, 'page');
   assert.match(h.messages.at(-1)[1], /无法打开下载页/);
   assert.deepEqual(h.order, []);
+});
+
+test('download events share confirmation, respect current restrictions, and use the current window', async () => {
+  const h = desktopHarness();
+  assert.equal(h.checks(), 0);
+  assert.equal(h.updater.listenerCount('error'), 0);
+  await h.flow.checkForUpdates(false);
+  h.runtime.setStartup({ entry: { mode: 'migration_required' } });
+  h.updater.emit('update-downloaded');
+  assert.equal(h.messages.length, 0);
+  const replacement = { webContents: {} };
+  h.setWindow(replacement);
+  h.runtime.setStartup({ entry: { mode: 'workbench' } });
+  let dismiss;
+  h.setDialog((owner) => { assert.equal(owner, replacement); return new Promise(resolve => { dismiss = resolve; }); });
+  const event = { ...h.trusted, sender: replacement.webContents };
+  const first = h.handlers['lc:check-for-updates'](event);
+  await new Promise(setImmediate);
+  h.updater.emit('update-downloaded');
+  const duplicate = h.flow.checkForUpdates(true);
+  assert.equal(h.messages.length, 1);
+  h.runtime.setStartup({ entry: { mode: 'onboarding' } });
+  dismiss({ response: 0 });
+  assert.equal((await first).code, 'restricted');
+  assert.equal((await duplicate).code, 'restricted');
+  assert.deepEqual(h.order, []);
+  assert.throws(() => h.handlers['lc:check-for-updates'](h.trusted), /无法执行此操作/);
+});
+
+test('installation waits for quit preparation and handles installer error events safely', async () => {
+  const h = desktopHarness();
+  await h.flow.checkForUpdates(false); h.downloaded(); h.setResponse(0);
+  let prepared;
+  h.setPrepare(() => new Promise(resolve => { prepared = resolve; }));
+  h.setInstall(() => { h.order.push('install'); h.updater.emit('error', new Error('secret installer path')); });
+  const installing = h.handlers['lc:check-for-updates'](h.trusted);
+  await new Promise(setImmediate);
+  assert.deepEqual(h.order, []);
+  prepared(true);
+  assert.equal((await installing).code, 'install');
+  assert.deepEqual(h.order, ['mark', 'install']);
+  assert.doesNotMatch(JSON.stringify(h.messages), /secret installer path/);
+});
+
+test('development invalid versions fail safely and a later valid query can retry', async () => {
+  const h = desktopHarness(); h.app.isPackaged = false;
+  h.setLatest('not-a-version');
+  assert.equal((await h.handlers['lc:check-for-updates'](h.trusted)).code, 'check');
+  h.setLatest('v1.0.2');
+  assert.deepEqual(await h.handlers['lc:check-for-updates'](h.trusted), { ok: true });
+  assert.equal(h.messages.at(-1).message, '未发现新版本');
 });
