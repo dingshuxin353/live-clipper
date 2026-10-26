@@ -6,19 +6,14 @@ const net = require("net");
 const path = require("path");
 const { BackendClient, BackendError, redactText } = require("./backend-client");
 const { checkMediaTools } = require("./media-runtime");
+const { registerDesktopCapabilities } = require("./desktop-capabilities");
 const {
   appUrl,
   createBadgePoller,
-  createDataDirectoryActions,
-  createFileSelections,
-  createFolderSelection,
-  createMigrationActions,
-  createOutputActions,
   createRuntimeState,
   electronRuntimeHome,
   isInternalAppUrl,
   resolveTrustedAppHome,
-  writeClipboardText,
 } = require("./runtime-state");
 
 let mainWindow = null;
@@ -27,11 +22,6 @@ let backendProcess = null;
 let backendPort = null;
 let backendClient = null;
 let badgePoller = null;
-let outputActions = null;
-let fileSelections = null;
-let folderSelection = null;
-let migrationActions = null;
-let dataDirectoryActions = null;
 let appHome = null;
 let startupRefresh = null;
 let updateCheckTimer = null;
@@ -101,76 +91,6 @@ function startBackend(port) {
   });
   return true;
 }
-
-function assertTrustedRenderer(event) {
-  if (
-    !mainWindow
-    || event.sender !== mainWindow.webContents
-    || !isInternalAppUrl(event.senderFrame?.url, backendPort)
-  ) {
-    throw new Error("无法执行此操作，请重新打开 Venus 后重试。");
-  }
-}
-
-ipcMain.handle("lc:application-info", (event) => {
-  assertTrustedRenderer(event);
-  if (!runtime.canStart()) throw new Error("Venus 正在退出");
-  return { version: app.getVersion(), app_home: appHome, platform: process.platform, arch: process.arch };
-});
-ipcMain.handle("lc:open-data-directory", (event, id) => {
-  assertTrustedRenderer(event);
-  if (!dataDirectoryActions) throw new Error("后台服务暂时不可用，请稍后重试。");
-  return dataDirectoryActions.open(id);
-});
-ipcMain.handle("lc:check-for-updates", (event) => {
-  assertTrustedRenderer(event);
-  return checkForUpdates(true);
-});
-
-ipcMain.handle("lc:select-folder", async (event, title) => {
-  assertTrustedRenderer(event);
-  if (!folderSelection) throw new Error("暂时无法打开文件夹选择窗口，请稍后重试。");
-  return folderSelection.select(title);
-});
-
-ipcMain.handle("lc:read-clipboard-text", (event) => {
-  assertTrustedRenderer(event);
-  return clipboard.readText();
-});
-ipcMain.handle("lc:write-clipboard-text", (event, value) => {
-  assertTrustedRenderer(event);
-  return writeClipboardText(clipboard, runtime, value);
-});
-ipcMain.handle("lc:open-output", (event, outputId) => {
-  assertTrustedRenderer(event);
-  if (!outputActions) throw new Error("后台服务暂时不可用，请稍后重试。");
-  return outputActions.openOutput(outputId);
-});
-ipcMain.handle("lc:reveal-output", (event, outputId) => {
-  assertTrustedRenderer(event);
-  if (!outputActions) throw new Error("后台服务暂时不可用，请稍后重试。");
-  return outputActions.revealOutput(outputId);
-});
-ipcMain.handle("lc:select-issue-source", (event, issueId) => {
-  assertTrustedRenderer(event);
-  if (!fileSelections) throw new Error("后台服务暂时不可用，请稍后重试。");
-  return fileSelections.selectIssueSource(issueId);
-});
-ipcMain.handle("lc:select-recovery-output", (event, issueId) => {
-  assertTrustedRenderer(event);
-  if (!fileSelections) throw new Error("后台服务暂时不可用，请稍后重试。");
-  return fileSelections.selectRecoveryOutput(issueId);
-});
-ipcMain.handle("lc:show-migration-backup", (event, migrationId) => {
-  assertTrustedRenderer(event);
-  if (!migrationActions) throw new Error("后台服务暂时不可用，请稍后重试。");
-  return migrationActions.showBackup(migrationId).catch(error => ({ ok: false, message: error.message, code: error.code || "backup_display_failed" }));
-});
-ipcMain.handle("lc:quit-app", (event) => {
-  assertTrustedRenderer(event);
-  app.quit();
-  return { ok: true };
-});
 
 function createApplicationMenu() {
   const template = [];
@@ -501,11 +421,6 @@ async function shutdownBackend() {
   }
   if (!backendProcess) {
     backendClient = null;
-    outputActions = null;
-    fileSelections = null;
-    folderSelection = null;
-    migrationActions = null;
-    dataDirectoryActions = null;
     return;
   }
   const proc = backendProcess;
@@ -526,11 +441,6 @@ async function shutdownBackend() {
     });
   });
   backendClient = null;
-  outputActions = null;
-  fileSelections = null;
-  folderSelection = null;
-  migrationActions = null;
-  dataDirectoryActions = null;
 }
 
 async function prepareForQuit() {
@@ -557,16 +467,10 @@ if (!app.requestSingleInstanceLock()) {
       if (app.isPackaged) checkMediaTools(process.resourcesPath);
       backendPort = await findFreePort();
       backendClient = new BackendClient({ port: backendPort, token: backendToken });
-      dataDirectoryActions = createDataDirectoryActions({ client: backendClient, shell, runtime, appHome });
-      outputActions = createOutputActions({ client: backendClient, shell, runtime });
-      fileSelections = createFileSelections({
-        client: backendClient,
-        dialog,
-        runtime,
-        getWindow: () => mainWindow,
+      registerDesktopCapabilities({
+        ipcMain, app, clipboard, dialog, shell, client: backendClient, runtime, appHome,
+        getWindow: () => mainWindow, getPort: () => backendPort, checkForUpdates,
       });
-      folderSelection = createFolderSelection({ dialog, runtime, getWindow: () => mainWindow });
-      migrationActions = createMigrationActions({ client: backendClient, shell, runtime, appHome });
       startBackend(backendPort);
       const startup = await backendClient.waitUntilReady({ isAlive: () => Boolean(backendProcess) });
       if (!startup?.entry?.mode) throw new Error("无法读取启动状态，请重新打开 Venus。");

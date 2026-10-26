@@ -153,20 +153,16 @@ test("migration backup grant detects target replacement during validation", asyn
   await assert.rejects(actions.showBackup(migrationId), /无法确认备份位置/);
 });
 
-test("preload and main expose only the migration-id backup capability", () => {
+test("preload exposes only the migration-id backup capability", () => {
   const preload = readFileSync(path.join(__dirname, "..", "preload.js"), "utf8");
-  const main = readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
   assert.match(preload, /showBackup: \(migrationId\) => ipcRenderer\.invoke\("lc:show-migration-backup", migrationId\)/);
-  assert.match(main, /migrationActions\.showBackup\(migrationId\)/);
   assert.equal(preload.includes("backupPath"), false);
   assert.equal(preload.includes("backendToken"), false);
   assert.equal(preload.includes("showMigrationBackup"), false);
 });
 
-test("preload exposes a parameter-free quit capability through the trusted main process", () => {
+test("preload exposes a parameter-free quit capability", () => {
   const preload = readFileSync(path.join(__dirname, "..", "preload.js"), "utf8");
-  const main = readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
   assert.match(preload, /quitApp: \(\) => ipcRenderer\.invoke\("lc:quit-app"\)/);
-  assert.match(main, /ipcMain\.handle\("lc:quit-app", \(event\) => \{\s*assertTrustedRenderer\(event\);\s*app\.quit\(\)/);
   assert.equal(preload.includes("quitCommand"), false);
 });

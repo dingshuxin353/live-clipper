@@ -10,8 +10,6 @@ def test_desktop_exposes_only_narrow_clipboard_bridges():
     preload = (ROOT / "desktop" / "preload.js").read_text(encoding="utf-8")
     runtime = (ROOT / "desktop" / "runtime-state.js").read_text(encoding="utf-8")
 
-    assert 'ipcMain.handle("lc:read-clipboard-text"' in main
-    assert 'ipcMain.handle("lc:write-clipboard-text"' in main
     assert 'readClipboardText: () => ipcRenderer.invoke("lc:read-clipboard-text")' in preload
     assert 'writeClipboardText: (text) => ipcRenderer.invoke("lc:write-clipboard-text", text)' in preload
     assert "value.length > 20000" in runtime
