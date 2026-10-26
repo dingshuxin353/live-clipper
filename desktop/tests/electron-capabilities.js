@@ -3,6 +3,8 @@ const fs = require("node:fs");
 const http = require("node:http");
 const path = require("node:path");
 const { app, BrowserWindow, ipcMain } = require("electron");
+const { EventEmitter } = require("node:events");
+const { createUpdateFlow } = require("../update-flow");
 const { registerDesktopCapabilities } = require("../desktop-capabilities");
 const { createRuntimeState } = require("../runtime-state");
 
@@ -36,13 +38,25 @@ app.whenReady().then(async () => {
   const runtime = createRuntimeState();
   const port = await serve();
   const outsidePort = await serve();
+  let response = 1; let finishCheck; let queryStarted;
+  const checkStarted = new Promise(resolve => { queryStarted = resolve; });
+  const messages = [];
+  const updater = new EventEmitter();
+  updater.checkForUpdates = () => { effects.push("query"); queryStarted(); return new Promise(resolve => { finishCheck = resolve; }); };
+  updater.quitAndInstall = () => effects.push("install");
+  const appBoundary = { getVersion: () => app.getVersion(), isPackaged: true, quit: () => effects.push("quit") };
+  const dialog = {
+    showOpenDialog: async parent => { assert.equal(parent, currentWindow); effects.push("dialog"); return { canceled: true, filePaths: [] }; },
+    showMessageBox: async (parent, options) => { assert.equal(parent, currentWindow); messages.push(options); return { response }; },
+    showErrorBox: (_, message) => assert.fail(message),
+  };
+  const flow = createUpdateFlow({ app: appBoundary, dialog, shell: {}, runtime, getWindow: () => currentWindow,
+    getUpdater: () => updater, prepareForQuit: async () => { effects.push("prepare"); return runtime.beginQuit(); }, markExiting: () => effects.push("mark") });
   dispose = registerDesktopCapabilities({
     ipcMain, runtime, appHome: root, getWindow: () => currentWindow, getPort: () => port,
-    app: { getVersion: () => app.getVersion(), quit: () => effects.push("quit") },
+    app: appBoundary, dialog,
     clipboard: { readText: () => { effects.push("read"); return "isolated clipboard"; }, writeText: text => effects.push(["write", text]) },
-    dialog: { showOpenDialog: async (parent) => { assert.equal(parent, currentWindow); effects.push("dialog"); return { canceled: true, filePaths: [] }; } },
-    shell: {}, client: {},
-    checkForUpdates: () => assert.fail("Untrusted updates must not execute"),
+    shell: {}, client: {}, checkForUpdates: flow.checkForUpdates,
   });
   currentWindow = await windowAt(port);
   const methods = await currentWindow.webContents.executeJavaScript("Object.keys(window.liveClipperShell).sort()");
@@ -51,7 +65,9 @@ app.whenReady().then(async () => {
   assert.equal(await call(currentWindow, "selectFolder('选择目录')"), null);
   assert.equal(await call(currentWindow, "readClipboardText()"), "isolated clipboard");
   assert.deepEqual(await call(currentWindow, "writeClipboardText('isolated text')"), { ok: true });
-  cases.push("production preload and trusted IPC; restricted folder and clipboard");
+  assert.equal((await call(currentWindow, "checkForUpdates()")).code, "restricted");
+  assert.equal(updater.listenerCount("error"), 0);
+  cases.push("production preload and trusted IPC; restricted folder, clipboard and updates");
 
   const effectsBefore = effects.length;
   const otherWindow = await windowAt(port);
@@ -79,12 +95,29 @@ app.whenReady().then(async () => {
   assert.equal(await call(currentWindow, "readClipboardText()"), "isolated clipboard");
   cases.push("window replacement, no-window rejection, and recreation without registration");
 
-  runtime.beginQuit();
+  runtime.setStartup({ entry: { mode: "workbench" } });
+  const firstCheck = call(currentWindow, "checkForUpdates()");
+  await checkStarted;
+  const duplicateCheck = call(currentWindow, "checkForUpdates()");
+  await call(currentWindow, "getApplicationInfo()");
+  finishCheck({ updateInfo: { version: app.getVersion() } });
+  assert.deepEqual(await firstCheck, { ok: true });
+  assert.deepEqual(await duplicateCheck, { ok: true });
+  assert.equal(effects.filter(value => value === "query").length, 1);
+  assert.equal(messages.length, 1);
+  updater.emit("update-downloaded");
+  assert.deepEqual(await call(currentWindow, "checkForUpdates()"), { ok: true, deferred: true });
+  assert.equal(effects.includes("prepare"), false);
+  response = 0;
+  assert.deepEqual(await call(currentWindow, "checkForUpdates()"), { ok: true });
+  assert.deepEqual(effects.slice(-3), ["prepare", "mark", "install"]);
+  cases.push("renderer update query sharing, event-driven defer and prepare-before-install");
+
   await assert.rejects(call(currentWindow, "getApplicationInfo()"), /退出/);
   assert.equal(await call(currentWindow, "readClipboardText()"), "isolated clipboard");
   assert.deepEqual(await call(currentWindow, "quitApp()"), { ok: true });
   cases.push("original per-capability quit rules");
-  fs.writeFileSync(path.join(root, "result.json"), JSON.stringify({ passed: true, versions: process.versions, pid: process.pid, ports: [port, outsidePort], cases, controlled: ["clipboard", "system dialogs", "quit"] }, null, 2) + "\n");
+  fs.writeFileSync(path.join(root, "result.json"), JSON.stringify({ passed: true, versions: process.versions, pid: process.pid, ports: [port, outsidePort], cases, controlled: ["clipboard", "system dialogs", "update network and installer", "quit preparation"] }, null, 2) + "\n");
 }).catch(error => {
   fs.writeFileSync(path.join(root, "result.json"), JSON.stringify({ passed: false, message: error.message, cases }, null, 2) + "\n");
   console.error(error);

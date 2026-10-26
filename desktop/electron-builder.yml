@@ -8,6 +8,7 @@ files:
   - backend-client.js
   - runtime-state.js
   - desktop-capabilities.js
+  - update-flow.js
   - media-runtime.js
   - package.json
   - assets/**
