@@ -446,8 +446,9 @@ def limit_download_cache(cache, python=None):
     return {'before': before, 'after': directory_bytes(cache), 'limit': CACHE_LIMIT}
 
 
-def process_identity(pid):
-    result = subprocess.run(['ps', '-p', str(pid), '-o', 'stat=', '-o', 'lstart=', '-o', 'command='], text=True, capture_output=True)
+def process_identity(pid, *, timeout=5):
+    result = subprocess.run(['ps', '-p', str(pid), '-o', 'stat=', '-o', 'lstart=', '-o', 'command='],
+        text=True, capture_output=True, timeout=timeout)
     fields = result.stdout.strip().split(None, 1)
     if result.returncode == 0 and len(fields) == 2:
         # A zombie has exited even when its parent has not reaped it yet.
@@ -502,19 +503,21 @@ class ReleaseProcesses:
         finally:
             cleanup_error = None
             try:
-                if process.poll() is None:
+                deadline = time.monotonic() + 15
+                if self._current_group_active(process, deadline):
                     try:
                         os.killpg(process.pid, signal.SIGTERM)
                     except ProcessLookupError:
                         pass
-                    try:
-                        process.communicate(timeout=15)
-                    except subprocess.TimeoutExpired:
-                        try:
-                            os.killpg(process.pid, signal.SIGKILL)
-                        except ProcessLookupError:
-                            pass
-                        process.communicate(timeout=5)
+                    if not self._wait_current_group(process, deadline):
+                        deadline = time.monotonic() + 5
+                        if self._current_group_active(process, deadline):
+                            try:
+                                os.killpg(process.pid, signal.SIGKILL)
+                            except ProcessLookupError:
+                                pass
+                        require(self._wait_current_group(process, deadline),
+                            'Owned process group exit could not be confirmed')
                 require(process.poll() is not None, 'Owned process exit could not be confirmed')
                 require(self._port_released(port), 'Process port still occupied after exit')
                 if record is not None:
@@ -536,6 +539,56 @@ class ReleaseProcesses:
                     exit_code=getattr(failure, 'exit_code', process.returncode)) from (failure or cleanup_error)
 
     @staticmethod
+    def _group_members(pgid, *, timeout=5):
+        require(type(pgid) is int and pgid > 0, 'Process group could not be confirmed')
+        result = subprocess.run(['ps', '-A', '-o', 'pid=', '-o', 'pgid=', '-o', 'stat='],
+            text=True, capture_output=True, timeout=timeout)
+        require(result.returncode == 0 and result.stdout.strip(), 'Process group query could not confirm its state')
+        members = []
+        for line in result.stdout.splitlines():
+            fields = line.split()
+            require(len(fields) == 3 and fields[0].isdigit() and fields[1].isdigit(),
+                'Process group query returned an uncertain state')
+            if int(fields[1]) == pgid and not fields[2].startswith('Z'):
+                members.append(int(fields[0]))
+        return members
+
+    def _current_group_active(self, process, deadline):
+        if process.poll() is None:
+            try:
+                require(os.getpgid(process.pid) == process.pid and os.getsid(process.pid) == process.pid,
+                    'Owned process session could not be confirmed')
+                return True
+            except ProcessLookupError:
+                require(process.poll() is not None, 'Owned process exit could not be confirmed')
+        members = self._group_members(process.pid, timeout=min(5, max(0, deadline - time.monotonic())))
+        active = False
+        for pid in members:
+            try:
+                require(os.getpgid(pid) == process.pid and os.getsid(pid) == process.pid,
+                    'Owned process group session could not be confirmed')
+                active = True
+            except ProcessLookupError:
+                pass
+        if members and not active:
+            require(not self._group_members(process.pid, timeout=min(5, max(0, deadline - time.monotonic()))),
+                'Owned process group membership could not be confirmed')
+        return active
+
+    def _wait_current_group(self, process, deadline):
+        try:
+            process.communicate(timeout=max(0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            return False
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            if not self._current_group_active(process, deadline):
+                return process.poll() is not None
+            threading.Event().wait(min(0.1, remaining))
+
+    @staticmethod
     def _port_released(port):
         if port is None:
             return True
@@ -546,6 +599,7 @@ class ReleaseProcesses:
         state = resource_state(self.root)
         issues = []
         for item in list(state['processes']):
+            deadline = None
             try:
                 actual = process_identity(item['pid'])
                 if actual is not None:
@@ -561,25 +615,34 @@ class ReleaseProcesses:
                         pass
                     deadline = time.monotonic() + 15
                     while True:
-                        actual = process_identity(item['pid'])
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            break
+                        actual = process_identity(item['pid'], timeout=min(5, remaining))
                         try:
                             reaped, _status = os.waitpid(item['pid'], os.WNOHANG)
                             if reaped == item['pid']:
                                 actual = None
                         except ChildProcessError:
                             pass
-                        if actual != item['identity'] or time.monotonic() >= deadline:
+                        if actual is None and not self._group_members(item['pgid'], timeout=min(5, max(0, deadline - time.monotonic()))):
                             break
-                        threading.Event().wait(0.1)
+                        if (actual is not None and actual != item['identity']) or time.monotonic() >= deadline:
+                            break
+                        threading.Event().wait(min(0.1, max(0, deadline - time.monotonic())))
                     if actual is not None:
                         reason = 'owned process did not exit gracefully' if actual == item['identity'] else 'process identity changed; record retained'
                         issues.append({'pid': item['pid'], 'reason': reason})
                         continue
+                query_timeout = 5 if deadline is None else min(5, max(0, deadline - time.monotonic()))
+                if self._group_members(item.get('pgid'), timeout=query_timeout):
+                    issues.append({'pid': item['pid'], 'reason': 'process group still active; record retained'})
+                    continue
                 if not self._port_released(item.get('port')):
                     issues.append({'port': item['port'], 'reason': 'port occupied; owner not signalled'})
                     continue
                 state['processes'].remove(item)
-            except (OSError, ReleaseError):
+            except (OSError, ReleaseError, subprocess.SubprocessError):
                 issues.append({'pid': item['pid'], 'reason': 'process state could not be confirmed; record retained'})
         atomic_json(self.root / 'resources.json', state)
         return issues

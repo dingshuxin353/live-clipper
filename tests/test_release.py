@@ -18,6 +18,144 @@ SPEC.loader.exec_module(release)
 REAL_RUN = release.run
 
 
+def _leader_with_child(marker, *, ignore_term=False):
+    child = '''import json, os, signal, subprocess, sys
+from pathlib import Path
+''' + ('signal.signal(signal.SIGTERM, signal.SIG_IGN)\n' if ignore_term else '') + '''Path(sys.argv[1]).write_text(json.dumps({
+    'pid': os.getpid(), 'pgid': os.getpgid(0), 'sid': os.getsid(0),
+    'identity': subprocess.check_output(['ps', '-p', str(os.getpid()), '-o', 'lstart=', '-o', 'command='], text=True).strip()}))
+os.write(int(sys.argv[2]), b'R')
+signal.pause()
+'''
+    leader = '''import os, subprocess, sys
+assert sys.stdin.readline() == 'go\\n'
+r, w = os.pipe()
+subprocess.Popen([sys.executable, '-c', sys.argv[2], sys.argv[1], str(w)], pass_fds=(w,))
+os.close(w)
+assert os.read(r, 1) == b'R'
+os.close(r)
+print('leader-completed', flush=True)
+'''
+    return [sys.executable, '-c', leader, str(marker), child]
+
+
+def _finish_group_fixture(marker):
+    import threading
+    import time
+
+    if not marker.exists():
+        return
+    facts = release.read_json(marker)
+    if release.process_identity(facts['pid']) is not None:
+        assert release.process_identity(facts['pid']) == facts['identity']
+        assert os.getpgid(facts['pid']) == facts['pgid'] and os.getsid(facts['pid']) == facts['sid']
+        os.kill(facts['pid'], signal.SIGKILL)
+        deadline = time.monotonic() + 5
+        while release.process_identity(facts['pid']) is not None:
+            assert time.monotonic() < deadline
+            threading.Event().wait(0.02)
+
+
+@pytest.mark.parametrize('mode', ['run', 'run-ignore-term', 'scope-log'])
+def test_current_scope_finishes_group_after_leader_exits(tmp_path, monkeypatch, mode):
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    monkeypatch.setattr(release, 'ROOT', repo)
+    root = tmp_path / 'release'
+    release.create_root(root, repo, 'a' * 40)
+    marker = tmp_path / 'child.json'
+    command = _leader_with_child(marker, ignore_term=mode == 'run-ignore-term')
+    try:
+        if mode.startswith('run'):
+            with pytest.raises(subprocess.TimeoutExpired) as failure:
+                release.run(command, release_root=root, input_text='go\n', timeout=1)
+            assert failure.value.category == 'timeout' and failure.value.exit_code == 0
+        else:
+            with (root / 'evidence/service.log').open('w') as stream:
+                with release.ReleaseProcesses(root).running(command, stdin=subprocess.PIPE, stdout=stream, stderr=stream) as process:
+                    process.stdin.write('go\n')
+                    process.stdin.flush()
+                    assert process.wait(5) == 0
+        facts = release.read_json(marker)
+        assert facts['pgid'] == facts['sid']
+        assert release.process_identity(facts['pid']) is None
+        assert release.resource_state(root)['processes'] == []
+    finally:
+        _finish_group_fixture(marker)
+
+
+def test_history_keeps_group_when_leader_identity_is_gone(tmp_path, monkeypatch):
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    monkeypatch.setattr(release, 'ROOT', repo)
+    root = tmp_path / 'release'
+    release.create_root(root, repo, 'a' * 40)
+    marker = tmp_path / 'child.json'
+    process = subprocess.Popen(_leader_with_child(marker), start_new_session=True, stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE, text=True)
+    try:
+        release.remember_process(root, process, tmp_path)
+        process.stdin.write('go\n')
+        process.stdin.flush()
+        assert select.select([process.stdout], [], [], 5)[0]
+        assert process.stdout.readline().strip() == 'leader-completed'
+        assert process.wait(5) == 0
+        before = release.resource_state(root)
+        with monkeypatch.context() as guard:
+            guard.setattr(release.os, 'killpg', lambda *_: pytest.fail('History without leader identity must not signal its group'))
+            assert release.recover_resources(root)
+        assert release.resource_state(root) == before
+        assert release.process_identity(release.read_json(marker)['pid']) is not None
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(5)
+        process.stdin.close()
+        process.stdout.close()
+        _finish_group_fixture(marker)
+    assert release.recover_resources(root) == []
+
+
+@pytest.mark.parametrize('uncertainty', ['query-failed', 'session-changed', 'membership-changed'])
+def test_current_group_uncertainty_keeps_record_and_original_failure(tmp_path, monkeypatch, uncertainty):
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    monkeypatch.setattr(release, 'ROOT', repo)
+    root = tmp_path / 'release'
+    release.create_root(root, repo, 'a' * 40)
+    marker = tmp_path / 'child.json'
+    query, session = subprocess.run, os.getsid
+    signals = []
+
+    def uncertain_query(args, **kwargs):
+        if uncertainty == 'query-failed' and args[:2] == ['ps', '-A']:
+            return subprocess.CompletedProcess(args, 2, '', 'controlled group query failure')
+        return query(args, **kwargs)
+
+    def changed_session(pid):
+        if marker.exists() and pid == release.read_json(marker)['pid']:
+            if uncertainty == 'session-changed':
+                return session(pid) + 1
+            if uncertainty == 'membership-changed':
+                raise ProcessLookupError('controlled disappearing group member')
+        return session(pid)
+
+    try:
+        with monkeypatch.context() as guard:
+            guard.setattr(release.subprocess, 'run', uncertain_query)
+            guard.setattr(release.os, 'getsid', changed_session)
+            guard.setattr(release.os, 'killpg', lambda *args: signals.append(args) or pytest.fail('Uncertain group must not be signalled'))
+            with pytest.raises(release.ReleaseError) as failure:
+                release.run(_leader_with_child(marker), release_root=root, input_text='go\n', timeout=1)
+        assert failure.value.category == 'timeout' and failure.value.exit_code == 0
+        assert isinstance(failure.value.__cause__, subprocess.TimeoutExpired)
+        assert 'cleanup incomplete' in str(failure.value)
+        assert not signals and release.resource_state(root)['processes']
+        assert release.process_identity(release.read_json(marker)['pid']) is not None
+    finally:
+        _finish_group_fixture(marker)
+
+
 def test_explicit_process_owner_preserves_io_fast_exit_and_safe_diagnostics(tmp_path, monkeypatch):
     repo = tmp_path / 'repo'
     repo.mkdir()
