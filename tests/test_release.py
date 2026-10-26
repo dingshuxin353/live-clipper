@@ -448,7 +448,8 @@ def test_real_cleanup_preview_and_apply_preserve_unresolved_release(tmp_path):
             process.wait(5)
 
 
-def test_history_recovery_does_not_escalate_term_to_kill(tmp_path, monkeypatch):
+@pytest.mark.parametrize('observation', ['real-wait', 'confirmed-live', 'query-timeout'])
+def test_history_recovery_does_not_escalate_term_to_kill(tmp_path, monkeypatch, observation):
     repo = tmp_path / 'repo'
     repo.mkdir()
     monkeypatch.setattr(release, 'ROOT', repo)
@@ -458,20 +459,51 @@ def test_history_recovery_does_not_escalate_term_to_kill(tmp_path, monkeypatch):
         'import signal; signal.signal(signal.SIGTERM, signal.SIG_IGN); print("ready", flush=True); signal.pause()'],
         start_new_session=True, stdout=subprocess.PIPE, text=True)
     real_killpg = os.killpg
+    native_query = subprocess.run
+    native_clock = release.time.monotonic
     signals = []
     try:
         assert select.select([process.stdout], [], [], 5)[0]
         assert process.stdout.readline().strip() == 'ready'
-        release.remember_process(root, process, tmp_path)
+        record = release.remember_process(root, process, tmp_path)
+        before = (root / 'resources.json').read_bytes()
 
         def track(pgid, signum):
-            signals.append(signum)
+            signals.append((pgid, signum))
             return real_killpg(pgid, signum)
 
         monkeypatch.setattr(release.os, 'killpg', track)
-        assert release.recover_resources(root) == [{'pid': process.pid, 'reason': 'owned process did not exit gracefully'}]
-        assert signals == [signal.SIGTERM] and process.poll() is None
-        assert release.resource_state(root)['processes'][0]['pid'] == process.pid
+        query_budgets = []
+        clock_offset = 0
+
+        def observe_query(args, **kwargs):
+            nonlocal clock_offset
+            if args[:3] != ['ps', '-p', str(process.pid)] or not signals:
+                return native_query(args, **kwargs)
+            query_budgets.append(kwargs['timeout'])
+            if observation == 'query-timeout':
+                raise subprocess.TimeoutExpired(args, kwargs['timeout'])
+            result = native_query(args, **kwargs)
+            clock_offset += 15
+            return result
+
+        with monkeypatch.context() as query_boundary:
+            if observation != 'real-wait':
+                query_boundary.setattr(release.time, 'monotonic', lambda: native_clock() + clock_offset)
+                query_boundary.setattr(release.subprocess, 'run', observe_query)
+            issues = release.recover_resources(root)
+        if observation == 'real-wait':
+            assert len(issues) == 1 and issues[0]['pid'] == process.pid
+        else:
+            reason = {'confirmed-live': 'owned process did not exit gracefully',
+                      'query-timeout': 'process state could not be confirmed; record retained'}[observation]
+            assert issues == [{'pid': process.pid, 'reason': reason}]
+            assert query_budgets == [5]
+        assert signals == [(process.pid, signal.SIGTERM)] and process.poll() is None
+        assert os.getpgid(process.pid) == os.getsid(process.pid) == process.pid
+        assert release.process_identity(process.pid) == record['identity']
+        assert release.resource_state(root)['processes'] == [record]
+        assert (root / 'resources.json').read_bytes() == before
     finally:
         if process.poll() is None:
             process.kill()
