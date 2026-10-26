@@ -164,47 +164,27 @@ def exclusive_lock(common_git_dir):
             fcntl.flock(stream, fcntl.LOCK_UN)
 
 
-def run(args, *, cwd=ROOT, env=None, log=None, input_text=None, timeout=3600):
+def run(args, *, cwd=ROOT, env=None, log=None, input_text=None, timeout=3600, release_root=None):
     """No shell, no command/environment echo; credentials never belong in arguments."""
-    root = Path(env['VENUS_RELEASE_ROOT']) if env and env.get('VENUS_RELEASE_ROOT') else None
-    if root:
-        owner_record(root)
-        process = subprocess.Popen([str(a) for a in args], cwd=cwd, env=env,
-                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                   text=True, start_new_session=True)
-        failure = None
-        try:
-            remember_process(root, process, cwd)
+    with contextlib.ExitStack() as scope:
+        if release_root is not None:
+            process = scope.enter_context(ReleaseProcesses(release_root).running(args, cwd=cwd, env=env,
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE))
             stdout, stderr = process.communicate(input_text, timeout=timeout)
             result = subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
-        except (subprocess.TimeoutExpired, KeyboardInterrupt) as exc:
-            failure = exc
-            raise
-        finally:
-            if process.poll() is None:
-                os.killpg(process.pid, signal.SIGTERM)
-                try:
-                    process.communicate(timeout=15)
-                except subprocess.TimeoutExpired:
-                    os.killpg(process.pid, signal.SIGKILL)
-                    process.communicate(timeout=5)
-            forget_process(root, process.pid)
-            if failure is not None:
-                failure.exit_code = process.returncode
-                failure.category = "timeout" if isinstance(failure, subprocess.TimeoutExpired) else "interrupted"
-    else:
-        result = subprocess.run([str(a) for a in args], cwd=cwd, env=env, input=input_text,
-                                text=True, capture_output=True, timeout=timeout)
-    diagnostic = safe_diagnostic(result.stdout + result.stderr, env)
-    if log:
-        target = Path(log)
-        if target.exists():
-            target = target.with_name(target.stem + "-" + uuid.uuid4().hex + target.suffix)
-        target.write_text(diagnostic)
-    if result.returncode != 0:
-        raise ReleaseError(f"{Path(str(args[0])).name} failed (exit {result.returncode}): {diagnostic[-2000:]}",
-                           category="external-command", exit_code=result.returncode)
-    return result.stdout or result.stderr
+        else:
+            result = subprocess.run([str(a) for a in args], cwd=cwd, env=env, input=input_text,
+                                    text=True, capture_output=True, timeout=timeout)
+        diagnostic = safe_diagnostic(result.stdout + result.stderr, env)
+        if log:
+            target = Path(log)
+            if target.exists():
+                target = target.with_name(target.stem + "-" + uuid.uuid4().hex + target.suffix)
+            target.write_text(diagnostic)
+        if result.returncode != 0:
+            raise ReleaseError(f"{Path(str(args[0])).name} failed (exit {result.returncode}): {diagnostic[-2000:]}",
+                               category="external-command", exit_code=result.returncode)
+        return result.stdout or result.stderr
 
 
 def git(repo, *args):
@@ -466,9 +446,16 @@ def limit_download_cache(cache, python=None):
     return {'before': before, 'after': directory_bytes(cache), 'limit': CACHE_LIMIT}
 
 
-def process_identity(pid):
-    result = subprocess.run(['ps', '-p', str(pid), '-o', 'lstart=', '-o', 'command='], text=True, capture_output=True)
-    return result.stdout.strip() if result.returncode == 0 else None
+def process_identity(pid, *, timeout=5):
+    result = subprocess.run(['ps', '-p', str(pid), '-o', 'stat=', '-o', 'lstart=', '-o', 'command='],
+        text=True, capture_output=True, timeout=timeout)
+    fields = result.stdout.strip().split(None, 1)
+    if result.returncode == 0 and len(fields) == 2:
+        # A zombie has exited even when its parent has not reaped it yet.
+        return None if fields[0].startswith('Z') else fields[1]
+    if result.returncode == 1 and not result.stdout.strip() and not result.stderr.strip():
+        return None
+    raise ReleaseError('Process identity query could not confirm its state', category='process-cleanup')
 
 
 def resource_state(root):
@@ -477,49 +464,193 @@ def resource_state(root):
 
 
 def remember_process(root, process, cwd, port=None):
+    try:
+        pgid = os.getpgid(process.pid)
+    except ProcessLookupError:
+        require(process.poll() is not None, 'Owned process group could not be confirmed')
+        pgid = process.pid
     state = resource_state(root)
-    state['processes'].append({'pid': process.pid, 'pgid': os.getpgid(process.pid),
-                              'identity': process_identity(process.pid), 'cwd': str(cwd), 'port': port})
+    record = {'pid': process.pid, 'pgid': pgid,
+              'identity': None if process.poll() is not None else process_identity(process.pid), 'cwd': str(cwd), 'port': port}
+    state['processes'].append(record)
+    atomic_json(root / 'resources.json', state)
+    return record
+
+
+def forget_process(root, record):
+    state = resource_state(root)
+    state['processes'].remove(record)
     atomic_json(root / 'resources.json', state)
 
 
-def forget_process(root, pid):
-    state = resource_state(root)
-    state['processes'] = [item for item in state['processes'] if item['pid'] != pid]
-    atomic_json(root / 'resources.json', state)
+class ReleaseProcesses:
+    def __init__(self, root):
+        owner_record(root)
+        self.root = root
+
+    @contextlib.contextmanager
+    def running(self, args, *, cwd=ROOT, env=None, port=None, stdin=None, stdout=None, stderr=None):
+        process = subprocess.Popen([str(a) for a in args], cwd=cwd, env=env, stdin=stdin,
+            stdout=stdout, stderr=stderr, text=True, start_new_session=True)
+        failure = None
+        record = None
+        try:
+            record = remember_process(self.root, process, cwd, port)
+            yield process
+        except BaseException as exc:
+            failure = exc
+            raise
+        finally:
+            cleanup_error = None
+            try:
+                deadline = time.monotonic() + 15
+                if self._current_group_active(process, deadline):
+                    try:
+                        os.killpg(process.pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+                    if not self._wait_current_group(process, deadline):
+                        deadline = time.monotonic() + 5
+                        if self._current_group_active(process, deadline):
+                            try:
+                                os.killpg(process.pid, signal.SIGKILL)
+                            except ProcessLookupError:
+                                pass
+                        require(self._wait_current_group(process, deadline),
+                            'Owned process group exit could not be confirmed')
+                require(process.poll() is not None, 'Owned process exit could not be confirmed')
+                require(self._port_released(port), 'Process port still occupied after exit')
+                if record is not None:
+                    forget_process(self.root, record)
+            except BaseException as exc:
+                cleanup_error = exc
+            finally:
+                for pipe in (process.stdin, process.stdout, process.stderr):
+                    if pipe is not None:
+                        pipe.close()
+                if isinstance(failure, (subprocess.TimeoutExpired, KeyboardInterrupt)):
+                    failure.exit_code = process.returncode
+                    failure.category = 'timeout' if isinstance(failure, subprocess.TimeoutExpired) else 'interrupted'
+            if cleanup_error is not None:
+                original = str(failure) if isinstance(failure, ReleaseError) else type(failure).__name__ if failure else f'process exit {process.returncode}'
+                reason = str(cleanup_error) if isinstance(cleanup_error, ReleaseError) else type(cleanup_error).__name__
+                raise ReleaseError(safe_diagnostic(f'{original}; process cleanup incomplete: {reason}', env),
+                    category=getattr(failure, 'category', 'process-cleanup'),
+                    exit_code=getattr(failure, 'exit_code', process.returncode)) from (failure or cleanup_error)
+
+    @staticmethod
+    def _group_members(pgid, *, timeout=5):
+        require(type(pgid) is int and pgid > 0, 'Process group could not be confirmed')
+        result = subprocess.run(['ps', '-A', '-o', 'pid=', '-o', 'pgid=', '-o', 'stat='],
+            text=True, capture_output=True, timeout=timeout)
+        require(result.returncode == 0 and result.stdout.strip(), 'Process group query could not confirm its state')
+        members = []
+        for line in result.stdout.splitlines():
+            fields = line.split()
+            require(len(fields) == 3 and fields[0].isdigit() and fields[1].isdigit(),
+                'Process group query returned an uncertain state')
+            if int(fields[1]) == pgid and not fields[2].startswith('Z'):
+                members.append(int(fields[0]))
+        return members
+
+    def _current_group_active(self, process, deadline):
+        if process.poll() is None:
+            try:
+                require(os.getpgid(process.pid) == process.pid and os.getsid(process.pid) == process.pid,
+                    'Owned process session could not be confirmed')
+                return True
+            except ProcessLookupError:
+                require(process.poll() is not None, 'Owned process exit could not be confirmed')
+        members = self._group_members(process.pid, timeout=min(5, max(0, deadline - time.monotonic())))
+        active = False
+        for pid in members:
+            try:
+                require(os.getpgid(pid) == process.pid and os.getsid(pid) == process.pid,
+                    'Owned process group session could not be confirmed')
+                active = True
+            except ProcessLookupError:
+                pass
+        if members and not active:
+            require(not self._group_members(process.pid, timeout=min(5, max(0, deadline - time.monotonic()))),
+                'Owned process group membership could not be confirmed')
+        return active
+
+    def _wait_current_group(self, process, deadline):
+        try:
+            process.communicate(timeout=max(0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            return False
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            if not self._current_group_active(process, deadline):
+                return process.poll() is not None
+            threading.Event().wait(min(0.1, remaining))
+
+    @staticmethod
+    def _port_released(port):
+        if port is None:
+            return True
+        with socket.socket() as probe:
+            return probe.connect_ex(('127.0.0.1', port)) != 0
+
+    def recover(self):
+        state = resource_state(self.root)
+        issues = []
+        for item in list(state['processes']):
+            deadline = None
+            try:
+                actual = process_identity(item['pid'])
+                if actual is not None:
+                    if not item.get('identity') or actual != item['identity'] or os.getpgid(item['pid']) != item.get('pgid'):
+                        issues.append({'pid': item['pid'], 'reason': 'process identity changed; not signalled'})
+                        continue
+                    if item['pgid'] != item['pid'] or os.getsid(item['pid']) != item['pid']:
+                        issues.append({'pid': item['pid'], 'reason': 'recorded process is not an owned session leader; not signalled'})
+                        continue
+                    try:
+                        os.killpg(item['pgid'], signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+                    deadline = time.monotonic() + 15
+                    while True:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            break
+                        actual = process_identity(item['pid'], timeout=min(5, remaining))
+                        try:
+                            reaped, _status = os.waitpid(item['pid'], os.WNOHANG)
+                            if reaped == item['pid']:
+                                actual = None
+                        except ChildProcessError:
+                            pass
+                        if actual is None and not self._group_members(item['pgid'], timeout=min(5, max(0, deadline - time.monotonic()))):
+                            break
+                        if (actual is not None and actual != item['identity']) or time.monotonic() >= deadline:
+                            break
+                        threading.Event().wait(min(0.1, max(0, deadline - time.monotonic())))
+                    if actual is not None:
+                        reason = 'owned process did not exit gracefully' if actual == item['identity'] else 'process identity changed; record retained'
+                        issues.append({'pid': item['pid'], 'reason': reason})
+                        continue
+                query_timeout = 5 if deadline is None else min(5, max(0, deadline - time.monotonic()))
+                if self._group_members(item.get('pgid'), timeout=query_timeout):
+                    issues.append({'pid': item['pid'], 'reason': 'process group still active; record retained'})
+                    continue
+                if not self._port_released(item.get('port')):
+                    issues.append({'port': item['port'], 'reason': 'port occupied; owner not signalled'})
+                    continue
+                state['processes'].remove(item)
+            except (OSError, ReleaseError, subprocess.SubprocessError):
+                issues.append({'pid': item['pid'], 'reason': 'process state could not be confirmed; record retained'})
+        atomic_json(self.root / 'resources.json', state)
+        return issues
 
 
 def recover_resources(root):
-    owner_record(root)
+    issues = ReleaseProcesses(root).recover()
     state = resource_state(root)
-    issues = []
-    for item in list(state['processes']):
-        actual = process_identity(item['pid'])
-        if actual is not None:
-            if not item.get('identity') or actual != item['identity'] or os.getpgid(item['pid']) != item['pgid']:
-                issues.append({'pid': item['pid'], 'reason': 'process identity changed; not signalled'})
-                continue
-            require(item['pgid'] == item['pid'], 'Recorded process is not an owned session leader')
-            try:
-                os.killpg(item['pgid'], signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            deadline = time.monotonic() + 15
-            while process_identity(item['pid']) == actual and time.monotonic() < deadline:
-                try:
-                    os.waitpid(item['pid'], os.WNOHANG)
-                except ChildProcessError:
-                    pass
-                threading.Event().wait(0.1)
-            if process_identity(item['pid']) == actual:
-                issues.append({'pid': item['pid'], 'reason': 'owned process did not exit gracefully'})
-                continue
-        if item.get('port'):
-            with socket.socket() as probe:
-                if probe.connect_ex(('127.0.0.1', item['port'])) == 0:
-                    issues.append({'port': item['port'], 'reason': 'port occupied; owner not signalled'})
-                    continue
-        state['processes'].remove(item)
     for item in list(state['mounts']):
         mount = canonical_path(Path(item['path']))
         require(mount.is_relative_to(root), 'Mount escapes release root')
@@ -600,10 +731,6 @@ def isolated_env(root, cache=None, python=None):
         env.update(PIP_CACHE_DIR=str(cache / 'pip'), npm_config_cache=str(cache / 'npm'),
                    ELECTRON_CACHE=str(cache / 'electron'), electron_config_cache=str(cache / 'electron'), ELECTRON_BUILDER_CACHE=str(cache / 'electron-builder'),
                    VENUS_RELEASE_MEDIA_CACHE=str(cache / 'media'), VENUS_RELEASE_ARCHIVE_CACHE=str(cache / 'media-archives'))
-    for parent in (root, *root.parents):
-        if (parent / 'owner.json').is_file():
-            env['VENUS_RELEASE_ROOT'] = str(parent)
-            break
     return env
 
 
@@ -892,10 +1019,10 @@ def provider_smoke(root, source, app, directory, info, public=False):
         env = isolated_env(scope)
         log = root / "evidence" / (record["id"] + "-" + uuid.uuid4().hex + ".log")
         if public:
-            run([*args, "github", input_path, result_path(root, record)], env=env, log=log)
+            run([*args, "github", input_path, result_path(root, record)], env=env, log=log, release_root=root)
         else:
             with asset_server(directory) as url:
-                run([*args, url, input_path, result_path(root, record)], env=env, log=log)
+                run([*args, url, input_path, result_path(root, record)], env=env, log=log, release_root=root)
         result = saved_result(root, record, inputs)
         require(result is not None, "Provider completion evidence missing")
     validate_provider_result(root, record, result)
@@ -930,10 +1057,7 @@ def validate_provider_result(root, record, saved):
 
 def backend_smoke(root, app):
     scope = root / "backend-smoke"
-    if (root / 'owner.json').exists():
-        owned_directory(root, scope.name)
-    else:
-        scope.mkdir()
+    owned_directory(root, scope.name)
     env = isolated_env(scope)
     token = uuid.uuid4().hex
     env["LIVE_CLIPPER_WEB_TOKEN"] = token
@@ -945,11 +1069,11 @@ def backend_smoke(root, app):
     env['PATH'] = str(ffmpeg.parent) + ':/usr/bin:/bin:/usr/sbin:/sbin'
     run([ffmpeg, '-v', 'error', '-f', 'rawvideo', '-pixel_format', 'rgb24', '-video_size', '320x180',
          '-framerate', '25', '-i', raw, '-c:v', 'libx264', '-pix_fmt', 'yuv420p', source / 'synthetic.mp4'],
-        env=env, log=root / 'evidence/synthetic-media.log')
+        env=env, log=root / 'evidence/synthetic-media.log', release_root=root)
     raw.unlink()
     env['PATH'] = str(ffmpeg.parent) + ':/usr/bin:/bin:/usr/sbin:/sbin'
     probe = app / 'Contents/Resources/bin/ffprobe'
-    media = json.loads(run([probe, '-v', 'error', '-show_streams', '-of', 'json', source / 'synthetic.mp4'], env=env))
+    media = json.loads(run([probe, '-v', 'error', '-show_streams', '-of', 'json', source / 'synthetic.mp4'], env=env, release_root=root))
     require(any(x.get('codec_name') == 'h264' for x in media['streams']), 'Bundled ffprobe synthetic media check failed')
     with socket.socket() as reservation:
         reservation.bind(("127.0.0.1", 0))
@@ -966,38 +1090,24 @@ def backend_smoke(root, app):
         with opener.open(req, timeout=3) as response:
             return json.load(response)
 
-    with evidence.open("w") as stream:
-        process = subprocess.Popen([binary, "app", "--host", "127.0.0.1", "--port", str(port)], cwd=scope, env=env, stdout=stream, stderr=stream, start_new_session=True)
-        tracked = (root / 'owner.json').is_file()
-        if tracked:
-            remember_process(root, process, scope, port)
-        try:
-            deadline = time.monotonic() + 60
-            while True:
-                require(process.poll() is None, "Packaged backend exited before readiness")
-                try:
-                    health = request("/api/onboarding")
-                    break
-                except (OSError, ValueError):
-                    require(time.monotonic() < deadline, "Packaged backend readiness timed out")
-                    threading.Event().wait(0.1)
-            projects = request("/api/projects")
-            preview = request("/api/projects/scan-preview", {"source_directory": str(source), "first_scan_mode": "choose_existing"})
-            require(preview.get("processable_files") == 1, "Synthetic recording scan failed")
-            request("/api/service/stop", {})
-            return {"health": health, "projects": projects, "scan_preview": preview}
-        finally:
-            if process.poll() is None:
-                os.killpg(process.pid, signal.SIGTERM)
+    with evidence.open("w") as stream, ReleaseProcesses(root).running(
+        [binary, "app", "--host", "127.0.0.1", "--port", str(port)], cwd=scope, env=env,
+        stdout=stream, stderr=stream, port=port,
+    ) as process:
+        deadline = time.monotonic() + 60
+        while True:
+            require(process.poll() is None, "Packaged backend exited before readiness")
             try:
-                process.wait(timeout=15)
-            except subprocess.TimeoutExpired:
-                os.killpg(process.pid, signal.SIGKILL)
-                process.wait(timeout=5)
-            with socket.socket() as probe:
-                require(probe.connect_ex(("127.0.0.1", port)) != 0, "Backend port still occupied after exit")
-            if tracked:
-                forget_process(root, process.pid)
+                health = request("/api/onboarding")
+                break
+            except (OSError, ValueError):
+                require(time.monotonic() < deadline, "Packaged backend readiness timed out")
+                threading.Event().wait(0.1)
+        projects = request("/api/projects")
+        preview = request("/api/projects/scan-preview", {"source_directory": str(source), "first_scan_mode": "choose_existing"})
+        require(preview.get("processable_files") == 1, "Synthetic recording scan failed")
+        request("/api/service/stop", {})
+        return {"health": health, "projects": projects, "scan_preview": preview}
 
 
 def candidate(args):
@@ -1048,7 +1158,7 @@ def candidate(args):
 
     def step(name, command, **kwargs):
         print(name, flush=True)
-        result = run(command, cwd=source, env=env, log=evidence / f"{name}.log", **kwargs)
+        result = run(command, cwd=source, env=env, log=evidence / f"{name}.log", release_root=output, **kwargs)
         atomic_json(evidence / f'{name}-space.json', space_snapshot(output, cache))
         limit_download_cache(cache, python=python)
         return result
@@ -1075,7 +1185,7 @@ def candidate(args):
     sign_env = {**env, "HOME": str(Path.home()), "CSC_NAME": matches[0][0], "CSC_IDENTITY_AUTO_DISCOVERY": "true"}
     directory = owned_directory(output, "candidate")
     run([source / "desktop/node_modules/.bin/electron-builder", "--mac", "--arm64", "--publish", "never",
-         "-c.mac.notarize=false", "-c.forceCodeSigning=true", f"-c.directories.output={directory}"], cwd=source / "desktop", env=sign_env, log=evidence / "electron-builder.log", timeout=14400)
+         "-c.mac.notarize=false", "-c.forceCodeSigning=true", f"-c.directories.output={directory}"], cwd=source / "desktop", env=sign_env, log=evidence / "electron-builder.log", timeout=14400, release_root=output)
     media = source / 'desktop/vendor/media-tools/darwin-arm64'
     media_identity = read_json(media / 'build-manifest.json')
     shutil.copy2(media / 'media-sources.tar.gz', directory / f"Venus-{info['version']}-media-sources.tar.gz")
@@ -1336,7 +1446,7 @@ def check_remote_asset(root, info, remote, name, expected, progress, *, public=F
         download(asset["browser_download_url"], target)
     else:
         run(["gh", "release", "download", inputs["tag"], "--repo", info["github"], "--pattern", name, "--dir", scratch],
-            env={**os.environ, "VENUS_RELEASE_ROOT": str(root)})
+            env=os.environ.copy(), release_root=root)
     require(target.is_file() and not target.is_symlink() and target.stat().st_size == expected["size"]
             and sha256(target) == expected["sha256"], "Remote asset differs: " + name)
     save_result(root, progress, attempt, inputs, {"size": target.stat().st_size, "sha256": sha256(target)})
