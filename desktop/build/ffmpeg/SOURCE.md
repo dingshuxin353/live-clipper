@@ -31,6 +31,11 @@ python3.11 desktop/scripts/build-media-tools.py --archives archives
 仍需网络从 PyPI 安装固定 Meson 1.9.0、Ninja 1.13.0 到本次隔离环境。
 实际安装件哈希、工具版本和编译器版本保存在构建记录中。
 
+源码和输出目录可以包含空格。配方把本次编译的 pkgconf 命令及 x264
+静态库、头文件和配置安装到隔离暂存目录；dav1d 和 FFmpeg 使用各自的安装步骤。
+FFmpeg 的临时目录和依赖 sysroot 由实际工作目录计算，相对引用仍指向
+本次构建树内的真实目录。
+
 在 Venus checkout 中不传 `--archives` 时，脚本从锁定来源获取源码，
 核对 x264 的精确提交与规范归档哈希后再编译。
 不允许浮动分支、替代镜像或未经校验的本机二进制。
