@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.0.7 - 2026-10-27
+
+### Fixed
+
+- Prevented an earlier reprocessing check from replacing the current result after leaving and returning to a recording ([#10](https://github.com/dingshuxin353/live-clipper/pull/10)).
+- Restored model and tool deletion through the application's normal service ([#12](https://github.com/dingshuxin353/live-clipper/pull/12)).
+
+### Changed
+
+- Unified startup and upgrade status reads, saved recovery decisions, and resource-use tracking across requests and restarts ([#7](https://github.com/dingshuxin353/live-clipper/pull/7), [#9](https://github.com/dingshuxin353/live-clipper/pull/9), [#12](https://github.com/dingshuxin353/live-clipper/pull/12)).
+- Settings, tray-menu and automatic update checks now share one update flow; desktop actions share registration and source checks ([#14](https://github.com/dingshuxin353/live-clipper/pull/14)).
+- After final release assets are frozen, interrupted publication can reuse saved asset checks and updater downloads ([#6](https://github.com/dingshuxin353/live-clipper/pull/6)).
+- Media build caches share one record for reuse and safe cleanup; release subprocesses share ownership checks and interruption recovery ([#8](https://github.com/dingshuxin353/live-clipper/pull/8), [#13](https://github.com/dingshuxin353/live-clipper/pull/13)).
+
 ## 1.0.6 - 2026-10-09
 
 ### Security
