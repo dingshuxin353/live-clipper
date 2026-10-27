@@ -2,6 +2,10 @@
 
 ## 1.0.7 - 2026-10-27
 
+### Security
+
+- Updated Electron to [43.8.3](https://github.com/electron/electron/releases/tag/v43.8.3) and patched [fast-uri](https://github.com/fastify/fast-uri/security/advisories/GHSA-w74x-v6f9-j3xg) and [undici](https://github.com/nodejs/undici/security/advisories/GHSA-xjj6-f33q-929c) in desktop build dependencies.
+
 ### Fixed
 
 - Prevented an earlier reprocessing check from replacing the current result after leaving and returning to a recording ([#10](https://github.com/dingshuxin353/live-clipper/pull/10)).
