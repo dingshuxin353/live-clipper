@@ -33,6 +33,39 @@ def digest(file):
                 "sha256": hashlib.file_digest(source, "sha256").hexdigest()}
 
 
+def install_built_files(source, install, files):
+    if install.is_symlink() or install.resolve() != install:
+        raise ValueError("Unsafe installation directory")
+    for name, relative, mode in files:
+        file = source / name
+        expected = digest(file)
+        target = install / relative
+        if target.resolve() != target or not target.is_relative_to(install):
+            raise ValueError("Unsafe installation path")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with file.open("rb") as origin, target.open("xb") as destination:
+            shutil.copyfileobj(origin, destination)
+        target.chmod(mode)
+        if digest(target) != expected:
+            raise ValueError(f"Installed content mismatch: {target.name}")
+
+
+def ffmpeg_environment(work, cwd, env):
+    return {**env, "TMPDIR": os.path.relpath(work / "tmp", cwd),
+            "PKG_CONFIG_SYSROOT_DIR": os.path.relpath(work / "install", cwd)}
+
+
+def verify_pkgconf(file, expected_version, env):
+    dylibs = subprocess.check_output(["/usr/bin/otool", "-L", str(file)], env=env,
+                                     text=True, timeout=10).splitlines()[1:]
+    if not all(line.strip().startswith(("/usr/lib/", "/System/Library/")) for line in dylibs):
+        raise ValueError("Unexpected pkgconf dependency")
+    version = subprocess.check_output([str(file), "--version"], env=env, text=True, timeout=10).strip()
+    if version != expected_version:
+        raise ValueError("Unexpected pkgconf version")
+    return {"version": version, "dylibs": dylibs}
+
+
 def read_lock(desktop):
     return json.loads((desktop / "build/ffmpeg/sources.lock.json").read_text())
 
@@ -272,18 +305,22 @@ def build(desktop, archives=None):
         "pkgconf": (sources["pkgconf"], [
             ["./configure", "--prefix=/venus-tools", "--disable-shared", "--enable-static",
              "--with-pkg-config-dir=/venus-media/lib/pkgconfig"],
-            ["make", "-j6"], ["make", "install", f"DESTDIR={work}/install"]]),
+            ["make", "-j6"]], [("pkgconf", "venus-tools/bin/pkgconf", 0o755)], env),
         "x264": (sources["x264"], [
             ["./configure", f"--prefix={prefix}", "--enable-static", "--enable-pic", "--disable-cli",
              "--disable-opencl", "--extra-cflags=-mmacosx-version-min=14.0",
              "--extra-ldflags=-mmacosx-version-min=14.0"],
-            ["make", "-j6"], ["make", "install", f"DESTDIR={work}/install"]]),
+            ["make", "-j6"]], [
+                ("x264.h", "venus-media/include/x264.h", 0o644),
+                ("x264_config.h", "venus-media/include/x264_config.h", 0o644),
+                ("libx264.a", "venus-media/lib/libx264.a", 0o644),
+                ("x264.pc", "venus-media/lib/pkgconfig/x264.pc", 0o644)], env),
         "dav1d": (work, [
             ["meson", "setup", "build-dav1d", str(sources["dav1d"]), f"--prefix={prefix}",
              "--libdir=lib", "--default-library=static", "--buildtype=release", "--wrap-mode=nodownload",
              "-Denable_tools=false", "-Denable_tests=false"],
             ["meson", "compile", "-C", "build-dav1d", "-j6"],
-            ["meson", "install", "-C", "build-dav1d", "--destdir", str(work / "install")]]),
+            ["meson", "install", "-C", "build-dav1d", "--destdir", str(work / "install")]], [], env),
         "ffmpeg": (sources["ffmpeg"], [
             ["./configure", f"--prefix={prefix}", "--arch=aarch64", "--target-os=darwin", "--cc=clang",
              "--cxx=clang++", "--pkg-config=pkgconf", "--pkg-config-flags=--static",
@@ -292,11 +329,16 @@ def build(desktop, archives=None):
              "--disable-ffplay", "--disable-avdevice", "--disable-network", "--enable-pthreads",
              "--enable-zlib", "--enable-iconv", "--extra-libs=-liconv",
              "--extra-cflags=-mmacosx-version-min=14.0", "--extra-ldflags=-mmacosx-version-min=14.0"],
-            ["make", "-j6", "ffmpeg", "ffprobe"], ["make", "install-progs", f"DESTDIR={work}/install"]]),
+            ["make", "-j6", "ffmpeg", "ffprobe"], ["make", "install-progs", f"DESTDIR={work}/install"]],
+            [], ffmpeg_environment(work, sources["ffmpeg"], env)),
     }
-    for component, (cwd, commands) in plans.items():
+    for component, (cwd, commands, files, component_env) in plans.items():
         for index, command in enumerate(commands):
-            run(command, cwd, env, work / "logs" / f"{component}-{index}.log")
+            run(command, cwd, component_env, work / "logs" / f"{component}-{index}.log")
+        install_built_files(cwd, work / "install", files)
+        if component == "pkgconf":
+            checked = verify_pkgconf(work / "install/venus-tools/bin/pkgconf", lock["sources"]["pkgconf"]["version"], env)
+            (work / "logs/pkgconf-verified.json").write_text(json.dumps(checked, indent=2) + "\n")
     result = work / "result"
     reports = {}
     for name in ("ffmpeg", "ffprobe"):
