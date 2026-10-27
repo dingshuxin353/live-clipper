@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 import select
+import shlex
 import shutil
 import signal
 import subprocess
@@ -252,7 +253,7 @@ def test_backend_smoke_uses_real_service_scope_and_releases_port(tmp_path, monke
     monkeypatch.setattr(release, 'ROOT', repo)
     root = tmp_path / 'release'
     release.create_root(root, repo, 'a' * 40)
-    app = tmp_path / 'temporary-service.app'
+    app = tmp_path / 'temporary service.app'
     binaries = app / 'Contents/Resources/bin'
     binaries.mkdir(parents=True)
     for name in ['ffmpeg', 'ffprobe']:
@@ -261,7 +262,8 @@ def test_backend_smoke_uses_real_service_scope_and_releases_port(tmp_path, monke
         (binaries / name).symlink_to(executable)
     backend = app / 'Contents/Resources/backend/live-clipper-backend'
     backend.parent.mkdir()
-    backend.write_text('#!' + sys.executable + '\n' + '''import json, os, sys
+    service = backend.with_suffix('.py')
+    service.write_text('''import json, os, sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 port = int(sys.argv[sys.argv.index('--port') + 1])
@@ -283,6 +285,7 @@ server = HTTPServer(('127.0.0.1', port), Handler)
 Path('observed-service.json').write_text(json.dumps({'pid': os.getpid(), 'port': port}))
 server.serve_forever()
 ''')
+    backend.write_text('#!/bin/sh\nexec ' + shlex.quote(sys.executable) + ' ' + shlex.quote(str(service)) + ' "$@"\n')
     backend.chmod(0o700)
     if processable:
         assert release.backend_smoke(root, app)['scan_preview']['processable_files'] == 1
@@ -2234,6 +2237,10 @@ def media_cleanup_command(root, *, apply=False, env=None):
     return process.returncode, json.loads(process.stdout)
 
 
+def node_preload_env(injection):
+    return {**os.environ, 'NODE_OPTIONS': '--require=' + json.dumps(str(injection), ensure_ascii=False)}
+
+
 def test_media_cleanup_keeps_two_releases_and_active_versions_and_unknowns(tmp_path):
     root, cache, expired = media_cleanup_case(tmp_path)
     for version in ('1.0.1', '1.0.2'):
@@ -2362,7 +2369,7 @@ def test_media_cleanup_new_process_recovers_after_real_node_termination(tmp_path
     fifo = tmp_path / 'checkpoint'
     os.mkfifo(fifo)
     fd = os.open(fifo, os.O_RDWR | os.O_NONBLOCK)
-    injection = tmp_path / 'interrupt.cjs'
+    injection = tmp_path / 'interrupt preload.cjs'
     injection.write_text('''const fs = require('node:fs');
 const original = fs.rmSync;
 fs.rmSync = function(file, options) {
@@ -2375,7 +2382,7 @@ fs.rmSync = function(file, options) {
   return original(file, options);
 };
 '''.replace('TARGET', json.dumps(str(entry))).replace('BOUNDARY', json.dumps(boundary)).replace('FIFO', json.dumps(str(fifo))))
-    env = {**os.environ, 'NODE_OPTIONS': '--require=' + str(injection)}
+    env = node_preload_env(injection)
     process = subprocess.Popen([sys.executable, str(Path(__file__).parents[1] / 'scripts/release.py'),
         'cleanup', '--root', str(root), '--apply'], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     node_pid = None
@@ -2410,7 +2417,7 @@ fs.rmSync = function(file, options) {
 def test_media_cleanup_stops_after_index_save_failure_then_retries(tmp_path):
     root, cache, first = media_cleanup_case(tmp_path)
     second = prepare_media_fixture(tmp_path / 'second-desktop', cache, '1.0.0')
-    injection = tmp_path / 'fail-index.cjs'
+    injection = tmp_path / 'fail index preload.cjs'
     injection.write_text('''const fs = require('node:fs');
 const rename = fs.renameSync;
 fs.renameSync = function(from, to) {
@@ -2418,7 +2425,7 @@ fs.renameSync = function(from, to) {
   return rename(from, to);
 };
 '''.replace('INDEX', json.dumps(str(cache / 'media/entries.json'))))
-    code, report = media_cleanup_command(root, apply=True, env={**os.environ, 'NODE_OPTIONS': '--require=' + str(injection)})
+    code, report = media_cleanup_command(root, apply=True, env=node_preload_env(injection))
     assert code == 1 and not report['cleanup_complete']
     items = report['cache']['media']['items']
     assert items[0]['key'] == first and items[0]['action'] == 'deleted' and not items[0]['index_saved']
@@ -2433,7 +2440,7 @@ fs.renameSync = function(from, to) {
 @pytest.mark.parametrize('response', ['nonzero', 'invalid_json', 'missing_fields', 'invalid_item', 'invalid_action'])
 def test_cleanup_reports_node_protocol_failure_without_deleting_media(tmp_path, response):
     root, cache, key = media_cleanup_case(tmp_path)
-    injection = tmp_path / 'protocol.cjs'
+    injection = tmp_path / 'protocol preload.cjs'
     body = {
         'nonzero': "console.error('test command failure'); process.exit(7);",
         'invalid_json': "console.log('not json'); process.exit(0);",
@@ -2443,7 +2450,7 @@ def test_cleanup_reports_node_protocol_failure_without_deleting_media(tmp_path, 
     }[response]
     injection.write_text(body)
     before = release.inventory(cache / 'media')
-    code, report = media_cleanup_command(root, apply=True, env={**os.environ, 'NODE_OPTIONS': '--require=' + str(injection)})
+    code, report = media_cleanup_command(root, apply=True, env=node_preload_env(injection))
     assert code == 1 and not report['cleanup_complete'] and report['cache']['reason']
     assert release.inventory(cache / 'media') == before
     assert (cache / 'media' / key).is_dir()
@@ -2487,7 +2494,7 @@ def test_media_cleanup_partial_delete_error_keeps_registration_and_continues(tmp
     root, cache, first = media_cleanup_case(tmp_path)
     second = prepare_media_fixture(tmp_path / 'second-desktop', cache, '1.0.0')
     entry = cache / 'media' / first
-    injection = tmp_path / 'partial.cjs'
+    injection = tmp_path / 'partial preload.cjs'
     injection.write_text('''const fs = require('node:fs');
 const remove = fs.rmSync;
 fs.rmSync = function(file, options) {
@@ -2498,7 +2505,7 @@ fs.rmSync = function(file, options) {
   return remove(file, options);
 };
 '''.replace('TARGET', json.dumps(str(entry))))
-    code, report = media_cleanup_command(root, apply=True, env={**os.environ, 'NODE_OPTIONS': '--require=' + str(injection)})
+    code, report = media_cleanup_command(root, apply=True, env=node_preload_env(injection))
     assert code == 1 and not report['cleanup_complete']
     items = {item['key']: item for item in report['cache']['media']['items']}
     assert items[first]['action'] == 'refused' and 'partial deletion failure' in items[first]['reason']
