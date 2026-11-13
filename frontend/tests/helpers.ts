@@ -1,5 +1,3 @@
-
-
 export const MODELS = [
   {
     id: "mlx-community/whisper-small-mlx-q4",
@@ -38,7 +36,18 @@ export const PROJECT = {
   main_status: "processing",
   workload: { processing: 1, queued: 1, failed: 0, completed: 2, new_results: 0 },
   readiness_state: "ready",
-  runtime: { project_id: "project-1", readiness_state: "ready", auto_scan_state: "off", last_scan_at: null, next_scan_at: null, failure_code: null, failure_summary: null, discovery_baseline: null, first_scan_state: "not_required", schedule_cursor: null },
+  runtime: {
+    project_id: "project-1",
+    readiness_state: "ready",
+    auto_scan_state: "off",
+    last_scan_at: null,
+    next_scan_at: null,
+    failure_code: null,
+    failure_summary: null,
+    discovery_baseline: null,
+    first_scan_state: "not_required",
+    schedule_cursor: null,
+  },
   latest_scan: null,
   current_run: null,
   recent_result: null,
@@ -53,22 +62,63 @@ export const PROJECT = {
     created_at: "2026-08-20T01:00:00Z",
     config: {
       schema_version: 2,
-      source: { directory: "/recordings", supported_extensions: [".m4v", ".mkv", ".mov", ".mp4", ".webm"], include_patterns: [], exclude_patterns: [], first_scan_mode: "new_only", lookback_days: null },
+      source: {
+        directory: "/recordings",
+        supported_extensions: [".m4v", ".mkv", ".mov", ".mp4", ".webm"],
+        include_patterns: [],
+        exclude_patterns: [],
+        first_scan_mode: "new_only",
+        lookback_days: null,
+      },
       schedule: { enabled: false, mode: "daily", daily_time: "22:00", interval_minutes: null, timezone: "Asia/Tokyo" },
-      resources: { asr_ref: "asr.local", analysis_ref: "analysis.main", review_ref: "analysis.main", arbitration_mode: "reuse_analysis", arbitration_ref: null },
-      processing: { review_strategy: "ai_auto", output_profile: "current_renderer", naming_policy: "system_safe", review_policy_version: "auto_review_v1", material_policy_version: "publish_material_v1" },
-      output: { directory: "/outputs", intermediate_retention: "remind_after_7_days", original_media_policy: "never_delete", final_media_policy: "keep" },
+      resources: {
+        asr_ref: "asr.local",
+        analysis_ref: "analysis.main",
+        review_ref: "analysis.main",
+        arbitration_mode: "reuse_analysis",
+        arbitration_ref: null,
+      },
+      processing: {
+        review_strategy: "ai_auto",
+        output_profile: "current_renderer",
+        naming_policy: "system_safe",
+        review_policy_version: "auto_review_v1",
+        material_policy_version: "publish_material_v1",
+      },
+      output: {
+        directory: "/outputs",
+        intermediate_retention: "remind_after_7_days",
+        original_media_policy: "never_delete",
+        final_media_policy: "keep",
+      },
     },
   },
 };
 
 export const RUN = {
-  run_id: "run-1", project_id: "project-1", content_id: "content-1", processing_sequence: 1,
-  origin_run_id: null, source_scan_id: null, trigger_source: "manual", source_name: "night.mkv",
-  status: "processing", current_stage: "analyze", config_revision: 1,
-  queued_at: "2026-08-20T01:00:00Z", started_at: "2026-08-20T01:01:00Z",
-  review_at: null, completed_at: null, updated_at: "2026-08-20T02:00:00Z", error_code: null,
-  error_summary: null, queue_position: null, has_result: false, result_summary: null, active_issue_summary: null, legacy_awaiting_review: false,
+  run_id: "run-1",
+  project_id: "project-1",
+  content_id: "content-1",
+  processing_sequence: 1,
+  origin_run_id: null,
+  source_scan_id: null,
+  trigger_source: "manual",
+  source_name: "night.mkv",
+  status: "processing",
+  current_stage: "analyze",
+  config_revision: 1,
+  queued_at: "2026-08-20T01:00:00Z",
+  started_at: "2026-08-20T01:01:00Z",
+  review_at: null,
+  completed_at: null,
+  updated_at: "2026-08-20T02:00:00Z",
+  error_code: null,
+  error_summary: null,
+  queue_position: null,
+  has_result: false,
+  result_summary: null,
+  active_issue_summary: null,
+  legacy_awaiting_review: false,
 };
 
 export const WORKBENCH_ONBOARDING = {
@@ -112,7 +162,16 @@ export const MIGRATION_PLAN = {
   plan_version: 3,
   source_fingerprint: "f".repeat(64),
   plan_hash: "a".repeat(64),
-  project: { name: "默认项目", source_directory: "/recordings", output_directory: "/outputs", trigger_mode: "manual", schedule_mode: null, daily_time: null, interval_minutes: null, timezone: "Asia/Tokyo" },
+  project: {
+    name: "默认项目",
+    source_directory: "/recordings",
+    output_directory: "/outputs",
+    trigger_mode: "manual",
+    schedule_mode: null,
+    daily_time: null,
+    interval_minutes: null,
+    timezone: "Asia/Tokyo",
+  },
   resources: {
     asr: { label: "语音识别", model: "whisper-small", credential_present: true, status: "ready" },
     ai: { label: "AI 服务", model: "deepseek", credential_present: true, status: "ready" },
@@ -121,23 +180,66 @@ export const MIGRATION_PLAN = {
   history: {
     counts: { importable: 2, compatibility: 1, quarantined: 1, safe_result: 1 },
     entries: [
-      { display_identity: "历史记录 1", category: "importable", reason_code: null, reason_label: "可安全导入", safe_result: true },
-      { display_identity: "历史记录 2", category: "compatibility", reason_code: null, reason_label: "需要在新版本中继续处理", safe_result: false },
-      { display_identity: "历史记录 3", category: "quarantined", reason_code: "state_unrecognized", reason_label: "旧状态无法识别，已隔离", safe_result: false },
-      { display_identity: "历史记录 4", category: "importable", reason_code: null, reason_label: "可安全导入", safe_result: false },
+      {
+        display_identity: "历史记录 1",
+        category: "importable",
+        reason_code: null,
+        reason_label: "可安全导入",
+        safe_result: true,
+      },
+      {
+        display_identity: "历史记录 2",
+        category: "compatibility",
+        reason_code: null,
+        reason_label: "需要在新版本中继续处理",
+        safe_result: false,
+      },
+      {
+        display_identity: "历史记录 3",
+        category: "quarantined",
+        reason_code: "state_unrecognized",
+        reason_label: "旧状态无法识别，已隔离",
+        safe_result: false,
+      },
+      {
+        display_identity: "历史记录 4",
+        category: "importable",
+        reason_code: null,
+        reason_label: "可安全导入",
+        safe_result: false,
+      },
     ],
     quarantine_reason_codes: ["state_unrecognized"],
   },
-  backup: { target_display: "migration-backups", source_bytes: 1024, required_bytes: 67109888, available_bytes: 536870912, space_status: "ready" },
+  backup: {
+    target_display: "migration-backups",
+    source_bytes: 1024,
+    required_bytes: 67109888,
+    available_bytes: 536870912,
+    space_status: "ready",
+  },
   readiness: { source_status: "ready", output_status: "ready", resource_problems: [], can_start: true },
-  required_choices: [], warnings: [],
-  choices: { project_name: "默认项目", source_directory: "/recordings", output_directory: "/outputs", trigger_mode: "manual", schedule_mode: null, daily_time: null, interval_minutes: null },
+  required_choices: [],
+  warnings: [],
+  choices: {
+    project_name: "默认项目",
+    source_directory: "/recordings",
+    output_directory: "/outputs",
+    trigger_mode: "manual",
+    schedule_mode: null,
+    daily_time: null,
+    interval_minutes: null,
+  },
 };
 
 export const MIGRATION_SNAPSHOT = {
   ok: true,
   entry: "review",
-  source: { detected: true, checked_at: "2026-09-01T00:00:00Z", display_summary: { metadata_file_count: 3, history_count: 4 } },
+  source: {
+    detected: true,
+    checked_at: "2026-09-01T00:00:00Z",
+    display_summary: { metadata_file_count: 3, history_count: 4 },
+  },
   plan: MIGRATION_PLAN,
   session: null,
   report: null,
@@ -145,15 +247,22 @@ export const MIGRATION_SNAPSHOT = {
 
 export const MIGRATION_STARTUP = {
   ...WORKBENCH_ONBOARDING,
-  entry: { mode: "migration_required", onboarding: null, reason_code: "legacy_data_detected", evidence_codes: ["legacy_metadata"] },
+  entry: {
+    mode: "migration_required",
+    onboarding: null,
+    reason_code: "legacy_data_detected",
+    evidence_codes: ["legacy_metadata"],
+  },
   migration: { entry: "review", session: null, report: null },
 };
 
 export function jsonResponse(body: unknown, status = 200) {
-  return Promise.resolve(new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  }));
+  return Promise.resolve(
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { "Content-Type": "application/json" },
+    }),
+  );
 }
 
 export function installFetchMock(overrides: Record<string, unknown> = {}) {
@@ -174,7 +283,7 @@ export function installFetchMock(overrides: Record<string, unknown> = {}) {
     "/api/runs": { ok: true, runs: [] },
     "/api/confirmations": { ok: true, confirmations: [] },
     "/api/events": { ok: true, events: [] },
-    "/api/config": { ok: true, storage: { work_dir: '/work' } },
+    "/api/config": { ok: true, storage: { work_dir: "/work" } },
     "/api/scheduler": { ok: true, scheduler: { enabled: true }, jobs: [] },
     "/api/review-automation": {
       ok: true,
@@ -182,7 +291,11 @@ export function installFetchMock(overrides: Record<string, unknown> = {}) {
       environment: {},
     },
     "/api/resources": { ok: true, resources: [], migration_pending: false, cleanups: [] },
-    "/api/resources/providers": { ok: true, providers: [{ id: "custom", name: "自定义兼容服务", help: "手动填写" }], regions: {} },
+    "/api/resources/providers": {
+      ok: true,
+      providers: [{ id: "custom", name: "自定义兼容服务", help: "手动填写" }],
+      regions: {},
+    },
     "/api/asr/models": { ok: true, models: MODELS, download_source: "modelscope" },
     "/api/projects": { ok: true, projects: [PROJECT] },
     "/api/projects/project-1": { ok: true, project: PROJECT },
@@ -206,8 +319,26 @@ export function installFetchMock(overrides: Record<string, unknown> = {}) {
       ok: true,
       data_mode: "projects",
       resources: [
-        { resource_id: "asr.local", display_name: "本地 ASR", resource_type: "asr", purposes: ["asr"], ready_purposes: ["asr"], ready: true, problem: null, version: "small" },
-        { resource_id: "analysis.main", display_name: "主分析模型", resource_type: "analysis", purposes: ["analysis", "review"], ready_purposes: ["analysis", "review"], ready: true, problem: null, version: "review-model" },
+        {
+          resource_id: "asr.local",
+          display_name: "本地 ASR",
+          resource_type: "asr",
+          purposes: ["asr"],
+          ready_purposes: ["asr"],
+          ready: true,
+          problem: null,
+          version: "small",
+        },
+        {
+          resource_id: "analysis.main",
+          display_name: "主分析模型",
+          resource_type: "analysis",
+          purposes: ["analysis", "review"],
+          ready_purposes: ["analysis", "review"],
+          ready: true,
+          problem: null,
+          version: "review-model",
+        },
       ],
       first_scan_modes: ["new_only", "recent", "choose_existing"],
       lookback_days: [3, 7, 30],
@@ -215,22 +346,45 @@ export function installFetchMock(overrides: Record<string, unknown> = {}) {
       interval_minutes: [30, 60, 180, 360, 720],
       intermediate_retention: ["remind_immediately", "remind_after_7_days", "keep"],
       timezone: "Asia/Tokyo",
-      defaults: { first_scan_mode: "new_only", lookback_days: null, schedule_enabled: false, schedule_mode: "daily", daily_time: "22:00", intermediate_retention: "remind_after_7_days" },
+      defaults: {
+        first_scan_mode: "new_only",
+        lookback_days: null,
+        schedule_enabled: false,
+        schedule_mode: "daily",
+        daily_time: "22:00",
+        intermediate_retention: "remind_after_7_days",
+      },
     },
-    "/api/projects/scan-preview": { ok: true, estimated_files: 1, supported_files: 1, processable_files: 1, warnings: [] },
-    "/api/projects/validate": { ok: true, valid: true, fatal: [], blockers: [], warnings: [], normalized_config: PROJECT.config.config },
+    "/api/projects/scan-preview": {
+      ok: true,
+      estimated_files: 1,
+      supported_files: 1,
+      processable_files: 1,
+      warnings: [],
+    },
+    "/api/projects/validate": {
+      ok: true,
+      valid: true,
+      fatal: [],
+      blockers: [],
+      warnings: [],
+      normalized_config: PROJECT.config.config,
+    },
     "/api/clips": { ok: true, view: "new", unseen_result_count: 0, results: [], cursor: null, has_more: false },
     "/api/legacy/awaiting-review": { ok: true, runs: [], count: 0 },
   };
   const payloads = { ...base, ...overrides };
-  vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, options?: RequestInit) => {
-    const path = String(input);
-    calls.push([path, options]);
-    const value = payloads[path] ?? payloads[path.split("?")[0]];
-    if (value instanceof Error) return Promise.reject(value);
-    if (typeof value === "function") return (value as (options?: RequestInit) => Promise<Response>)(options);
-    if (value === undefined) return jsonResponse({ ok: true });
-    return jsonResponse(value);
-  }));
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, options?: RequestInit) => {
+      const path = String(input);
+      calls.push([path, options]);
+      const value = payloads[path] ?? payloads[path.split("?")[0]];
+      if (value instanceof Error) return Promise.reject(value);
+      if (typeof value === "function") return (value as (options?: RequestInit) => Promise<Response>)(options);
+      if (value === undefined) return jsonResponse({ ok: true });
+      return jsonResponse(value);
+    }),
+  );
   return calls;
 }

@@ -3,7 +3,7 @@
 interface Window {
   liveClipperShell?: {
     getApplicationInfo?(): Promise<{ version: string; app_home: string; platform: string; arch: string }>;
-    openDataDirectory?(id: 'app' | 'work'): Promise<{ ok: true }>;
+    openDataDirectory?(id: "app" | "work"): Promise<{ ok: true }>;
     checkForUpdates?(): Promise<{ ok: boolean; code?: string; message?: string }>;
     selectFolder?(title: string): Promise<string | null>;
     readClipboardText?(): Promise<string>;

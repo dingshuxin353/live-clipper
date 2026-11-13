@@ -10,15 +10,15 @@ describe("typed API client", () => {
     await expect(api("/api/config")).rejects.toEqual(
       expect.objectContaining({ name: "ApiError", message: "配置错误", status: 400 }),
     );
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/config",
-      expect.objectContaining({ credentials: "same-origin" }),
-    );
+    expect(fetchMock).toHaveBeenCalledWith("/api/config", expect.objectContaining({ credentials: "same-origin" }));
   });
 
   it("maps network and invalid JSON failures without logging payloads", async () => {
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new Error("secret-token"))));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.reject(new Error("secret-token"))),
+    );
     await expect(api("/api/config")).rejects.toEqual(new ApiError("无法连接后台服务。", 0, "network_error"));
     expect(consoleSpy).not.toHaveBeenCalled();
     consoleSpy.mockRestore();
@@ -35,38 +35,72 @@ describe("typed API client", () => {
   });
 
   it("maps frozen project API error envelopes without stringifying objects", async () => {
-    vi.stubGlobal("fetch", vi.fn(() => jsonResponse({
-      ok: false,
-      error: { code: "validation_failed", message: "项目配置未通过校验", fields: { name: "必填字段" } },
-    }, 422)));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        jsonResponse(
+          {
+            ok: false,
+            error: { code: "validation_failed", message: "项目配置未通过校验", fields: { name: "必填字段" } },
+          },
+          422,
+        ),
+      ),
+    );
 
-    await expect(api("/api/projects")).rejects.toEqual(expect.objectContaining({
-      name: "ApiError",
-      message: "项目配置未通过校验",
-      status: 422,
-      code: "validation_failed",
-      fields: { name: "必填字段" },
-    }));
+    await expect(api("/api/projects")).rejects.toEqual(
+      expect.objectContaining({
+        name: "ApiError",
+        message: "项目配置未通过校验",
+        status: 422,
+        code: "validation_failed",
+        fields: { name: "必填字段" },
+      }),
+    );
   });
 
   it("normalizes unrecognized backend error codes to the stable fallback", async () => {
-    vi.stubGlobal("fetch", vi.fn(() => jsonResponse({ ok: false, error: { code: "future_backend_code", message: "未知错误", fields: {} } }, 500)));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        jsonResponse({ ok: false, error: { code: "future_backend_code", message: "未知错误", fields: {} } }, 500),
+      ),
+    );
     await expect(api("/api/projects")).rejects.toEqual(expect.objectContaining({ code: "unknown_error" }));
   });
 
   it("treats unreadable write results as unknown without exposing arbitrary errors", async () => {
     for (const value of [null, [], "private backend detail"]) {
-      vi.stubGlobal("fetch", vi.fn(() => jsonResponse(value)));
-      await expect(api("/api/resources", { method: "POST" })).rejects.toEqual(expect.objectContaining({ code: "invalid_response", outcomeUnknown: true }));
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(() => jsonResponse(value)),
+      );
+      await expect(api("/api/resources", { method: "POST" })).rejects.toEqual(
+        expect.objectContaining({ code: "invalid_response", outcomeUnknown: true }),
+      );
     }
-    vi.stubGlobal("fetch", vi.fn(() => jsonResponse({ error: { code: "unrecognized", message: "secret-url", fields: { token: "secret" } } }, 500)));
-    await expect(api("/api/resources")).rejects.toEqual(expect.objectContaining({ message: "暂时无法完成此操作。", fields: {}, outcomeUnknown: true }));
-    vi.stubGlobal("fetch", vi.fn(() => jsonResponse({ error: { code: "resource_in_use", message: "仍在使用" } }, 409)));
-    await expect(api("/api/resources")).rejects.toEqual(expect.objectContaining({ code: "resource_in_use", outcomeUnknown: false }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        jsonResponse({ error: { code: "unrecognized", message: "secret-url", fields: { token: "secret" } } }, 500),
+      ),
+    );
+    await expect(api("/api/resources")).rejects.toEqual(
+      expect.objectContaining({ message: "暂时无法完成此操作。", fields: {}, outcomeUnknown: true }),
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => jsonResponse({ error: { code: "resource_in_use", message: "仍在使用" } }, 409)),
+    );
+    await expect(api("/api/resources")).rejects.toEqual(
+      expect.objectContaining({ code: "resource_in_use", outcomeUnknown: false }),
+    );
   });
 
   it("uses the frozen reprocess routes and two-field create body", async () => {
-    const fetchMock = vi.fn((_input: RequestInfo | URL, _options?: RequestInit) => jsonResponse({ ok: true, run: { run_id: "next" } }));
+    const fetchMock = vi.fn((_input: RequestInfo | URL, _options?: RequestInit) =>
+      jsonResponse({ ok: true, run: { run_id: "next" } }),
+    );
     vi.stubGlobal("fetch", fetchMock);
     await projectApi.reprocessPreflight("origin");
     await projectApi.reprocessVersions("origin");
@@ -76,6 +110,9 @@ describe("typed API client", () => {
       "/api/runs/origin/versions",
       "/api/runs/origin/reprocess",
     ]);
-    expect(JSON.parse(String(fetchMock.mock.calls[2][1]?.body))).toEqual({ request_id: "request-1", expected_preflight_revision: "revision-1" });
+    expect(JSON.parse(String(fetchMock.mock.calls[2][1]?.body))).toEqual({
+      request_id: "request-1",
+      expected_preflight_revision: "revision-1",
+    });
   });
 });
