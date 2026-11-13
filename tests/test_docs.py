@@ -228,7 +228,7 @@ def test_shipped_ai_guide_matches_documentation_and_links_resolve():
     from live_clipper.ai_guide import AI_ASSISTANT_GUIDE
 
     assert Path("docs/ai-assistant-guide.md").read_text() == AI_ASSISTANT_GUIDE
-    for name in ("configuration", "workflow", "advanced-usage", "mcp-workbench-user-guide"):
+    for name in ("configuration", "workflow", "advanced-usage"):
         path = Path(f"docs/{name}.md")
         for target in re.findall(r"\]\(([^)]+)\)", path.read_text()):
             relative = target.split("#", 1)[0]

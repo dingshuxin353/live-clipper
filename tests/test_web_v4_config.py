@@ -72,7 +72,7 @@ def test_application_api_excludes_model_configuration_and_rejects_legacy_write(t
     assert "secret-token" not in str(payload)
     status, _, rejected = handle_api_request("POST", "/api/config", paths,
         body={"expected_revision": "retired-revision", "config": {"llm": {"model": "legacy"}}})
-    assert status == 410
+    assert status == 404
     assert not rejected["ok"]
     assert paths.config_path.read_bytes() == before
 
@@ -85,7 +85,7 @@ def test_retired_configuration_actions_do_not_write_or_restart(tmp_path, monkeyp
     for action in ("validate", "llm-key", "asr-key", "restart-service"):
         status, _, payload = handle_api_request("POST", f"/api/config/{action}", paths,
             body={"api_key": "sentinel-secret"})
-        assert status == 410
+        assert status == 404
         assert "sentinel-secret" not in str(payload)
     assert paths.config_path.read_bytes() == before
     assert not (tmp_path / ".env").exists()

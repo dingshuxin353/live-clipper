@@ -32,19 +32,18 @@ def test_get_onboarding_needs_true_when_unconfigured(tmp_path):
 
 
 @pytest.mark.parametrize("route", ["test-source", "test-llm", "complete", "skip"])
-def test_deprecated_onboarding_routes_are_tombstoned_without_side_effects(tmp_path, route, monkeypatch):
+def test_removed_onboarding_routes_are_rejected_without_side_effects(tmp_path, route, monkeypatch):
     paths = _paths(tmp_path)
     config = paths.config_path
     env = config.parent / ".env"
     config.write_bytes(b"config-before\n")
     env.write_bytes(b"KEEP=before\n")
     before = sorted((item.relative_to(tmp_path), item.stat().st_size, item.stat().st_mtime_ns) for item in tmp_path.rglob("*") if item.is_file())
-    monkeypatch.setattr("live_clipper.onboarding_resources.requests.post", lambda *args, **kwargs: pytest.fail("deprecated route must not call network"))
+    monkeypatch.setattr("live_clipper.onboarding_resources.requests.post", lambda *args, **kwargs: pytest.fail("removed route must not call network"))
     status, _headers, payload = handle_api_request(
         "POST", f"/api/onboarding/{route}", paths, body={"source_dir": str(tmp_path / "missing"), "api_key": "sentinel"}
     )
-    assert status == 410
-    assert payload["error_code"] == "onboarding_contract_replaced"
+    assert status == 404
     assert payload["ok"] is False
     after = sorted((item.relative_to(tmp_path), item.stat().st_size, item.stat().st_mtime_ns) for item in tmp_path.rglob("*") if item.is_file())
     assert after == before
@@ -68,7 +67,6 @@ def test_onboarding_react_exposes_five_steps_and_real_k_endpoints():
         "/api/onboarding/project/validate",
         "/api/onboarding/finish",
         "/api/onboarding/service/retry",
-        "/api/asr/models/download",
         "/api/jobs/",
     ]:
         assert endpoint in api

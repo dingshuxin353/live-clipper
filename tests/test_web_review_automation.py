@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
-from live_clipper import jobs, review_automation, web
+from live_clipper import jobs
 from live_clipper.utils import write_json
 from live_clipper.web import WebPaths, handle_api_request
 
@@ -98,60 +97,7 @@ def _write_config(path: Path) -> None:
     )
 
 
-
-
-def test_get_api_review_automation_returns_status(tmp_path):
-    paths = _paths(tmp_path)
-
-    status, _headers, payload = handle_api_request("GET", "/api/review-automation", paths)
-
-    assert status == 200
-    assert payload["ok"] is True
-    assert payload["review_automation"]["enabled"] is False
-    assert payload["environment"]["llm"]["api_key_env"] == "CHEAP_MODEL_API_KEY"
-    assert "api_key" not in json.dumps(payload, ensure_ascii=False).replace("api_key_env", "").replace("api_key_configured", "")
-
-
-
-
-
-
-
-
-
-
-
-
-def test_build_run_detail_includes_ai_review_failure_for_same_run(tmp_path):
-    paths = _paths(tmp_path)
-    _write_run(paths)
-    write_json(review_automation._summary_path(paths.service_dir), {
-        "last_run_id": "run-1",
-        "last_status": "failed",
-        "last_error": "boom",
-        "last_run_at": "2026-07-06T00:00:00+00:00",
-    })
-
-    detail = web.build_run_detail("run-1", paths)
-
-    assert detail["ai_review"]["status"] == "failed"
-    assert detail["ai_review"]["error"] == "boom"
-
-    write_json(review_automation._summary_path(paths.service_dir), {
-        "last_run_id": "other-run",
-        "last_status": "failed",
-        "last_error": "boom",
-        "last_run_at": "2026-07-06T00:00:00+00:00",
-    })
-
-    detail = web.build_run_detail("run-1", paths)
-
-    assert detail["ai_review"] is None
-
-
-
-
-def test_retired_paid_review_routes_preserve_legacy_record_and_create_no_job(tmp_path, monkeypatch):
+def test_removed_paid_review_routes_preserve_legacy_record_and_create_no_job(tmp_path, monkeypatch):
     import pytest
 
     paths = _paths(tmp_path)
@@ -159,9 +105,9 @@ def test_retired_paid_review_routes_preserve_legacy_record_and_create_no_job(tmp
     before = (paths.service_dir / "runs.json").read_bytes()
     monkeypatch.setattr(jobs, "start_job", lambda *a, **k: pytest.fail("must not schedule paid work"))
     for route in ("check", "run-due"):
-        assert handle_api_request("POST", f"/api/review-automation/{route}", paths)[0] == 410
+        assert handle_api_request("POST", f"/api/review-automation/{route}", paths)[0] == 404
     status, _, payload = handle_api_request("POST", "/api/runs/run-1/ai-review", paths)
-    assert status == 409
-    assert payload["error_code"] == "original_configuration_unknown"
+    assert status == 404
+    assert payload["error_code"] == "route_not_found"
     assert (paths.service_dir / "runs.json").read_bytes() == before
     assert not (run_dir / "selected_clips.json").exists()

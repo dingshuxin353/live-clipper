@@ -29,7 +29,7 @@ max_candidates = 59
         assert handle_api_request('GET', '/api/config', paths)[0] == 200
         for method, route in [('POST', '/api/config'), ('GET', '/api/settings')]:
             status, _, payload = handle_api_request(method, route, paths, body={'config': {'scheduler': {'tick_seconds': 5}}})
-            assert status == 410
+            assert status == 404
             assert not payload['ok']
         assert path.read_bytes() == original
     after = load_settings(path)

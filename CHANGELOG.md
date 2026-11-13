@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Removed
+
+- Removed local HTTP routes left from the 0.3.x console that the app no longer calls: the global run list and run actions, confirmations, events, scheduler, review automation, service status and start, and the `/media/runs/...` clip path. Requests to these paths now return 404 instead of 410.
+- Removed the MCP workbench guide and its unused tool functions. No MCP server was ever started by the app or the CLI, so the guide described a service that could not be reached.
+
 ## 1.0.7 - 2026-10-27
 
 ### Security

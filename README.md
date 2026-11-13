@@ -110,7 +110,7 @@ Small 约 187 MB，Medium 约 489 MB，Large 约 1.6 GB。首次下载时间取�
 <details>
 <summary><strong>AI 选片需要什么服务？</strong></summary>
 
-在资源页添加模型直连或 Claude Code 审阅资源，再为项目选择用途。开发分支已移除内置 Codex CLI；外部 Agent 仍可通过通用 MCP 或审阅材料协作。详见[资源与配置](docs/configuration.md)。
+在资源页添加模型直连或 Claude Code 审阅资源，再为项目选择用途。开发分支已移除内置 Codex CLI；外部 Agent 仍可通过审阅材料协作。详见[资源与配置](docs/configuration.md)。
 </details>
 
 <details>
@@ -136,7 +136,7 @@ Venus 支持应用内自动更新。你也可以随时到 [GitHub Releases](http
 
 版本变化与历史安装包统一见 [GitHub Releases](https://github.com/dingshuxin353/live-clipper/releases)。
 
-需要 CLI、源码安装、MCP 或自动化高级配置，请阅读 [高级使用](docs/advanced-usage.md)。
+需要 CLI、源码安装或自动化高级配置，请阅读 [高级使用](docs/advanced-usage.md)。
 
 ## 本地处理与隐私
 
@@ -193,14 +193,14 @@ npm run dist
 
 `npm run dist` 用于在本机构建 macOS 安装包。自行构建不等于 Venus 官方 Release，也不自动保证 Developer ID 签名或 Apple 公证。
 
-完整 CLI、配置、Web 控制台、MCP 与自动化说明见 [高级使用](docs/advanced-usage.md)；参与贡献前请阅读 [贡献指南](CONTRIBUTING.md)。
+完整 CLI、配置、Web 控制台与自动化说明见 [高级使用](docs/advanced-usage.md)；参与贡献前请阅读 [贡献指南](CONTRIBUTING.md)。
 
 </details>
 
 ## 文档、贡献与许可证
 
 - [高级使用](docs/advanced-usage.md) · [配置说明](docs/configuration.md) · [故障排查](docs/troubleshooting.md)
-- [隐私说明](docs/privacy.md) · [MCP 工作台](docs/mcp-workbench-user-guide.md)
+- [隐私说明](docs/privacy.md)
 - [GitHub Issues](https://github.com/dingshuxin353/live-clipper/issues) · [GitHub Releases](https://github.com/dingshuxin353/live-clipper/releases)
 - [贡献指南](CONTRIBUTING.md) · [安全策略](SECURITY.md) · [MIT License](LICENSE)
 
