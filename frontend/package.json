@@ -9,10 +9,12 @@
   },
   "scripts": {
     "theme:build": "node scripts/build-venus-stone-overrides.mjs",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "build": "npm run theme:build && vite build",
-    "check": "npm run typecheck && npm run test && npm run build"
+    "check": "npm run format:check && npm run typecheck && npm run test && npm run build"
   },
   "dependencies": {
     "@astryxdesign/core": "0.1.9",
@@ -30,6 +32,7 @@
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "6.0.4",
     "jsdom": "29.1.1",
+    "prettier": "3.9.10",
     "typescript": "7.0.2",
     "vite": "8.1.5",
     "vitest": "4.1.10"

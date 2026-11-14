@@ -22,8 +22,6 @@ export function formatLocalTime(value: unknown): string {
     minute: "2-digit",
     hour12: false,
   }).formatToParts(date);
-  const pick = (type: Intl.DateTimeFormatPartTypes) => (
-    parts.find((part) => part.type === type)?.value ?? ""
-  );
+  const pick = (type: Intl.DateTimeFormatPartTypes) => parts.find((part) => part.type === type)?.value ?? "";
   return `${pick("year")}-${pick("month")}-${pick("day")} ${pick("hour")}:${pick("minute")}`;
 }

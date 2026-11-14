@@ -19,19 +19,41 @@ const CURRENT = {
   asr: { backend: "cloud", model: "asr-fast", language: "zh" },
   analysis: { provider: "OpenAI-compatible LLM", model: "analysis-main" },
   ai_review: { provider: "OpenAI-compatible LLM", model: "review-main", endpoint: "https://ai.example.test" },
-  render: "current_renderer", naming: "system_safe", output_directory: "/outputs/new", retention: "keep",
+  render: "current_renderer",
+  naming: "system_safe",
+  output_directory: "/outputs/new",
+  retention: "keep",
 };
-const OLD = { ...CURRENT, analysis: { provider: "OpenAI-compatible LLM", model: "analysis-old" }, output_directory: "/outputs/old", retention: "remind_after_7_days" };
+const OLD = {
+  ...CURRENT,
+  analysis: { provider: "OpenAI-compatible LLM", model: "analysis-old" },
+  output_directory: "/outputs/old",
+  retention: "remind_after_7_days",
+};
 const PREFLIGHT = {
   ok: true,
   run: { run_id: ORIGIN.run_id, project_id: PROJECT.project_id, status: ORIGIN.status, processing_sequence: 1 },
-  source: { path: "/recordings/final-night.mkv", name: "final-night.mkv", expected_content_id: "content-1", content_id: "content-1", bytes: 4096, mtime_ns: 1, state: "ready" },
+  source: {
+    path: "/recordings/final-night.mkv",
+    name: "final-night.mkv",
+    expected_content_id: "content-1",
+    content_id: "content-1",
+    bytes: 4096,
+    mtime_ns: 1,
+    state: "ready",
+  },
   current_settings: { config_revision: 2, summary: CURRENT, snapshot: {} },
   changes: [
     { field: "analysis", before: OLD.analysis, after: CURRENT.analysis },
     { field: "output_directory", before: "/outputs/old", after: "/outputs/new" },
   ],
-  space: { work_directory: "/work", required_bytes: 4096, available_bytes: 8192, additional_estimate_bytes: null, sufficient: true },
+  space: {
+    work_directory: "/work",
+    required_bytes: 4096,
+    available_bytes: 8192,
+    additional_estimate_bytes: null,
+    sufficient: true,
+  },
   active_run: null,
   next_processing_sequence: 2,
   blockers: [],
@@ -44,12 +66,54 @@ const VERSIONS = {
   project_id: PROJECT.project_id,
   content_id: "content-1",
   versions: [
-    { run_id: "run-origin", status: "completed", current_stage: "render", processing_sequence: 1, origin_run_id: null, config_revision: 1, queued_at: "2026-09-01T01:00:00Z", started_at: "2026-09-01T01:01:00Z", review_at: null, completed_at: "2026-09-01T02:00:00Z", updated_at: "2026-09-01T02:00:00Z", error_code: null, settings_summary: OLD, result_summary: { result_type: "clips_ready", selected_count: 1, available_output_count: 1, failed_output_count: 0, total_duration_ms: 5000, result_revision: 1, completed_at: "2026-09-01T02:00:00Z" }, changed_fields: [] },
-    { run_id: "run-second", status: "failed", current_stage: "review", processing_sequence: 2, origin_run_id: "run-origin", config_revision: 2, queued_at: "2026-09-01T03:00:00Z", started_at: "2026-09-01T03:01:00Z", review_at: null, completed_at: "2026-09-01T03:30:00Z", updated_at: "2026-09-01T03:30:00Z", error_code: "ai_review_failed", settings_summary: CURRENT, result_summary: null, changed_fields: ["analysis", "output_directory", "retention", "result_summary"] },
+    {
+      run_id: "run-origin",
+      status: "completed",
+      current_stage: "render",
+      processing_sequence: 1,
+      origin_run_id: null,
+      config_revision: 1,
+      queued_at: "2026-09-01T01:00:00Z",
+      started_at: "2026-09-01T01:01:00Z",
+      review_at: null,
+      completed_at: "2026-09-01T02:00:00Z",
+      updated_at: "2026-09-01T02:00:00Z",
+      error_code: null,
+      settings_summary: OLD,
+      result_summary: {
+        result_type: "clips_ready",
+        selected_count: 1,
+        available_output_count: 1,
+        failed_output_count: 0,
+        total_duration_ms: 5000,
+        result_revision: 1,
+        completed_at: "2026-09-01T02:00:00Z",
+      },
+      changed_fields: [],
+    },
+    {
+      run_id: "run-second",
+      status: "failed",
+      current_stage: "review",
+      processing_sequence: 2,
+      origin_run_id: "run-origin",
+      config_revision: 2,
+      queued_at: "2026-09-01T03:00:00Z",
+      started_at: "2026-09-01T03:01:00Z",
+      review_at: null,
+      completed_at: "2026-09-01T03:30:00Z",
+      updated_at: "2026-09-01T03:30:00Z",
+      error_code: "ai_review_failed",
+      settings_summary: CURRENT,
+      result_summary: null,
+      changed_fields: ["analysis", "output_directory", "retention", "result_summary"],
+    },
   ],
 };
 
-function route(path: string) { window.history.replaceState({}, "", path); }
+function route(path: string) {
+  window.history.replaceState({}, "", path);
+}
 function mocks(overrides: Record<string, unknown> = {}) {
   return installFetchMock({
     "/api/runs/run-origin": { ok: true, run: ORIGIN, stage_events: [] },
@@ -59,26 +123,39 @@ function mocks(overrides: Record<string, unknown> = {}) {
   });
 }
 
-afterEach(() => { sessionStorage.removeItem('venus.reprocess.request.run-origin'); sessionStorage.removeItem('venus.reprocess.request.run-other'); });
+afterEach(() => {
+  sessionStorage.removeItem("venus.reprocess.request.run-origin");
+  sessionStorage.removeItem("venus.reprocess.request.run-other");
+});
 
 describe("Spec T reprocess and version flow", () => {
   beforeEach(() => route("/projects/project-1/runs/run-origin"));
 
   it("shows the terminal entry and submits the frozen two-field contract once", async () => {
     const calls = mocks({
-      "/api/runs/run-origin/reprocess": { ok: true, run: { ...VERSIONS.versions[1], run_id: "run-new", status: "queued" }, created: true, reuse_reason: null },
+      "/api/runs/run-origin/reprocess": {
+        ok: true,
+        run: { ...VERSIONS.versions[1], run_id: "run-new", status: "queued" },
+        created: true,
+        reuse_reason: null,
+      },
     });
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "重新处理" }));
     const dialog = await screen.findByRole("dialog", { name: "重新处理这段录像" });
     expect(dialog).toHaveTextContent("将按当前项目设置创建新的剪辑记录，从头处理。");
-    for (const phase of ["读取录像", "语音识别", "内容分析", "整理候选片段", "片段筛选", "生成成片"]) expect(dialog).toHaveTextContent(phase);
+    for (const phase of ["读取录像", "语音识别", "内容分析", "整理候选片段", "片段筛选", "生成成片"])
+      expect(dialog).toHaveTextContent(phase);
     expect(dialog).toHaveTextContent("处理时会复制一份录像，不会修改原文件。");
     const start = within(dialog).getByRole("button", { name: "开始重新处理" });
-    fireEvent.click(start); fireEvent.click(start);
+    fireEvent.click(start);
+    fireEvent.click(start);
     await waitFor(() => expect(calls.filter(([path]) => path === "/api/runs/run-origin/reprocess")).toHaveLength(1));
     const body = JSON.parse(String(calls.find(([path]) => path === "/api/runs/run-origin/reprocess")?.[1]?.body));
-    expect(body).toEqual({ request_id: expect.stringMatching(/^run-reprocess-/), expected_preflight_revision: "revision-1" });
+    expect(body).toEqual({
+      request_id: expect.stringMatching(/^run-reprocess-/),
+      expected_preflight_revision: "revision-1",
+    });
     await waitFor(() => {
       expect(window.location.pathname).toBe("/projects/project-1/runs/run-new");
       expect(start).not.toBeInTheDocument();
@@ -88,7 +165,18 @@ describe("Spec T reprocess and version flow", () => {
   });
 
   it("keeps M8 recovery primary and M9 separate while hiding reprocess for active runs", async () => {
-    const issue = { issue_id: "issue-1", issue_code: "ai_review_failed", group_key: "review", status: "ready_to_recover", impact_level: "blocking", title: "可以继续", summary: "从检查点继续", next_step: "继续处理", issue_revision: 2, available_actions: ["continue_run"] };
+    const issue = {
+      issue_id: "issue-1",
+      issue_code: "ai_review_failed",
+      group_key: "review",
+      status: "ready_to_recover",
+      impact_level: "blocking",
+      title: "可以继续",
+      summary: "从检查点继续",
+      next_step: "继续处理",
+      issue_revision: 2,
+      available_actions: ["continue_run"],
+    };
     const failed = { ...ORIGIN, status: "failed", active_issue_summary: issue };
     mocks({ "/api/runs/run-origin": { ok: true, run: failed, stage_events: [] } });
     const { unmount } = render(<App />);
@@ -96,7 +184,13 @@ describe("Spec T reprocess and version flow", () => {
     expect(screen.getByRole("button", { name: "按当前项目设置重新处理" })).toBeVisible();
     unmount();
     route("/projects/project-1/runs/run-origin");
-    mocks({ "/api/runs/run-origin": { ok: true, run: { ...ORIGIN, status: "processing", current_stage: "analyze" }, stage_events: [] } });
+    mocks({
+      "/api/runs/run-origin": {
+        ok: true,
+        run: { ...ORIGIN, status: "processing", current_stage: "analyze" },
+        stage_events: [],
+      },
+    });
     render(<App />);
     await screen.findByText("内容分析");
     expect(screen.queryByRole("button", { name: /重新处理/ })).not.toBeInTheDocument();
@@ -107,12 +201,20 @@ describe("Spec T reprocess and version flow", () => {
     const { unmount } = render(<App />);
     unmount();
     mocks({ "/api/runs/run-origin/reprocess-preflight": { ...PREFLIGHT, active_run: active } });
-    render(<App />); fireEvent.click(await screen.findByRole("button", { name: "重新处理" }));
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "重新处理" }));
     await waitFor(() => expect(window.location.pathname).toBe("/projects/project-1/runs/run-active"));
 
     route("/projects/project-1/runs/run-origin");
-    mocks({ "/api/runs/run-origin/reprocess-preflight": { ...PREFLIGHT, can_reprocess: false, blockers: [{ code: "resource_unavailable", action: "ai_settings", related_id: "analysis.main" }] } });
-    render(<App />); fireEvent.click(await screen.findByRole("button", { name: "重新处理" }));
+    mocks({
+      "/api/runs/run-origin/reprocess-preflight": {
+        ...PREFLIGHT,
+        can_reprocess: false,
+        blockers: [{ code: "resource_unavailable", action: "ai_settings", related_id: "analysis.main" }],
+      },
+    });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "重新处理" }));
     const blocked = await screen.findByRole("dialog", { name: "重新处理这段录像" });
     expect(within(blocked).getByRole("button", { name: "项目设置" })).toBeVisible();
     expect(within(blocked).getByRole("button", { name: "开始重新处理" })).toBeDisabled();
@@ -123,26 +225,61 @@ describe("Spec T reprocess and version flow", () => {
     const calls = mocks({
       "/api/runs/run-origin/reprocess": () => {
         attempts += 1;
-        return attempts === 1 ? (failure === "transport" ? Promise.reject(new Error("connection lost")) : jsonResponse({ ok: false, error: { code: "request_id_conflict", message: "原操作尚待核对", fields: {} } }, 409)) : jsonResponse({ ok: true, run: { ...VERSIONS.versions[1], run_id: "run-recovered", status: "queued" }, created: false, reuse_reason: "idempotent_request" });
+        return attempts === 1
+          ? failure === "transport"
+            ? Promise.reject(new Error("connection lost"))
+            : jsonResponse(
+                { ok: false, error: { code: "request_id_conflict", message: "原操作尚待核对", fields: {} } },
+                409,
+              )
+          : jsonResponse({
+              ok: true,
+              run: { ...VERSIONS.versions[1], run_id: "run-recovered", status: "queued" },
+              created: false,
+              reuse_reason: "idempotent_request",
+            });
       },
     });
-    render(<App />); fireEvent.click(await screen.findByRole("button", { name: "重新处理" }));
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "重新处理" }));
     const dialog = await screen.findByRole("dialog", { name: "重新处理这段录像" });
     fireEvent.click(within(dialog).getByRole("button", { name: "开始重新处理" }));
     expect(await within(dialog).findByText(/暂时无法确认是否已创建/)).toBeVisible();
     fireEvent.click(within(dialog).getByRole("button", { name: "继续本次操作" }));
     await waitFor(() => expect(window.location.pathname).toBe("/projects/project-1/runs/run-recovered"));
-    const ids = calls.filter(([path]) => path === "/api/runs/run-origin/reprocess").map(([, options]) => JSON.parse(String(options?.body)).request_id);
-    expect(ids).toHaveLength(2); expect(new Set(ids).size).toBe(1);
+    const ids = calls
+      .filter(([path]) => path === "/api/runs/run-origin/reprocess")
+      .map(([, options]) => JSON.parse(String(options?.body)).request_id);
+    expect(ids).toHaveLength(2);
+    expect(new Set(ids).size).toBe(1);
   });
 
   it("refreshes a changed preflight and requires an explicit second confirmation", async () => {
-    let reads = 0; let creates = 0;
+    let reads = 0;
+    let creates = 0;
     const calls = mocks({
-      "/api/runs/run-origin/reprocess-preflight": () => { reads += 1; return jsonResponse({ ...PREFLIGHT, preflight_revision: reads === 1 ? "revision-1" : "revision-2", next_processing_sequence: reads === 1 ? 2 : 3 }); },
-      "/api/runs/run-origin/reprocess": () => { creates += 1; return creates === 1 ? jsonResponse({ ok: false, error: { code: "preflight_changed", message: "预检已变化", fields: {} } }, 409) : jsonResponse({ ok: true, run: { ...VERSIONS.versions[1], run_id: "run-after-confirm", status: "queued" }, created: true, reuse_reason: null }); },
+      "/api/runs/run-origin/reprocess-preflight": () => {
+        reads += 1;
+        return jsonResponse({
+          ...PREFLIGHT,
+          preflight_revision: reads === 1 ? "revision-1" : "revision-2",
+          next_processing_sequence: reads === 1 ? 2 : 3,
+        });
+      },
+      "/api/runs/run-origin/reprocess": () => {
+        creates += 1;
+        return creates === 1
+          ? jsonResponse({ ok: false, error: { code: "preflight_changed", message: "预检已变化", fields: {} } }, 409)
+          : jsonResponse({
+              ok: true,
+              run: { ...VERSIONS.versions[1], run_id: "run-after-confirm", status: "queued" },
+              created: true,
+              reuse_reason: null,
+            });
+      },
     });
-    render(<App />); fireEvent.click(await screen.findByRole("button", { name: "重新处理" }));
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "重新处理" }));
     let dialog = await screen.findByRole("dialog", { name: "重新处理这段录像" });
     fireEvent.click(within(dialog).getByRole("button", { name: "开始重新处理" }));
     expect(await within(dialog).findByRole("button", { name: "已核对，继续" })).toBeVisible();
@@ -151,20 +288,60 @@ describe("Spec T reprocess and version flow", () => {
     dialog = await screen.findByRole("dialog", { name: "重新处理这段录像" });
     fireEvent.click(within(dialog).getByRole("button", { name: "开始重新处理" }));
     await waitFor(() => expect(window.location.pathname).toBe("/projects/project-1/runs/run-after-confirm"));
-    const revisions = calls.filter(([path]) => path === "/api/runs/run-origin/reprocess").map(([, options]) => JSON.parse(String(options?.body)).expected_preflight_revision);
+    const revisions = calls
+      .filter(([path]) => path === "/api/runs/run-origin/reprocess")
+      .map(([, options]) => JSON.parse(String(options?.body)).expected_preflight_revision);
     expect(revisions).toEqual(["revision-1", "revision-2"]);
   });
 
   it("creates the backend source issue without passing a path", async () => {
-    const summary = { issue_id: "source-issue", issue_code: "source_missing", group_key: "reprocess-source", status: "action_required", impact_level: "blocking", title: "原始录像需要重新定位", summary: "原始录像不存在", next_step: "选择同一录像", issue_revision: 1, available_actions: ["select_source"] };
-    const issue = { ...summary, category: "recording", scope: { type: "run", project_id: "project-1", run_id: "run-origin", output_id: null, material_id: null }, impact: "重新处理已阻止", preserved_content: "既有版本与成片保持不变", safe_checkpoint: "read_source", reuse_stages: [], redo_stages: ["read_source"], automatic_attempt_count: 0, total_attempt_count: 0, next_retry_at: null, retry_exhausted: false, diagnostic: { diagnostic_id: null, summary: null }, occurred_at: "2026-09-01T02:00:00Z", updated_at: "2026-09-01T02:00:00Z", resolved_at: null, events: [] };
+    const summary = {
+      issue_id: "source-issue",
+      issue_code: "source_missing",
+      group_key: "reprocess-source",
+      status: "action_required",
+      impact_level: "blocking",
+      title: "原始录像需要重新定位",
+      summary: "原始录像不存在",
+      next_step: "选择同一录像",
+      issue_revision: 1,
+      available_actions: ["select_source"],
+    };
+    const issue = {
+      ...summary,
+      category: "recording",
+      scope: { type: "run", project_id: "project-1", run_id: "run-origin", output_id: null, material_id: null },
+      impact: "重新处理已阻止",
+      preserved_content: "既有版本与成片保持不变",
+      safe_checkpoint: "read_source",
+      reuse_stages: [],
+      redo_stages: ["read_source"],
+      automatic_attempt_count: 0,
+      total_attempt_count: 0,
+      next_retry_at: null,
+      retry_exhausted: false,
+      diagnostic: { diagnostic_id: null, summary: null },
+      occurred_at: "2026-09-01T02:00:00Z",
+      updated_at: "2026-09-01T02:00:00Z",
+      resolved_at: null,
+      events: [],
+    };
     const calls = mocks({
-      "/api/runs/run-origin/reprocess-preflight": { ...PREFLIGHT, can_reprocess: false, blockers: [{ code: "source_missing", action: "source_repair", related_id: "run-origin" }] },
+      "/api/runs/run-origin/reprocess-preflight": {
+        ...PREFLIGHT,
+        can_reprocess: false,
+        blockers: [{ code: "source_missing", action: "source_repair", related_id: "run-origin" }],
+      },
       "/api/runs/run-origin/reprocess-source-repair": { ok: true, issue, reused: false },
       "/api/issues/source-issue": { ok: true, issue },
     });
-    render(<App />); fireEvent.click(await screen.findByRole("button", { name: "重新处理" }));
-    fireEvent.click(within(await screen.findByRole("dialog", { name: "重新处理这段录像" })).getByRole("button", { name: "重新选择原始录像" }));
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "重新处理" }));
+    fireEvent.click(
+      within(await screen.findByRole("dialog", { name: "重新处理这段录像" })).getByRole("button", {
+        name: "重新选择原始录像",
+      }),
+    );
     expect(await screen.findByRole("dialog", { name: "问题详情" })).toBeVisible();
     const call = calls.find(([path]) => path === "/api/runs/run-origin/reprocess-source-repair");
     expect(call?.[1]?.body).toBeUndefined();
@@ -172,7 +349,8 @@ describe("Spec T reprocess and version flow", () => {
   });
 
   it("traps initial focus and restores it after Escape", async () => {
-    const calls = mocks(); render(<App />);
+    const calls = mocks();
+    render(<App />);
     const trigger = await screen.findByRole("button", { name: "重新处理" });
     trigger.focus();
     fireEvent.click(trigger);
@@ -185,11 +363,14 @@ describe("Spec T reprocess and version flow", () => {
   });
 
   it("uses API order for versions, navigates real runs, and compares displayed fields", async () => {
-    mocks(); render(<App />);
+    mocks();
+    render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "第 1 次处理" }));
     const drawer = await screen.findByRole("dialog", { name: "处理版本" });
     const rows = within(drawer).getAllByRole("link");
-    expect(rows.map((row) => row.textContent)).toEqual(expect.arrayContaining([expect.stringContaining("第 1 次处理"), expect.stringContaining("第 2 次处理")]));
+    expect(rows.map((row) => row.textContent)).toEqual(
+      expect.arrayContaining([expect.stringContaining("第 1 次处理"), expect.stringContaining("第 2 次处理")]),
+    );
     expect(drawer).toHaveTextContent("识别方式：云端识别 · 模型：asr-fast · 识别语言：中文");
     expect(drawer).toHaveTextContent("供应商：OpenAI 兼容服务 · 模型：analysis-main");
     expect(drawer).not.toHaveTextContent("[object Object]");
@@ -205,91 +386,165 @@ describe("Spec T reprocess and version flow", () => {
     expect(compare).not.toHaveTextContent("文件命名");
     fireEvent.click(within(compare).getAllByRole("button", { name: "关闭" }).at(-1)!);
     fireEvent.click(await screen.findByRole("button", { name: "第 1 次处理" }));
-    fireEvent.click(within(await screen.findByRole("dialog", { name: "处理版本" })).getByRole("link", { name: /第 2 次处理/ }));
+    fireEvent.click(
+      within(await screen.findByRole("dialog", { name: "处理版本" })).getByRole("link", { name: /第 2 次处理/ }),
+    );
     expect(window.location.pathname).toBe("/projects/project-1/runs/run-second");
   });
 });
 
-it('replays the original preflight after remount even when current checks have changed', async () => {
-  route('/projects/project-1/runs/run-origin?reprocess=1');
-  sessionStorage.setItem('venus.reprocess.request.run-origin', JSON.stringify({ id: 'original-request', revision: 'original-revision' }));
+it("replays the original preflight after remount even when current checks have changed", async () => {
+  route("/projects/project-1/runs/run-origin?reprocess=1");
+  sessionStorage.setItem(
+    "venus.reprocess.request.run-origin",
+    JSON.stringify({ id: "original-request", revision: "original-revision" }),
+  );
   const calls = mocks({
-    '/api/runs/run-origin/reprocess-preflight': { ...PREFLIGHT, active_run: VERSIONS.versions[1], can_reprocess: false, preflight_revision: 'changed-revision', blockers: [{ code: 'source_missing', action: 'source_repair', related_id: ORIGIN.run_id }] },
-    '/api/runs/run-origin/reprocess': { ok: true, run: { ...VERSIONS.versions[1], run_id: 'run-confirmed' }, created: false, reuse_reason: 'idempotent_request' },
+    "/api/runs/run-origin/reprocess-preflight": {
+      ...PREFLIGHT,
+      active_run: VERSIONS.versions[1],
+      can_reprocess: false,
+      preflight_revision: "changed-revision",
+      blockers: [{ code: "source_missing", action: "source_repair", related_id: ORIGIN.run_id }],
+    },
+    "/api/runs/run-origin/reprocess": {
+      ok: true,
+      run: { ...VERSIONS.versions[1], run_id: "run-confirmed" },
+      created: false,
+      reuse_reason: "idempotent_request",
+    },
   });
   render(<App />);
-  const dialog = await screen.findByRole('alertdialog', { name: '重新处理这段录像' });
-  expect(calls.some(([path]) => path === '/api/runs/run-origin/reprocess')).toBe(false);
-  expect(within(dialog).getByRole('button', { name: '取消' })).toBeDisabled();
-  fireEvent.click(within(dialog).getByRole('button', { name: '继续本次操作' }));
-  await waitFor(() => expect(window.location.pathname).toBe('/projects/project-1/runs/run-confirmed'));
-  const sent = calls.find(([path]) => path === '/api/runs/run-origin/reprocess');
-  expect(JSON.parse(String(sent?.[1]?.body))).toEqual({ request_id: 'original-request', expected_preflight_revision: 'original-revision' });
+  const dialog = await screen.findByRole("alertdialog", { name: "重新处理这段录像" });
+  expect(calls.some(([path]) => path === "/api/runs/run-origin/reprocess")).toBe(false);
+  expect(within(dialog).getByRole("button", { name: "取消" })).toBeDisabled();
+  fireEvent.click(within(dialog).getByRole("button", { name: "继续本次操作" }));
+  await waitFor(() => expect(window.location.pathname).toBe("/projects/project-1/runs/run-confirmed"));
+  const sent = calls.find(([path]) => path === "/api/runs/run-origin/reprocess");
+  expect(JSON.parse(String(sent?.[1]?.body))).toEqual({
+    request_id: "original-request",
+    expected_preflight_revision: "original-revision",
+  });
 });
 
-it('does not turn every 409 rejection into a changed-preflight confirmation', async () => {
-  route('/projects/project-1/runs/run-origin?reprocess=1');
-  const calls = mocks({ '/api/runs/run-origin/reprocess': () => jsonResponse({ ok: false, error: { code: 'revision_conflict', message: '明确拒绝' } }, 409) });
+it("does not turn every 409 rejection into a changed-preflight confirmation", async () => {
+  route("/projects/project-1/runs/run-origin?reprocess=1");
+  const calls = mocks({
+    "/api/runs/run-origin/reprocess": () =>
+      jsonResponse({ ok: false, error: { code: "revision_conflict", message: "明确拒绝" } }, 409),
+  });
   render(<App />);
-  const dialog = await screen.findByRole('dialog', { name: '重新处理这段录像' });
-  fireEvent.click(within(dialog).getByRole('button', { name: '开始重新处理' }));
-  await within(dialog).findByText('明确拒绝');
-  expect(screen.queryByRole('button', { name: '已核对，继续' })).not.toBeInTheDocument();
-  expect(calls.filter(([path]) => path.endsWith('/reprocess-preflight'))).toHaveLength(1);
-  expect(sessionStorage.getItem('venus.reprocess.request.run-origin')).toBeNull();
+  const dialog = await screen.findByRole("dialog", { name: "重新处理这段录像" });
+  fireEvent.click(within(dialog).getByRole("button", { name: "开始重新处理" }));
+  await within(dialog).findByText("明确拒绝");
+  expect(screen.queryByRole("button", { name: "已核对，继续" })).not.toBeInTheDocument();
+  expect(calls.filter(([path]) => path.endsWith("/reprocess-preflight"))).toHaveLength(1);
+  expect(sessionStorage.getItem("venus.reprocess.request.run-origin")).toBeNull();
 });
 
-it('keeps a new run untouched when the old reprocess response arrives', async () => {
-  route('/projects/project-1/runs/run-origin?reprocess=1');
+it("keeps a new run untouched when the old reprocess response arrives", async () => {
+  route("/projects/project-1/runs/run-origin?reprocess=1");
   let complete!: (response: Response) => void;
-  const key = 'venus.reprocess.request.run-other';
-  const record = JSON.stringify({ id: 'other-request', revision: 'other-revision' });
+  const key = "venus.reprocess.request.run-other";
+  const record = JSON.stringify({ id: "other-request", revision: "other-revision" });
   sessionStorage.setItem(key, record);
-  mocks({ '/api/runs/run-origin/reprocess': () => new Promise<Response>(resolve => { complete = resolve; }),
-    '/api/runs/run-other': { ok: true, run: { ...ORIGIN, run_id: 'run-other', source_name: 'other.mp4' }, stage_events: [] },
-    '/api/runs/run-other/reprocess-preflight': { ...PREFLIGHT, run: { ...PREFLIGHT.run, run_id: 'run-other' } } });
+  mocks({
+    "/api/runs/run-origin/reprocess": () =>
+      new Promise<Response>((resolve) => {
+        complete = resolve;
+      }),
+    "/api/runs/run-other": {
+      ok: true,
+      run: { ...ORIGIN, run_id: "run-other", source_name: "other.mp4" },
+      stage_events: [],
+    },
+    "/api/runs/run-other/reprocess-preflight": { ...PREFLIGHT, run: { ...PREFLIGHT.run, run_id: "run-other" } },
+  });
   render(<App />);
-  fireEvent.click(within(await screen.findByRole('dialog', { name: '重新处理这段录像' })).getByRole('button', { name: '开始重新处理' }));
+  fireEvent.click(
+    within(await screen.findByRole("dialog", { name: "重新处理这段录像" })).getByRole("button", {
+      name: "开始重新处理",
+    }),
+  );
   await waitFor(() => expect(complete).toBeDefined());
-  await act(async () => { window.history.pushState({}, '', '/projects/project-1/runs/run-other?reprocess=1'); window.dispatchEvent(new PopStateEvent('popstate')); });
-  await screen.findByRole('button', { name: '继续本次操作' });
-  await act(async () => complete(await jsonResponse({ ok: true, run: { run_id: 'wrong-run' } })));
-  expect(window.location.pathname).toBe('/projects/project-1/runs/run-other');
+  await act(async () => {
+    window.history.pushState({}, "", "/projects/project-1/runs/run-other?reprocess=1");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  });
+  await screen.findByRole("button", { name: "继续本次操作" });
+  await act(async () => complete(await jsonResponse({ ok: true, run: { run_id: "wrong-run" } })));
+  expect(window.location.pathname).toBe("/projects/project-1/runs/run-other");
   expect(sessionStorage.getItem(key)).toBe(record);
-  expect(screen.getByRole('button', { name: '继续本次操作' })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "继续本次操作" })).toBeEnabled();
 });
 
-it('ignores an old preflight after switching away and back to the same run', async () => {
-  let reads = 0; let complete!: (response: Response) => void;
-  const calls = mocks({ '/api/runs/run-origin/reprocess-preflight': () => ++reads === 1
-    ? new Promise<Response>(resolve => { complete = resolve; }) : jsonResponse({ ...PREFLIGHT, preflight_revision: 'new-revision' }),
-    '/api/runs/run-other/reprocess-preflight': { ...PREFLIGHT, run: { ...PREFLIGHT.run, run_id: 'run-other' } },
-    '/api/runs/run-origin/reprocess': { ok: true, run: { run_id: 'run-created' } } });
-  const run = (await projectApi.run('run-origin')).run;
-  const project = (await projectApi.project('project-1')).project;
-  const page = (current = run) => <MemoryRouter initialEntries={['/projects/project-1/runs/run-origin?reprocess=1']}><ReprocessControls run={current} project={project} /></MemoryRouter>;
+it("ignores an old preflight after switching away and back to the same run", async () => {
+  let reads = 0;
+  let complete!: (response: Response) => void;
+  const calls = mocks({
+    "/api/runs/run-origin/reprocess-preflight": () =>
+      ++reads === 1
+        ? new Promise<Response>((resolve) => {
+            complete = resolve;
+          })
+        : jsonResponse({ ...PREFLIGHT, preflight_revision: "new-revision" }),
+    "/api/runs/run-other/reprocess-preflight": { ...PREFLIGHT, run: { ...PREFLIGHT.run, run_id: "run-other" } },
+    "/api/runs/run-origin/reprocess": { ok: true, run: { run_id: "run-created" } },
+  });
+  const run = (await projectApi.run("run-origin")).run;
+  const project = (await projectApi.project("project-1")).project;
+  const page = (current = run) => (
+    <MemoryRouter initialEntries={["/projects/project-1/runs/run-origin?reprocess=1"]}>
+      <ReprocessControls run={current} project={project} />
+    </MemoryRouter>
+  );
   const view = render(page());
   await waitFor(() => expect(complete).toBeDefined());
-  view.rerender(page({ ...run, run_id: 'run-other' }));
-  await screen.findByRole('dialog', { name: '重新处理这段录像' });
+  view.rerender(page({ ...run, run_id: "run-other" }));
+  await screen.findByRole("dialog", { name: "重新处理这段录像" });
   view.rerender(page());
   await waitFor(() => expect(reads).toBe(2));
-  await screen.findByRole('button', { name: '开始重新处理' });
-  await act(async () => complete(await jsonResponse({ ...PREFLIGHT, preflight_revision: 'old-revision', next_processing_sequence: 99 })));
-  fireEvent.click(screen.getByRole('button', { name: '开始重新处理' }));
-  await waitFor(() => expect(calls.filter(([path]) => path.endsWith('/reprocess'))).toHaveLength(1));
-  expect(JSON.parse(String(calls.find(([path]) => path.endsWith('/reprocess'))![1]?.body)).expected_preflight_revision).toBe('new-revision');
+  await screen.findByRole("button", { name: "开始重新处理" });
+  await act(async () =>
+    complete(await jsonResponse({ ...PREFLIGHT, preflight_revision: "old-revision", next_processing_sequence: 99 })),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "开始重新处理" }));
+  await waitFor(() => expect(calls.filter(([path]) => path.endsWith("/reprocess"))).toHaveLength(1));
+  expect(
+    JSON.parse(String(calls.find(([path]) => path.endsWith("/reprocess"))![1]?.body)).expected_preflight_revision,
+  ).toBe("new-revision");
 });
 
-it('reads nested historical configuration and ignores metadata-only differences', async () => {
-  route('/projects/project-1/runs/run-origin');
-  const settings = { ...CURRENT, analysis: { name: '当时的模型', config: { model: 'frozen-model', endpoint: 'https://history.example.test' }, revision: 1 } };
-  mocks({ '/api/runs/run-origin/versions': { ...VERSIONS, versions: VERSIONS.versions.map((version, index) => ({ ...version, settings_summary: { ...settings, analysis: { ...settings.analysis, revision: index + 1 } }, result_summary: { ...VERSIONS.versions[0].result_summary, result_revision: index + 1, completed_at: String(index) }, changed_fields: ['analysis', 'result_summary'] })) } });
+it("reads nested historical configuration and ignores metadata-only differences", async () => {
+  route("/projects/project-1/runs/run-origin");
+  const settings = {
+    ...CURRENT,
+    analysis: {
+      name: "当时的模型",
+      config: { model: "frozen-model", endpoint: "https://history.example.test" },
+      revision: 1,
+    },
+  };
+  mocks({
+    "/api/runs/run-origin/versions": {
+      ...VERSIONS,
+      versions: VERSIONS.versions.map((version, index) => ({
+        ...version,
+        settings_summary: { ...settings, analysis: { ...settings.analysis, revision: index + 1 } },
+        result_summary: {
+          ...VERSIONS.versions[0].result_summary,
+          result_revision: index + 1,
+          completed_at: String(index),
+        },
+        changed_fields: ["analysis", "result_summary"],
+      })),
+    },
+  });
   render(<App />);
-  fireEvent.click(await screen.findByRole('button', { name: '第 1 次处理' }));
-  const drawer = await screen.findByRole('dialog', { name: '处理版本' });
-  expect(drawer).toHaveTextContent('模型：frozen-model');
-  expect(drawer).toHaveTextContent('服务地址：https://history.example.test');
-  fireEvent.click(within(drawer).getByRole('button', { name: '比较第 1 次处理与第 2 次处理' }));
-  expect(await screen.findByText('所比较的设置和结果摘要相同。')).toBeVisible();
+  fireEvent.click(await screen.findByRole("button", { name: "第 1 次处理" }));
+  const drawer = await screen.findByRole("dialog", { name: "处理版本" });
+  expect(drawer).toHaveTextContent("模型：frozen-model");
+  expect(drawer).toHaveTextContent("服务地址：https://history.example.test");
+  fireEvent.click(within(drawer).getByRole("button", { name: "比较第 1 次处理与第 2 次处理" }));
+  expect(await screen.findByText("所比较的设置和结果摘要相同。")).toBeVisible();
 });

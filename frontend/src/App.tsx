@@ -1,6 +1,16 @@
 import { RemixIcon } from "./ui/RemixIcon";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { createBrowserRouter, RouterProvider, Link, Navigate, Route, Routes, useLocation, useNavigate, useSearchParams } from "react-router-dom";
+import {
+  createBrowserRouter,
+  RouterProvider,
+  Link,
+  Navigate,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+  useSearchParams,
+} from "react-router-dom";
 
 import { Onboarding } from "./Onboarding";
 import { ClipsPage } from "./ClipsPage";
@@ -14,14 +24,38 @@ import type { OnboardingSession, OnboardingSnapshot } from "./project-dto";
 import { ProjectsPage, StudioPage } from "./StudioProjects";
 import { usePolling } from "./workbench-shared";
 
-function NavLink({ to, active, children }: { to: string; active: boolean; children: React.ReactNode }) { return <Link className={active ? "active" : ""} to={to}>{children}</Link>; }
+function NavLink({ to, active, children }: { to: string; active: boolean; children: React.ReactNode }) {
+  return (
+    <Link className={active ? "active" : ""} to={to}>
+      {children}
+    </Link>
+  );
+}
 
-function WorkbenchShell({ onboarding, openOnboarding, resumeTriggerRef, resourceInGuide }: { resourceInGuide: boolean; onboarding: OnboardingSnapshot | null; openOnboarding(): Promise<void>; resumeTriggerRef: React.RefObject<HTMLButtonElement | null> }) {
-  const location = useLocation(); const navigate = useNavigate(); const [notice, setNotice] = useState(""); const [params] = useSearchParams();
-  const studioState = usePolling((signal) => projectApi.studio(signal), 15000, "studio-navigation"); const unseenCount = studioState.data?.unseen_result_count ?? 0;
+function WorkbenchShell({
+  onboarding,
+  openOnboarding,
+  resumeTriggerRef,
+  resourceInGuide,
+}: {
+  resourceInGuide: boolean;
+  onboarding: OnboardingSnapshot | null;
+  openOnboarding(): Promise<void>;
+  resumeTriggerRef: React.RefObject<HTMLButtonElement | null>;
+}) {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [notice, setNotice] = useState("");
+  const [params] = useSearchParams();
+  const studioState = usePolling((signal) => projectApi.studio(signal), 15000, "studio-navigation");
+  const unseenCount = studioState.data?.unseen_result_count ?? 0;
   const paused = onboarding?.session?.state === "paused";
-  const resultRoute = /\/projects\/[^/]+\/runs\/[^/]+$/.test(location.pathname) && ["result", "materials"].includes(params.get("view") ?? "");
-  useEffect(() => { document.body.classList.toggle("in-app-shell", Boolean(window.liveClipperShell)); }, []);
+  const resultRoute =
+    /\/projects\/[^/]+\/runs\/[^/]+$/.test(location.pathname) &&
+    ["result", "materials"].includes(params.get("view") ?? "");
+  useEffect(() => {
+    document.body.classList.toggle("in-app-shell", Boolean(window.liveClipperShell));
+  }, []);
   useEffect(() => {
     if (!(location.state as { focusProjectHeading?: boolean } | null)?.focusProjectHeading) return;
     const root = document.querySelector(".main-content");
@@ -29,29 +63,130 @@ function WorkbenchShell({ onboarding, openOnboarding, resumeTriggerRef, resource
     const focusHeading = () => {
       const heading = root.querySelector<HTMLElement>(".page-heading h1");
       if (!heading) return false;
-      heading.tabIndex = -1; heading.focus(); return true;
+      heading.tabIndex = -1;
+      heading.focus();
+      return true;
     };
     if (focusHeading()) return;
-    const observer = new MutationObserver(() => { if (focusHeading()) observer.disconnect(); });
+    const observer = new MutationObserver(() => {
+      if (focusHeading()) observer.disconnect();
+    });
     observer.observe(root, { childList: true, subtree: true });
     return () => observer.disconnect();
   }, [location.key, location.state]);
-  useEffect(() => { const refreshResults = () => void studioState.refresh(); window.addEventListener("venus-results-changed", refreshResults); return () => window.removeEventListener("venus-results-changed", refreshResults); }, [studioState.refresh]);
-  const openCreate = () => { if (paused) { void openOnboarding(); return; } const next = new URLSearchParams(location.search); next.set("dialog", "new-project"); navigate({ pathname: location.pathname, search: next.toString() }); };
-  return <div className="workbench-shell"><header className="top-navigation"><Link className="brand" to="/studio"><img src="/static/venus-mark.png" alt="" /><span><strong>Venus</strong><small>直播剪辑工具</small></span></Link><nav aria-label="主导航"><NavLink to="/studio" active={location.pathname === "/studio"}>工作室</NavLink><NavLink to="/projects" active={location.pathname.startsWith("/projects") && !resultRoute}>项目</NavLink><NavLink to="/clips" active={location.pathname === "/clips" || resultRoute}>成片{unseenCount > 0 && <span className="nav-badge" aria-label={`${unseenCount} 条未查看结果`}>{unseenCount}</span>}</NavLink><NavLink to="/resources" active={location.pathname.startsWith("/resources")}>模型与工具</NavLink><NavLink to="/settings" active={location.pathname === "/settings"}>设置</NavLink></nav><button className="button primary" onClick={openCreate}>{paused ? "继续设置" : <><RemixIcon name="add" /> 新建项目</>}</button></header>
-    <main className="main-content"><Routes><Route path="/" element={<Navigate to="/studio" replace />} /><Route path="/studio" element={<StudioPage notify={setNotice} state={studioState} onboarding={paused ? onboarding : null} resumeOnboarding={openOnboarding} resumeTriggerRef={resumeTriggerRef} />} /><Route path="/projects" element={<ProjectsPage />} /><Route path="/projects/:projectId" element={<ProjectPage notify={setNotice} />} /><Route path="/projects/:projectId/runs/:runId" element={<RunPage />} /><Route path="/clips" element={<ClipsPage />} /><Route path="/review" element={<ReviewCompatibilityPage />} /><Route path="/resources/*" element={resourceInGuide ? null : <ResourcesPage />} /><Route path="/settings" element={<SettingsPage notify={setNotice} />} /><Route path="/not-found/object" element={<ObjectNotFound />} /><Route path="*" element={<NotFound />} /></Routes></main>
-    {!paused && params.get("dialog") === "new-project" && <NewProjectDialog notify={setNotice} />}{notice && <div className="toast" role="status"><span>{notice}</span><button aria-label="关闭通知" onClick={() => setNotice("")}><RemixIcon name="close" /></button></div>}
-  </div>;
+  useEffect(() => {
+    const refreshResults = () => void studioState.refresh();
+    window.addEventListener("venus-results-changed", refreshResults);
+    return () => window.removeEventListener("venus-results-changed", refreshResults);
+  }, [studioState.refresh]);
+  const openCreate = () => {
+    if (paused) {
+      void openOnboarding();
+      return;
+    }
+    const next = new URLSearchParams(location.search);
+    next.set("dialog", "new-project");
+    navigate({ pathname: location.pathname, search: next.toString() });
+  };
+  return (
+    <div className="workbench-shell">
+      <header className="top-navigation">
+        <Link className="brand" to="/studio">
+          <img src="/static/venus-mark.png" alt="" />
+          <span>
+            <strong>Venus</strong>
+            <small>直播剪辑工具</small>
+          </span>
+        </Link>
+        <nav aria-label="主导航">
+          <NavLink to="/studio" active={location.pathname === "/studio"}>
+            工作室
+          </NavLink>
+          <NavLink to="/projects" active={location.pathname.startsWith("/projects") && !resultRoute}>
+            项目
+          </NavLink>
+          <NavLink to="/clips" active={location.pathname === "/clips" || resultRoute}>
+            成片
+            {unseenCount > 0 && (
+              <span className="nav-badge" aria-label={`${unseenCount} 条未查看结果`}>
+                {unseenCount}
+              </span>
+            )}
+          </NavLink>
+          <NavLink to="/resources" active={location.pathname.startsWith("/resources")}>
+            模型与工具
+          </NavLink>
+          <NavLink to="/settings" active={location.pathname === "/settings"}>
+            设置
+          </NavLink>
+        </nav>
+        <button className="button primary" onClick={openCreate}>
+          {paused ? (
+            "继续设置"
+          ) : (
+            <>
+              <RemixIcon name="add" /> 新建项目
+            </>
+          )}
+        </button>
+      </header>
+      <main className="main-content">
+        <Routes>
+          <Route path="/" element={<Navigate to="/studio" replace />} />
+          <Route
+            path="/studio"
+            element={
+              <StudioPage
+                notify={setNotice}
+                state={studioState}
+                onboarding={paused ? onboarding : null}
+                resumeOnboarding={openOnboarding}
+                resumeTriggerRef={resumeTriggerRef}
+              />
+            }
+          />
+          <Route path="/projects" element={<ProjectsPage />} />
+          <Route path="/projects/:projectId" element={<ProjectPage notify={setNotice} />} />
+          <Route path="/projects/:projectId/runs/:runId" element={<RunPage />} />
+          <Route path="/clips" element={<ClipsPage />} />
+          <Route path="/review" element={<ReviewCompatibilityPage />} />
+          <Route path="/resources/*" element={resourceInGuide ? null : <ResourcesPage />} />
+          <Route path="/settings" element={<SettingsPage notify={setNotice} />} />
+          <Route path="/not-found/object" element={<ObjectNotFound />} />
+          <Route path="*" element={<NotFound />} />
+        </Routes>
+      </main>
+      {!paused && params.get("dialog") === "new-project" && <NewProjectDialog notify={setNotice} />}
+      {notice && (
+        <div className="toast" role="status">
+          <span>{notice}</span>
+          <button aria-label="关闭通知" onClick={() => setNotice("")}>
+            <RemixIcon name="close" />
+          </button>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function StartupGate() {
   const location = useLocation();
-  const navigate = useNavigate(); const [snapshot, setSnapshot] = useState<OnboardingSnapshot | null>(null);
-  const [loading, setLoading] = useState(true); const [error, setError] = useState(""); const [onboardingOpen, setOnboardingOpen] = useState(false);
-  const loadRevision = useRef(0); const loadController = useRef<AbortController | null>(null); const resumeTriggerRef = useRef<HTMLButtonElement>(null); const restoreResumeFocus = useRef(false);
+  const navigate = useNavigate();
+  const [snapshot, setSnapshot] = useState<OnboardingSnapshot | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [onboardingOpen, setOnboardingOpen] = useState(false);
+  const loadRevision = useRef(0);
+  const loadController = useRef<AbortController | null>(null);
+  const resumeTriggerRef = useRef<HTMLButtonElement>(null);
+  const restoreResumeFocus = useRef(false);
   const load = useCallback(async () => {
     loadController.current?.abort();
-    const revision = ++loadRevision.current; const controller = new AbortController(); loadController.current = controller; setLoading(true); setError("");
+    const revision = ++loadRevision.current;
+    const controller = new AbortController();
+    loadController.current = controller;
+    setLoading(true);
+    setError("");
     try {
       let next = await projectApi.onboarding(controller.signal);
       assertStartupSnapshot(next);
@@ -60,51 +195,205 @@ function StartupGate() {
         next = { ...next, session: started.session, entry: { ...next.entry, onboarding: "resume" } };
       }
       if (revision !== loadRevision.current) return;
-      setSnapshot(next); setOnboardingOpen(next.entry.mode === "onboarding" && next.session?.state !== "paused");
+      setSnapshot(next);
+      setOnboardingOpen(next.entry.mode === "onboarding" && next.session?.state !== "paused");
       if (next.entry.mode === "onboarding" && next.session?.state === "paused") navigate("/studio", { replace: true });
     } catch (caught) {
       if (controller.signal.aborted || revision !== loadRevision.current) return;
       setError(caught instanceof Error ? caught.message : "请重试。如仍无法启动，请重新打开 Venus。");
-    } finally { if (revision === loadRevision.current) { loadController.current = null; setLoading(false); } }
+    } finally {
+      if (revision === loadRevision.current) {
+        loadController.current = null;
+        setLoading(false);
+      }
+    }
   }, [navigate]);
-  useEffect(() => { void load(); return () => { loadRevision.current += 1; loadController.current?.abort(); loadController.current = null; }; }, [load]);
+  useEffect(() => {
+    void load();
+    return () => {
+      loadRevision.current += 1;
+      loadController.current?.abort();
+      loadController.current = null;
+    };
+  }, [load]);
 
   const updateSession = useCallback((session: OnboardingSession) => {
-    setSnapshot((current) => current ? { ...current, session, entry: { ...current.entry, mode: session.state === "completed" ? "workbench" : "onboarding", onboarding: session.state === "completed" ? null : session.state === "paused" ? "paused" : session.state === "activation_pending" ? "activation_pending" : "resume" } } : current);
+    setSnapshot((current) =>
+      current
+        ? {
+            ...current,
+            session,
+            entry: {
+              ...current.entry,
+              mode: session.state === "completed" ? "workbench" : "onboarding",
+              onboarding:
+                session.state === "completed"
+                  ? null
+                  : session.state === "paused"
+                    ? "paused"
+                    : session.state === "activation_pending"
+                      ? "activation_pending"
+                      : "resume",
+            },
+          }
+        : current,
+    );
   }, []);
-  const refreshSnapshot = useCallback(async () => { const next = await projectApi.onboarding(); setSnapshot(next); return next; }, []);
-  const pauseComplete = useCallback((session: OnboardingSession) => { restoreResumeFocus.current = true; updateSession(session); setOnboardingOpen(false); navigate("/studio", { replace: true }); }, [navigate, updateSession]);
-  const resume = useCallback(async () => { const session = snapshot?.session; if (!session) return; const resumed = await projectApi.onboardingResume(session.revision); updateSession(resumed.session); setOnboardingOpen(true); }, [snapshot?.session, updateSession]);
+  const refreshSnapshot = useCallback(async () => {
+    const next = await projectApi.onboarding();
+    setSnapshot(next);
+    return next;
+  }, []);
+  const pauseComplete = useCallback(
+    (session: OnboardingSession) => {
+      restoreResumeFocus.current = true;
+      updateSession(session);
+      setOnboardingOpen(false);
+      navigate("/studio", { replace: true });
+    },
+    [navigate, updateSession],
+  );
+  const resume = useCallback(async () => {
+    const session = snapshot?.session;
+    if (!session) return;
+    const resumed = await projectApi.onboardingResume(session.revision);
+    updateSession(resumed.session);
+    setOnboardingOpen(true);
+  }, [snapshot?.session, updateSession]);
   useEffect(() => {
     if (onboardingOpen || snapshot?.session?.state !== "paused" || !restoreResumeFocus.current) return;
-    restoreResumeFocus.current = false; resumeTriggerRef.current?.focus();
+    restoreResumeFocus.current = false;
+    resumeTriggerRef.current?.focus();
   }, [onboardingOpen, snapshot?.session?.state]);
 
-  const enterMigratedProject = useCallback((projectId: string) => {
-    // Commit the target route before mounting the workbench's root redirect.
-    navigate(`/projects/${projectId}`, { replace: true, state: { focusProjectHeading: true }, flushSync: true });
-    setSnapshot((current) => current ? { ...current, migration: null, entry: { ...current.entry, mode: "workbench", onboarding: null } } : current);
-  }, [navigate]);
+  const enterMigratedProject = useCallback(
+    (projectId: string) => {
+      // Commit the target route before mounting the workbench's root redirect.
+      navigate(`/projects/${projectId}`, { replace: true, state: { focusProjectHeading: true }, flushSync: true });
+      setSnapshot((current) =>
+        current
+          ? { ...current, migration: null, entry: { ...current.entry, mode: "workbench", onboarding: null } }
+          : current,
+      );
+    },
+    [navigate],
+  );
 
-  if (loading) return <div className="startup-gate" role="status"><img src="/static/venus-mark.png" alt="" /><strong>正在启动 Venus…</strong></div>;
-  if (!snapshot || error) return <div className="startup-gate startup-error" role="alert"><strong>无法读取启动信息</strong><span>{error || "请重试。如仍无法启动，请重新打开 Venus。"}</span><button className="button primary" onClick={() => void load()}>重试</button></div>;
-  if (snapshot.entry.mode === "migration_required" && !snapshot.migration) return <SafetyBoundary title="无法读取升级状态" description={snapshot.entry.reason_code ? "请重新打开 Venus。如仍无法进入，请记录问题编号并联系开发者排查。" : "请重新打开 Venus。如仍无法进入，请联系开发者排查。"} diagnosticId={snapshot.entry.reason_code} />;
-  if (snapshot.entry.mode === "migration_required" && snapshot.migration) return <MigrationFlow startup={snapshot.migration} onEnter={enterMigratedProject} />;
-  if (snapshot.entry.mode === "workbench" && snapshot.migration?.entry === "completed" && !snapshot.migration.report?.acknowledged_at) return <MigrationFlow startup={snapshot.migration} onEnter={enterMigratedProject} />;
-  if (snapshot.entry.mode === "diagnostic_required") return <SafetyBoundary title="暂时无法确认数据状态" description={snapshot.entry.reason_code ? "请记录问题编号并联系开发者排查。" : "请联系开发者排查。"} diagnosticId={snapshot.entry.reason_code} />;
-  return <><WorkbenchShell resourceInGuide={onboardingOpen && new URLSearchParams(location.search).get("origin") === "onboarding"} onboarding={snapshot.session?.state === "paused" ? snapshot : null} openOnboarding={resume} resumeTriggerRef={resumeTriggerRef} />{onboardingOpen && (!location.pathname.startsWith("/resources") || new URLSearchParams(location.search).get("origin") === "onboarding") && snapshot.session && <Onboarding snapshot={snapshot} onSession={updateSession} onRefresh={refreshSnapshot} onPaused={pauseComplete} onClose={() => setOnboardingOpen(false)} />}</>;
+  if (loading)
+    return (
+      <div className="startup-gate" role="status">
+        <img src="/static/venus-mark.png" alt="" />
+        <strong>正在启动 Venus…</strong>
+      </div>
+    );
+  if (!snapshot || error)
+    return (
+      <div className="startup-gate startup-error" role="alert">
+        <strong>无法读取启动信息</strong>
+        <span>{error || "请重试。如仍无法启动，请重新打开 Venus。"}</span>
+        <button className="button primary" onClick={() => void load()}>
+          重试
+        </button>
+      </div>
+    );
+  if (snapshot.entry.mode === "migration_required" && !snapshot.migration)
+    return (
+      <SafetyBoundary
+        title="无法读取升级状态"
+        description={
+          snapshot.entry.reason_code
+            ? "请重新打开 Venus。如仍无法进入，请记录问题编号并联系开发者排查。"
+            : "请重新打开 Venus。如仍无法进入，请联系开发者排查。"
+        }
+        diagnosticId={snapshot.entry.reason_code}
+      />
+    );
+  if (snapshot.entry.mode === "migration_required" && snapshot.migration)
+    return <MigrationFlow startup={snapshot.migration} onEnter={enterMigratedProject} />;
+  if (
+    snapshot.entry.mode === "workbench" &&
+    snapshot.migration?.entry === "completed" &&
+    !snapshot.migration.report?.acknowledged_at
+  )
+    return <MigrationFlow startup={snapshot.migration} onEnter={enterMigratedProject} />;
+  if (snapshot.entry.mode === "diagnostic_required")
+    return (
+      <SafetyBoundary
+        title="暂时无法确认数据状态"
+        description={snapshot.entry.reason_code ? "请记录问题编号并联系开发者排查。" : "请联系开发者排查。"}
+        diagnosticId={snapshot.entry.reason_code}
+      />
+    );
+  return (
+    <>
+      <WorkbenchShell
+        resourceInGuide={onboardingOpen && new URLSearchParams(location.search).get("origin") === "onboarding"}
+        onboarding={snapshot.session?.state === "paused" ? snapshot : null}
+        openOnboarding={resume}
+        resumeTriggerRef={resumeTriggerRef}
+      />
+      {onboardingOpen &&
+        (!location.pathname.startsWith("/resources") ||
+          new URLSearchParams(location.search).get("origin") === "onboarding") &&
+        snapshot.session && (
+          <Onboarding
+            snapshot={snapshot}
+            onSession={updateSession}
+            onRefresh={refreshSnapshot}
+            onPaused={pauseComplete}
+            onClose={() => setOnboardingOpen(false)}
+          />
+        )}
+    </>
+  );
 }
 
 function assertStartupSnapshot(snapshot: OnboardingSnapshot): void {
   const modes = new Set(["onboarding", "workbench", "migration_required", "diagnostic_required"]);
   const onboardingStates = new Set(["new", "resume", "paused", "activation_pending"]);
-  if (!snapshot || snapshot.ok !== true || !snapshot.entry || !modes.has(snapshot.entry.mode)) throw new Error("无法识别启动信息");
-  if (snapshot.entry.mode === "onboarding" && !onboardingStates.has(snapshot.entry.onboarding ?? "")) throw new Error("无法识别启动信息");
+  if (!snapshot || snapshot.ok !== true || !snapshot.entry || !modes.has(snapshot.entry.mode))
+    throw new Error("无法识别启动信息");
+  if (snapshot.entry.mode === "onboarding" && !onboardingStates.has(snapshot.entry.onboarding ?? ""))
+    throw new Error("无法识别启动信息");
   if (snapshot.entry.mode !== "onboarding" && snapshot.entry.onboarding !== null) throw new Error("无法识别启动信息");
   if (snapshot.entry.mode === "migration_required" && !snapshot.migration) throw new Error("无法读取升级信息");
 }
 
-function SafetyBoundary({ title, description, diagnosticId }: { title: string; description: string; diagnosticId: string | null }) { return <div className="startup-gate startup-safety"><img src="/static/venus-mark.png" alt="" /><strong>{title}</strong><span>{description}</span>{diagnosticId && <small>问题编号：{diagnosticId}</small>}</div>; }
-function NotFound() { return <section className="page"><div className="empty-state"><strong>找不到这个页面</strong><p>请返回工作室，重新打开需要的页面。</p><Link className="button primary" to="/studio">返回工作室</Link></div></section>; }
-function AppShell() { return <StartupGate />; }
-export function App() { const [router] = useState(() => createBrowserRouter([{ path: "*", element: <AppShell /> }])); return <RouterProvider router={router} />; }
+function SafetyBoundary({
+  title,
+  description,
+  diagnosticId,
+}: {
+  title: string;
+  description: string;
+  diagnosticId: string | null;
+}) {
+  return (
+    <div className="startup-gate startup-safety">
+      <img src="/static/venus-mark.png" alt="" />
+      <strong>{title}</strong>
+      <span>{description}</span>
+      {diagnosticId && <small>问题编号：{diagnosticId}</small>}
+    </div>
+  );
+}
+function NotFound() {
+  return (
+    <section className="page">
+      <div className="empty-state">
+        <strong>找不到这个页面</strong>
+        <p>请返回工作室，重新打开需要的页面。</p>
+        <Link className="button primary" to="/studio">
+          返回工作室
+        </Link>
+      </div>
+    </section>
+  );
+}
+function AppShell() {
+  return <StartupGate />;
+}
+export function App() {
+  const [router] = useState(() => createBrowserRouter([{ path: "*", element: <AppShell /> }]));
+  return <RouterProvider router={router} />;
+}

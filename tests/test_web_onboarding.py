@@ -122,8 +122,8 @@ def test_migration_react_uses_real_o_contract_and_keeps_state_private():
     for forbidden in ["operation.plan", "operation.choices", "...operation", "JSON.stringify(pending.current)"]:
         assert forbidden not in storage_writer
     assert migration.count("sessionStorage.setItem(") == 1
-    assert "keys === 'id,kind'" in migration
-    assert "keys === 'id,kind,migrationId,revision'" in migration
+    assert 'keys === "id,kind"' in migration
+    assert 'keys === "id,kind,migrationId,revision"' in migration
     assert "showBackup(id)" in migration
     assert "showBackup?(migrationId: string)" in shell
     assert "quitApp?()" in shell
@@ -136,8 +136,8 @@ def test_accessibility_and_live_state_contracts_remain_strong():
         'role="alert"',
     ]:
         assert token in source
-    assert "import { Dialog } from '@astryxdesign/core/Dialog'" in source
-    assert '<Dialog isOpen' in source and 'onOpenChange=' in source
+    assert 'import { Dialog } from "@astryxdesign/core/Dialog"' in source
+    assert "<Dialog\n" in source and "isOpen\n" in source and "onOpenChange=" in source
     assert "<DialogFrame" in source
     assert 'aria-labelledby="onboarding-title"' in source
     styles = Path("frontend/src/styles.css").read_text(encoding="utf-8")

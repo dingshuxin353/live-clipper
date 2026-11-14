@@ -25,7 +25,8 @@ for (const token of requiredColorTokens) {
 
 const expectedColors = {
   "--color-accent": "light-dark(#67519F, #D3BBFF)",
-  "--color-accent-muted": "light-dark(color-mix(in srgb, var(--color-accent) 20%, transparent), color-mix(in srgb, var(--color-accent) 25%, transparent))",
+  "--color-accent-muted":
+    "light-dark(color-mix(in srgb, var(--color-accent) 20%, transparent), color-mix(in srgb, var(--color-accent) 25%, transparent))",
   "--color-on-accent": "light-dark(#FFFFFF, #33236B)",
   "--color-text-accent": "var(--color-accent)",
   "--color-icon-accent": "var(--color-accent)",
@@ -37,7 +38,8 @@ for (const token of requiredColorTokens) {
   }
 }
 
-const fontBody = '"MiSans", "SF Pro Text", "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, BlinkMacSystemFont, sans-serif';
+const fontBody =
+  '"MiSans", "SF Pro Text", "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, BlinkMacSystemFont, sans-serif';
 const css = [
   "@layer theme {",
   '  [data-astryx-theme="stone"] {',

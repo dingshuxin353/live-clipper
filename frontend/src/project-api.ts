@@ -1,62 +1,308 @@
 import { api, patch, post } from "./api";
-import type { ClipsPayload, FormOptionsPayload, IssueDetail, MigrationAcknowledgePayload, MigrationChoices, MigrationInspectPayload, MigrationPlan, MigrationPlanPayload, MigrationSessionPayload, MigrationSavedHistory, MigrationSnapshot, ModelJob, OnboardingFinishPayload, OnboardingSessionPayload, OnboardingSnapshot, OnboardingStep, OnboardingValidationPayload, OutputMaterial, ProjectConfig, ProjectSummary, RecoveryAttempt, RepairContext, ReprocessPreflight, ReprocessVersion, ReprocessVersionsPayload, Run, RunFilter, RunOutput, RunResultPayload, ScanEvent, ScanPreviewPayload, SourceFile, StageEvent, StudioPayload, ValidationPayload } from "./project-dto";
+import type {
+  ClipsPayload,
+  FormOptionsPayload,
+  IssueDetail,
+  MigrationAcknowledgePayload,
+  MigrationChoices,
+  MigrationInspectPayload,
+  MigrationPlan,
+  MigrationPlanPayload,
+  MigrationSessionPayload,
+  MigrationSavedHistory,
+  MigrationSnapshot,
+  ModelJob,
+  OnboardingFinishPayload,
+  OnboardingSessionPayload,
+  OnboardingSnapshot,
+  OnboardingStep,
+  OnboardingValidationPayload,
+  OutputMaterial,
+  ProjectConfig,
+  ProjectSummary,
+  RecoveryAttempt,
+  RepairContext,
+  ReprocessPreflight,
+  ReprocessVersion,
+  ReprocessVersionsPayload,
+  Run,
+  RunFilter,
+  RunOutput,
+  RunResultPayload,
+  ScanEvent,
+  ScanPreviewPayload,
+  SourceFile,
+  StageEvent,
+  StudioPayload,
+  ValidationPayload,
+} from "./project-dto";
 
 export const projectApi = {
   studio: (signal?: AbortSignal) => api<StudioPayload>("/api/studio", {}, signal),
-  markStudioSeen: (throughEventId: number) => post<{ ok: true; last_seen_event_id: number }>("/api/studio/seen", { through_event_id: throughEventId }),
+  markStudioSeen: (throughEventId: number) =>
+    post<{ ok: true; last_seen_event_id: number }>("/api/studio/seen", { through_event_id: throughEventId }),
   projects: (signal?: AbortSignal) => api<{ ok: true; projects: ProjectSummary[] }>("/api/projects", {}, signal),
-  project: (projectId: string, signal?: AbortSignal) => api<{ ok: true; project: ProjectSummary }>(`/api/projects/${projectId}`, {}, signal),
-  runs: (projectId: string, filter: RunFilter, cursor?: string | null, signal?: AbortSignal) => { const search = new URLSearchParams({ filter, limit: "50" }); if (cursor) search.set("cursor", cursor); return api<{ ok: true; runs: Run[]; cursor: string | null; has_more: boolean }>(`/api/projects/${projectId}/runs?${search}`, {}, signal); },
-  run: (runId: string, signal?: AbortSignal) => api<{ ok: true; run: Run; stage_events: StageEvent[] }>(`/api/runs/${runId}`, {}, signal),
-  reprocessPreflight: (runId: string, signal?: AbortSignal) => api<ReprocessPreflight>(`/api/runs/${runId}/reprocess-preflight`, {}, signal),
-  reprocessVersions: (runId: string, signal?: AbortSignal) => api<ReprocessVersionsPayload>(`/api/runs/${runId}/versions`, {}, signal),
-  createReprocess: (runId: string, id: string, expectedRevision: string) => post<{ ok: true; run: ReprocessVersion; created: boolean; reuse_reason: string | null }>(`/api/runs/${runId}/reprocess`, { request_id: id, expected_preflight_revision: expectedRevision }),
-  repairReprocessSource: (runId: string) => post<{ ok: true; issue: IssueDetail; reused: boolean }>(`/api/runs/${runId}/reprocess-source-repair`),
+  project: (projectId: string, signal?: AbortSignal) =>
+    api<{ ok: true; project: ProjectSummary }>(`/api/projects/${projectId}`, {}, signal),
+  runs: (projectId: string, filter: RunFilter, cursor?: string | null, signal?: AbortSignal) => {
+    const search = new URLSearchParams({ filter, limit: "50" });
+    if (cursor) search.set("cursor", cursor);
+    return api<{ ok: true; runs: Run[]; cursor: string | null; has_more: boolean }>(
+      `/api/projects/${projectId}/runs?${search}`,
+      {},
+      signal,
+    );
+  },
+  run: (runId: string, signal?: AbortSignal) =>
+    api<{ ok: true; run: Run; stage_events: StageEvent[] }>(`/api/runs/${runId}`, {}, signal),
+  reprocessPreflight: (runId: string, signal?: AbortSignal) =>
+    api<ReprocessPreflight>(`/api/runs/${runId}/reprocess-preflight`, {}, signal),
+  reprocessVersions: (runId: string, signal?: AbortSignal) =>
+    api<ReprocessVersionsPayload>(`/api/runs/${runId}/versions`, {}, signal),
+  createReprocess: (runId: string, id: string, expectedRevision: string) =>
+    post<{ ok: true; run: ReprocessVersion; created: boolean; reuse_reason: string | null }>(
+      `/api/runs/${runId}/reprocess`,
+      { request_id: id, expected_preflight_revision: expectedRevision },
+    ),
+  repairReprocessSource: (runId: string) =>
+    post<{ ok: true; issue: IssueDetail; reused: boolean }>(`/api/runs/${runId}/reprocess-source-repair`),
   formOptions: (signal?: AbortSignal) => api<FormOptionsPayload>("/api/project-form-options", {}, signal),
-  scanPreview: (sourceDirectory: string, mode: ProjectConfig["source"]["first_scan_mode"], lookbackDays: number | null) => post<ScanPreviewPayload>("/api/projects/scan-preview", { source_directory: sourceDirectory, first_scan_mode: mode, ...(mode === "recent" ? { lookback_days: lookbackDays } : {}) }),
-  validate: (project: { name: string; description: string; config: ProjectConfig }, activationState: "active" | "inactive") => post<ValidationPayload>("/api/projects/validate", { project, activation_state: activationState }),
-  create: (id: string, project: { name: string; description: string; config: ProjectConfig }, activationState: "active" | "inactive") => post<{ ok: true; project: ProjectSummary; initial_scan: ScanEvent | null }>("/api/projects", { request_id: id, project, activation_state: activationState }),
-  update: (projectId: string, id: string, expectedRevision: number, project: { name: string; description: string; config: ProjectConfig }) => patch<{ ok: true; project: ProjectSummary }>(`/api/projects/${projectId}`, { request_id: id, expected_revision: expectedRevision, project }),
-  activate: (projectId: string, action: "enable" | "pause" | "resume", id: string) => post<{ ok: true; project: ProjectSummary; initial_scan: ScanEvent | null }>(`/api/projects/${projectId}/${action}`, { request_id: id }),
-  scan: (projectId: string, id: string, scope: "new" | "selected", selectedRelativePaths: string[] = []) => post<{ ok: true; scan: ScanEvent; reused?: boolean }>(`/api/projects/${projectId}/scans`, { request_id: id, scope, selected_relative_paths: selectedRelativePaths }),
-  latestScan: (projectId: string, signal?: AbortSignal) => api<{ ok: true; scan: ScanEvent | null }>(`/api/projects/${projectId}/scans/latest`, {}, signal),
-  sourceFiles: (projectId: string, signal?: AbortSignal) => api<{ ok: true; files: SourceFile[] }>(`/api/projects/${projectId}/source-files`, {}, signal),
-  clips: (view: "new" | "all", cursor?: string | null, signal?: AbortSignal) => { const search = new URLSearchParams({ view, limit: "24" }); if (cursor) search.set("cursor", cursor); return api<ClipsPayload>(`/api/clips?${search}`, {}, signal); },
+  scanPreview: (
+    sourceDirectory: string,
+    mode: ProjectConfig["source"]["first_scan_mode"],
+    lookbackDays: number | null,
+  ) =>
+    post<ScanPreviewPayload>("/api/projects/scan-preview", {
+      source_directory: sourceDirectory,
+      first_scan_mode: mode,
+      ...(mode === "recent" ? { lookback_days: lookbackDays } : {}),
+    }),
+  validate: (
+    project: { name: string; description: string; config: ProjectConfig },
+    activationState: "active" | "inactive",
+  ) => post<ValidationPayload>("/api/projects/validate", { project, activation_state: activationState }),
+  create: (
+    id: string,
+    project: { name: string; description: string; config: ProjectConfig },
+    activationState: "active" | "inactive",
+  ) =>
+    post<{ ok: true; project: ProjectSummary; initial_scan: ScanEvent | null }>("/api/projects", {
+      request_id: id,
+      project,
+      activation_state: activationState,
+    }),
+  update: (
+    projectId: string,
+    id: string,
+    expectedRevision: number,
+    project: { name: string; description: string; config: ProjectConfig },
+  ) =>
+    patch<{ ok: true; project: ProjectSummary }>(`/api/projects/${projectId}`, {
+      request_id: id,
+      expected_revision: expectedRevision,
+      project,
+    }),
+  activate: (projectId: string, action: "enable" | "pause" | "resume", id: string) =>
+    post<{ ok: true; project: ProjectSummary; initial_scan: ScanEvent | null }>(
+      `/api/projects/${projectId}/${action}`,
+      { request_id: id },
+    ),
+  scan: (projectId: string, id: string, scope: "new" | "selected", selectedRelativePaths: string[] = []) =>
+    post<{ ok: true; scan: ScanEvent; reused?: boolean }>(`/api/projects/${projectId}/scans`, {
+      request_id: id,
+      scope,
+      selected_relative_paths: selectedRelativePaths,
+    }),
+  latestScan: (projectId: string, signal?: AbortSignal) =>
+    api<{ ok: true; scan: ScanEvent | null }>(`/api/projects/${projectId}/scans/latest`, {}, signal),
+  sourceFiles: (projectId: string, signal?: AbortSignal) =>
+    api<{ ok: true; files: SourceFile[] }>(`/api/projects/${projectId}/source-files`, {}, signal),
+  clips: (view: "new" | "all", cursor?: string | null, signal?: AbortSignal) => {
+    const search = new URLSearchParams({ view, limit: "24" });
+    if (cursor) search.set("cursor", cursor);
+    return api<ClipsPayload>(`/api/clips?${search}`, {}, signal);
+  },
   runResult: (runId: string, signal?: AbortSignal) => api<RunResultPayload>(`/api/runs/${runId}/result`, {}, signal),
-  markResultSeen: (runId: string, id: string, expectedRevision: number) => post<{ ok: true; result: RunResultPayload["result"]; unseen_result_count: number; reused: boolean }>(`/api/runs/${runId}/result/seen`, { request_id: id, expected_result_revision: expectedRevision }),
-  output: (outputId: string, signal?: AbortSignal) => api<{ ok: true; output: RunOutput }>(`/api/outputs/${outputId}`, {}, signal),
-  material: (outputId: string, signal?: AbortSignal) => api<{ ok: true; material: OutputMaterial }>(`/api/outputs/${outputId}/material`, {}, signal),
-  saveMaterial: (outputId: string, id: string, material: OutputMaterial) => patch<{ ok: true; material: OutputMaterial; reused: boolean }>(`/api/outputs/${outputId}/material`, { request_id: id, expected_revision: material.material_revision, titles: material.titles, preferred_title_id: material.preferred_title_id, description: material.description, tags: material.tags }),
-  issue: (issueId: string, signal?: AbortSignal) => api<{ ok: true; issue: IssueDetail }>(`/api/issues/${issueId}`, {}, signal),
-  issueCheck: (issueId: string, id: string, expectedRevision: number, selection?: { kind: "source" | "recovery-output"; token: string }) => post<{ ok: true; issue: IssueDetail; reused: boolean }>(`/api/issues/${issueId}/${selection?.kind ?? "recheck"}`, { request_id: id, expected_issue_revision: expectedRevision, ...(selection ? { selection_token: selection.token } : {}) }),
-  issueRecover: (issueId: string, id: string, action: "continue" | "retry-output" | "retry-material", expectedRevision: number) => post<RecoveryAttempt>(`/api/issues/${issueId}/${action}`, { request_id: id, expected_issue_revision: expectedRevision }),
-  groupRecheck: (groupKey: string, id: string, issueRevisions: Record<string, number>) => post<{ ok: true; group_key: string; issues: IssueDetail[]; reused: boolean }>(`/api/issue-groups/${encodeURIComponent(groupKey)}/recheck`, { request_id: id, issue_revisions: issueRevisions }),
-  repairContext: (resourceId: string, issueId: string, signal?: AbortSignal) => api<{ ok: true; repair_context: RepairContext }>(`/api/resources/${encodeURIComponent(resourceId)}/repair-context?issue_id=${encodeURIComponent(issueId)}`, {}, signal),
-  updateConnection: (resourceId: string, issueId: string, apiBase: string, apiKey: string) => patch<{ ok: true; resource_id: string; api_base: string; model: string; credential_updated: boolean; reused: boolean }>(`/api/resources/${encodeURIComponent(resourceId)}/connection`, { request_id: requestId("resource-save"), issue_id: issueId, api_base: apiBase, ...(apiKey.trim() ? { api_key: apiKey } : {}) }),
-  testConnection: (resourceId: string, issueId: string) => post<{ ok: true; resource_id: string; success: boolean; tested_at: string; reused: boolean }>(`/api/resources/${encodeURIComponent(resourceId)}/connection-test`, { request_id: requestId("resource-test"), issue_id: issueId }),
-  legacyAwaitingReview: (signal?: AbortSignal) => api<{ ok: true; runs: Array<{ run: Run; project: { project_id: string; name: string }; detail_url: string }>; count: number }>("/api/legacy/awaiting-review", {}, signal),
+  markResultSeen: (runId: string, id: string, expectedRevision: number) =>
+    post<{ ok: true; result: RunResultPayload["result"]; unseen_result_count: number; reused: boolean }>(
+      `/api/runs/${runId}/result/seen`,
+      { request_id: id, expected_result_revision: expectedRevision },
+    ),
+  output: (outputId: string, signal?: AbortSignal) =>
+    api<{ ok: true; output: RunOutput }>(`/api/outputs/${outputId}`, {}, signal),
+  material: (outputId: string, signal?: AbortSignal) =>
+    api<{ ok: true; material: OutputMaterial }>(`/api/outputs/${outputId}/material`, {}, signal),
+  saveMaterial: (outputId: string, id: string, material: OutputMaterial) =>
+    patch<{ ok: true; material: OutputMaterial; reused: boolean }>(`/api/outputs/${outputId}/material`, {
+      request_id: id,
+      expected_revision: material.material_revision,
+      titles: material.titles,
+      preferred_title_id: material.preferred_title_id,
+      description: material.description,
+      tags: material.tags,
+    }),
+  issue: (issueId: string, signal?: AbortSignal) =>
+    api<{ ok: true; issue: IssueDetail }>(`/api/issues/${issueId}`, {}, signal),
+  issueCheck: (
+    issueId: string,
+    id: string,
+    expectedRevision: number,
+    selection?: { kind: "source" | "recovery-output"; token: string },
+  ) =>
+    post<{ ok: true; issue: IssueDetail; reused: boolean }>(`/api/issues/${issueId}/${selection?.kind ?? "recheck"}`, {
+      request_id: id,
+      expected_issue_revision: expectedRevision,
+      ...(selection ? { selection_token: selection.token } : {}),
+    }),
+  issueRecover: (
+    issueId: string,
+    id: string,
+    action: "continue" | "retry-output" | "retry-material",
+    expectedRevision: number,
+  ) =>
+    post<RecoveryAttempt>(`/api/issues/${issueId}/${action}`, {
+      request_id: id,
+      expected_issue_revision: expectedRevision,
+    }),
+  groupRecheck: (groupKey: string, id: string, issueRevisions: Record<string, number>) =>
+    post<{ ok: true; group_key: string; issues: IssueDetail[]; reused: boolean }>(
+      `/api/issue-groups/${encodeURIComponent(groupKey)}/recheck`,
+      { request_id: id, issue_revisions: issueRevisions },
+    ),
+  repairContext: (resourceId: string, issueId: string, signal?: AbortSignal) =>
+    api<{ ok: true; repair_context: RepairContext }>(
+      `/api/resources/${encodeURIComponent(resourceId)}/repair-context?issue_id=${encodeURIComponent(issueId)}`,
+      {},
+      signal,
+    ),
+  updateConnection: (resourceId: string, issueId: string, apiBase: string, apiKey: string) =>
+    patch<{
+      ok: true;
+      resource_id: string;
+      api_base: string;
+      model: string;
+      credential_updated: boolean;
+      reused: boolean;
+    }>(`/api/resources/${encodeURIComponent(resourceId)}/connection`, {
+      request_id: requestId("resource-save"),
+      issue_id: issueId,
+      api_base: apiBase,
+      ...(apiKey.trim() ? { api_key: apiKey } : {}),
+    }),
+  testConnection: (resourceId: string, issueId: string) =>
+    post<{ ok: true; resource_id: string; success: boolean; tested_at: string; reused: boolean }>(
+      `/api/resources/${encodeURIComponent(resourceId)}/connection-test`,
+      { request_id: requestId("resource-test"), issue_id: issueId },
+    ),
+  legacyAwaitingReview: (signal?: AbortSignal) =>
+    api<{
+      ok: true;
+      runs: Array<{ run: Run; project: { project_id: string; name: string }; detail_url: string }>;
+      count: number;
+    }>("/api/legacy/awaiting-review", {}, signal),
   onboarding: (signal?: AbortSignal) => api<OnboardingSnapshot>("/api/onboarding", {}, signal),
   migration: (signal?: AbortSignal) => api<MigrationSnapshot>("/api/migration", {}, signal),
-  migrationHistory: (migrationId: string) => api<MigrationSavedHistory>(`/api/migration/${encodeURIComponent(migrationId)}/history`),
-  migrationInspect: (signal?: AbortSignal) => post<MigrationInspectPayload>("/api/migration/inspect", { request_id: requestId("migration-inspect") }, signal),
-  migrationValidate: (sourceFingerprint: string, planHash: string, choices: MigrationChoices) => post<MigrationPlanPayload>("/api/migration/validate", { source_fingerprint: sourceFingerprint, plan_hash: planHash, choices }),
-  migrationExecute: (id: string, plan: MigrationPlan) => post<MigrationSessionPayload>("/api/migration/execute", { request_id: id, source_fingerprint: plan.source_fingerprint, plan_hash: plan.plan_hash, choices: plan.choices }),
-  migrationRetry: (id: string, migrationId: string, expectedRevision: number) => post<MigrationSessionPayload>("/api/migration/retry", { request_id: id, migration_id: migrationId, expected_revision: expectedRevision }),
-  migrationAcknowledge: (id: string, migrationId: string, expectedRevision: number) => post<MigrationAcknowledgePayload>("/api/migration/acknowledge", { request_id: id, migration_id: migrationId, expected_revision: expectedRevision }),
+  migrationHistory: (migrationId: string) =>
+    api<MigrationSavedHistory>(`/api/migration/${encodeURIComponent(migrationId)}/history`),
+  migrationInspect: (signal?: AbortSignal) =>
+    post<MigrationInspectPayload>("/api/migration/inspect", { request_id: requestId("migration-inspect") }, signal),
+  migrationValidate: (sourceFingerprint: string, planHash: string, choices: MigrationChoices) =>
+    post<MigrationPlanPayload>("/api/migration/validate", {
+      source_fingerprint: sourceFingerprint,
+      plan_hash: planHash,
+      choices,
+    }),
+  migrationExecute: (id: string, plan: MigrationPlan) =>
+    post<MigrationSessionPayload>("/api/migration/execute", {
+      request_id: id,
+      source_fingerprint: plan.source_fingerprint,
+      plan_hash: plan.plan_hash,
+      choices: plan.choices,
+    }),
+  migrationRetry: (id: string, migrationId: string, expectedRevision: number) =>
+    post<MigrationSessionPayload>("/api/migration/retry", {
+      request_id: id,
+      migration_id: migrationId,
+      expected_revision: expectedRevision,
+    }),
+  migrationAcknowledge: (id: string, migrationId: string, expectedRevision: number) =>
+    post<MigrationAcknowledgePayload>("/api/migration/acknowledge", {
+      request_id: id,
+      migration_id: migrationId,
+      expected_revision: expectedRevision,
+    }),
   onboardingStart: (signal?: AbortSignal) => post<OnboardingSessionPayload>("/api/onboarding/start", {}, signal),
-  onboardingPatch: (id: string, expectedRevision: number, currentStep: OnboardingStep, draftPatch: object) => patch<OnboardingSessionPayload>("/api/onboarding/session", { request_id: id, expected_revision: expectedRevision, current_step: currentStep, patch: draftPatch }),
-  onboardingPause: (id: string, expectedRevision: number) => post<OnboardingSessionPayload>("/api/onboarding/pause", { request_id: id, expected_revision: expectedRevision }),
-  onboardingResume: (expectedRevision: number) => post<OnboardingSessionPayload>("/api/onboarding/resume", { request_id: requestId("onboarding-resume"), expected_revision: expectedRevision }),
-  onboardingEnvironment: (expectedRevision: number) => post<{ ok: true; environment: OnboardingSnapshot["environment"] }>("/api/onboarding/environment-check", { request_id: requestId("onboarding-environment"), expected_revision: expectedRevision }),
-  onboardingAsrLocal: (expectedRevision: number, modelId: string, modelSource: string) => post<OnboardingSessionPayload>("/api/onboarding/resources/asr/local", { request_id: requestId("onboarding-asr-local"), expected_revision: expectedRevision, model_id: modelId, model_source: modelSource }),
-  onboardingAsrCloud: (expectedRevision: number, apiBase: string, model: string, apiKey: string) => post<OnboardingSessionPayload>("/api/onboarding/resources/asr/cloud", { request_id: requestId("onboarding-asr-cloud"), expected_revision: expectedRevision, api_base: apiBase, model, api_key: apiKey }),
-  onboardingAi: (expectedRevision: number, providerId: string, providerLabel: string, apiBase: string, model: string, apiKey: string) => post<OnboardingSessionPayload>("/api/onboarding/resources/ai", { request_id: requestId("onboarding-ai"), expected_revision: expectedRevision, provider_id: providerId, provider_label: providerLabel, api_base: apiBase, model, api_key: apiKey }),
-  onboardingValidate: (expectedRevision: number) => post<OnboardingValidationPayload>("/api/onboarding/project/validate", { request_id: requestId("onboarding-project-validate"), expected_revision: expectedRevision }),
-  onboardingFinish: (expectedRevision: number, id: string) => post<OnboardingFinishPayload>("/api/onboarding/finish", { request_id: id, expected_revision: expectedRevision }),
-  onboardingRetry: (expectedRevision: number, id: string) => post<OnboardingFinishPayload>("/api/onboarding/service/retry", { request_id: id, expected_revision: expectedRevision }),
-  modelCatalog: (signal?: AbortSignal) => api<{ ok: true; models: OnboardingSnapshot["model_catalog"] }>("/api/asr/models", {}, signal),
-  downloadModel: (modelId: string, source: string) => post<{ ok: true; job: ModelJob }>("/api/asr/models/download", { model: modelId, source }),
-  job: (jobId: string, signal?: AbortSignal) => api<{ ok: true; job: ModelJob }>(`/api/jobs/${encodeURIComponent(jobId)}`, {}, signal),
+  onboardingPatch: (id: string, expectedRevision: number, currentStep: OnboardingStep, draftPatch: object) =>
+    patch<OnboardingSessionPayload>("/api/onboarding/session", {
+      request_id: id,
+      expected_revision: expectedRevision,
+      current_step: currentStep,
+      patch: draftPatch,
+    }),
+  onboardingPause: (id: string, expectedRevision: number) =>
+    post<OnboardingSessionPayload>("/api/onboarding/pause", { request_id: id, expected_revision: expectedRevision }),
+  onboardingResume: (expectedRevision: number) =>
+    post<OnboardingSessionPayload>("/api/onboarding/resume", {
+      request_id: requestId("onboarding-resume"),
+      expected_revision: expectedRevision,
+    }),
+  onboardingEnvironment: (expectedRevision: number) =>
+    post<{ ok: true; environment: OnboardingSnapshot["environment"] }>("/api/onboarding/environment-check", {
+      request_id: requestId("onboarding-environment"),
+      expected_revision: expectedRevision,
+    }),
+  onboardingAsrLocal: (expectedRevision: number, modelId: string, modelSource: string) =>
+    post<OnboardingSessionPayload>("/api/onboarding/resources/asr/local", {
+      request_id: requestId("onboarding-asr-local"),
+      expected_revision: expectedRevision,
+      model_id: modelId,
+      model_source: modelSource,
+    }),
+  onboardingAsrCloud: (expectedRevision: number, apiBase: string, model: string, apiKey: string) =>
+    post<OnboardingSessionPayload>("/api/onboarding/resources/asr/cloud", {
+      request_id: requestId("onboarding-asr-cloud"),
+      expected_revision: expectedRevision,
+      api_base: apiBase,
+      model,
+      api_key: apiKey,
+    }),
+  onboardingAi: (
+    expectedRevision: number,
+    providerId: string,
+    providerLabel: string,
+    apiBase: string,
+    model: string,
+    apiKey: string,
+  ) =>
+    post<OnboardingSessionPayload>("/api/onboarding/resources/ai", {
+      request_id: requestId("onboarding-ai"),
+      expected_revision: expectedRevision,
+      provider_id: providerId,
+      provider_label: providerLabel,
+      api_base: apiBase,
+      model,
+      api_key: apiKey,
+    }),
+  onboardingValidate: (expectedRevision: number) =>
+    post<OnboardingValidationPayload>("/api/onboarding/project/validate", {
+      request_id: requestId("onboarding-project-validate"),
+      expected_revision: expectedRevision,
+    }),
+  onboardingFinish: (expectedRevision: number, id: string) =>
+    post<OnboardingFinishPayload>("/api/onboarding/finish", { request_id: id, expected_revision: expectedRevision }),
+  onboardingRetry: (expectedRevision: number, id: string) =>
+    post<OnboardingFinishPayload>("/api/onboarding/service/retry", {
+      request_id: id,
+      expected_revision: expectedRevision,
+    }),
+  modelCatalog: (signal?: AbortSignal) =>
+    api<{ ok: true; models: OnboardingSnapshot["model_catalog"] }>("/api/asr/models", {}, signal),
+  downloadModel: (modelId: string, source: string) =>
+    post<{ ok: true; job: ModelJob }>("/api/asr/models/download", { model: modelId, source }),
+  job: (jobId: string, signal?: AbortSignal) =>
+    api<{ ok: true; job: ModelJob }>(`/api/jobs/${encodeURIComponent(jobId)}`, {}, signal),
 };
 
-export function requestId(prefix: string): string { return `${prefix}-${crypto.randomUUID()}`; }
+export function requestId(prefix: string): string {
+  return `${prefix}-${crypto.randomUUID()}`;
+}
