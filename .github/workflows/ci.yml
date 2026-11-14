@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   backend-desktop:
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 15
     outputs:
       commit: ${{ steps.source.outputs.commit }}
@@ -104,7 +104,7 @@ jobs:
         run: python -m build
 
   frontend:
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 10
     outputs:
       commit: ${{ steps.source.outputs.commit }}

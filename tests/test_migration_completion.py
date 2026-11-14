@@ -441,12 +441,11 @@ def test_rollback_cleans_owned_evidence_and_keeps_original_media_and_backup(tmp_
 @contextmanager
 def migration_http(coordinator):
     import json
-    from http.server import ThreadingHTTPServer
     from threading import Thread
     from urllib.error import HTTPError
     from urllib.request import Request, urlopen
 
-    from live_clipper.web import LiveClipperRequestHandler, WebPaths
+    from live_clipper.web import LiveClipperRequestHandler, WebPaths, _LocalHTTPServer
 
     root = coordinator.service_dir.parent
     handler = type('ObservedMigrationHTTP', (LiveClipperRequestHandler,), {
@@ -455,7 +454,7 @@ def migration_http(coordinator):
                          state_dir=root/'state', log_dir=root/'logs'),
         'access_token': 'test-token', 'restricted_startup': 'migration_required',
     })
-    server = ThreadingHTTPServer(('127.0.0.1', 0), handler)
+    server = _LocalHTTPServer(('127.0.0.1', 0), handler)
     thread = Thread(target=server.serve_forever)
     thread.start()
     def request(route, body=None):
