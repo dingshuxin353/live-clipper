@@ -6,6 +6,7 @@ import json
 import mimetypes
 import posixpath
 import socket
+import socketserver
 from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -1341,6 +1342,15 @@ def _media_clip_path(request_path: str, paths: WebPaths) -> Path | None:
 
 class _LocalHTTPServer(ThreadingHTTPServer):
     request_queue_size = socket.SOMAXCONN
+
+    def server_bind(self) -> None:
+        # HTTPServer.server_bind calls socket.getfqdn on the bound address only to fill
+        # server_name. On hosts with slow reverse name resolution that lookup blocks for
+        # tens of seconds before the port starts listening.
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = host
+        self.server_port = port
 
 
 def run_web_server(
