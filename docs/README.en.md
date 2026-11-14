@@ -77,6 +77,5 @@ Read the complete [privacy notes](privacy.md).
 - [Advanced usage](advanced-usage.md)
 - [Configuration](configuration.md)
 - [Troubleshooting](troubleshooting.md)
-- [MCP workbench guide](mcp-workbench-user-guide.md)
 - [Contributing](../CONTRIBUTING.md)
 - [MIT License](../LICENSE)

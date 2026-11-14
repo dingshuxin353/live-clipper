@@ -26,7 +26,7 @@ AI_ASSISTANT_GUIDE = """# Venus AI 使用说明
 
 共享资源修改只影响引用项目的新记录。旧记录保留冻结修订，凭据修复要求原账号、端点、地域、业务空间和模型身份不变。连接验证通过后仍需重新检查问题，再由用户继续处理。更换身份只能显式新建重跑；保留旧记录、断点与成片。
 
-Venus 不再内置 Codex CLI。模型直连和 Claude Code 审阅保留；通用 MCP 和当前 Agent 协作仍可使用。实际依赖旧接入的记录不会被自动切到其他付费服务。
+Venus 不再内置 Codex CLI。模型直连和 Claude Code 审阅保留；当前 Agent 仍可通过审阅材料协作。实际依赖旧接入的记录不会被自动切到其他付费服务。
 
 ## 审阅材料
 
@@ -34,7 +34,7 @@ Venus 不再内置 Codex CLI。模型直连和 Claude Code 审阅保留；通用
 
 `automation check` 返回 `requires_review`、`review_tasks`、`review_task_file`。当 phase 是 `needs_review_selection`，读取 `review_task.md` 和候选包，核对时间范围、片段独立性、标题与重复内容；`failed_needs_review` 应先诊断失败，不能盲目重跑。
 
-通过 MCP 可以查看记录、读取审阅包、提交片段选择并请求渲染。删除与清理先 preview，再提交确认；不删除原始视频，也不绕过路径限制。旧全局扫描、重试与自动审阅不能借当前配置恢复身份不明的记录。
+删除与清理先预演，再提交确认；不删除原始视频，也不绕过路径限制。旧全局扫描、重试与自动审阅不能借当前配置恢复身份不明的记录。
 
 源码 CLI 的 `scan`、`pipeline`、`refine` 需要 `--project-run` 与 `--service-dir` 指定实际项目记录。`doctor` 检查环境，`smoke` 用合成数据检查本地链路；合成烟测不代表真实模型、真实短片或播放已经验收。
 """

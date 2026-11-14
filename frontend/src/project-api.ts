@@ -295,10 +295,6 @@ export const projectApi = {
       request_id: id,
       expected_revision: expectedRevision,
     }),
-  modelCatalog: (signal?: AbortSignal) =>
-    api<{ ok: true; models: OnboardingSnapshot["model_catalog"] }>("/api/asr/models", {}, signal),
-  downloadModel: (modelId: string, source: string) =>
-    post<{ ok: true; job: ModelJob }>("/api/asr/models/download", { model: modelId, source }),
   job: (jobId: string, signal?: AbortSignal) =>
     api<{ ok: true; job: ModelJob }>(`/api/jobs/${encodeURIComponent(jobId)}`, {}, signal),
 };

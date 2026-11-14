@@ -542,8 +542,8 @@ def test_legacy_model_mutations_cannot_change_files_or_create_jobs(tmp_path, mon
     monkeypatch.setattr(jobs, "start_job", lambda *a, **k: pytest.fail("legacy route started a job"))
     for action in ("select", "download", "delete"):
         status, _, payload = handle_api_request("POST", f"/api/asr/models/{action}", paths, body={"model": MODEL_ID})
-        assert status == 410
-        assert payload["error_code"] == "resource_route_retired"
+        assert status == 404
+        assert payload["error_code"] == "route_not_found"
     assert paths.config_path.read_bytes() == original
 
 
