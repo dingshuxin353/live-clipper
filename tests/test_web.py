@@ -941,6 +941,15 @@ def test_local_http_server_declares_platform_queue_before_listening():
             assert connection.getpeername() == server.server_address
 
 
+def test_local_http_server_binds_without_resolving_its_own_name(monkeypatch):
+    monkeypatch.setattr(socket, 'getfqdn', lambda *args: pytest.fail('start-up must not resolve host names'))
+    with web._LocalHTTPServer(('127.0.0.1', 0), LiveClipperRequestHandler) as server:
+        assert server.server_name == '127.0.0.1'
+        assert server.server_port == server.server_address[1]
+        with socket.create_connection(server.server_address, timeout=1) as connection:
+            assert connection.getpeername() == server.server_address
+
+
 def test_app_accepts_three_bursts_of_twelve_new_connections(tmp_path):
     source = Path(__file__).resolve().parents[1] / 'src'
     env = {key: os.environ[key] for key in ('PATH', 'LANG', 'LC_ALL') if key in os.environ}
